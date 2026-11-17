@@ -1,4 +1,4 @@
-import {copyFile,mkdir,readFile,writeFile} from 'node:fs/promises';
+import {copyFile,mkdir,readFile,writeFile,rm} from 'node:fs/promises';
 
 const output = new URL('./dist/server/',import.meta.url);
 const metadata = new URL('./dist/.openai/',import.meta.url);
@@ -75,7 +75,11 @@ for(const [path,[type,base64]]of Object.entries(assets))if(type.startsWith('text
 }
 
 await Promise.all([
-  copyFile(new URL('./.openai/hosting.json',import.meta.url),new URL('hosting.json',metadata)),
+  copyFile(new URL('./.openai/hosting.json',import.meta.url),new URL('hosting.json',metadata)).catch(async error=>{
+    if(error.code!=='ENOENT')throw error;
+    // A fresh clone can build the Worker without machine-specific hosting metadata.
+    await rm(new URL('hosting.json',metadata),{force:true});
+  }),
   writeFile(new URL('assets.mjs',output),'export default '+JSON.stringify(assets)+';\n'),
   ...['item-assets.mjs','loot-data.mjs','loot-model.mjs','request-json.mjs','vision-model.mjs','inventory-model.mjs','soundboard-model.mjs','sound-catalog.mjs','sound-pack-import.mjs','zip-audio.mjs','campaign-backup.mjs','browser-session.mjs','sheet-template-model.mjs','sheet-history.mjs','journal-model.mjs','narration-model.mjs','narration-style.mjs','scene-model.mjs','token-icons.mjs','fog-geometry.mjs','table-realtime.mjs','sheet-layout.mjs','gm-screen-model.mjs','dnd.mjs','api.mjs','music-model.mjs','access.mjs','model.mjs','table-model.mjs','media.mjs','storage.mjs','worker.mjs'].map(file=>
     copyFile(new URL(file,import.meta.url),new URL(file==='worker.mjs'?'index.js':file,output)))

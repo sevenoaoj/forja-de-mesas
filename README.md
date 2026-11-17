@@ -38,7 +38,7 @@ npm run build
 npm start
 ```
 
-O repositório contém código, testes, documentação e os recursos estáticos da aplicação. Campanhas, arquivos enviados, backups, bancos locais, credenciais e configurações locais de ferramentas ficam fora do Git. Use o backup `.forja` da própria aplicação para transportar campanhas. O GitHub Actions executa os testes e o build em cada push e pull request; publicar o código no GitHub não hospeda o servidor da mesa.
+O repositório contém código, testes, documentação e os recursos estáticos da aplicação. Campanhas, arquivos enviados, backups, bancos locais, credenciais e configurações locais de ferramentas ficam fora do Git. Use o backup `.forja` da própria aplicação para transportar campanhas. A configuração local de hospedagem em `.openai/` é opcional para gerar o build e fica fora do repositório. O GitHub Actions executa os testes e o build em cada push e pull request; publicar o código no GitHub não hospeda o servidor da mesa.
 
 ## Jogar
 
