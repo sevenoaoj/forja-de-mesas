@@ -1,0 +1,21 @@
+.dnd-steps{display:flex;padding:11px 14px;border:1px solid #67517b;border-radius:9px;background:#292035;font-weight:700}
+.dnd-help{padding:12px;background:#211c2e;border:1px solid #514063;border-radius:8px;font-size:13px;line-height:1.6}
+.dnd-skill-choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-block:10px}
+.dnd-review{display:grid;gap:12px;padding:15px;border:1px solid #7b6093;border-radius:10px;background:#21192e;line-height:1.6}
+.dnd-score-preview{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.dnd-score-preview span{padding:9px;border:1px solid var(--line);border-radius:7px;background:var(--surface)}
+.dnd-wizard-actions{justify-content:flex-end}
+[data-dnd-step][hidden],[data-dnd-finish][hidden],.dnd-wizard-actions [hidden]{display:none}
+.dnd-book-card{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.dnd-book-card p{margin-top:8px;line-height:1.5}
+.dnd-catalog{display:grid;gap:14px}
+[data-dnd-results]{display:grid;gap:10px;max-height:55vh;overflow:auto;padding-right:4px}
+.dnd-reference-card{display:grid;gap:12px;padding:15px;border:1px solid var(--line);border-radius:9px;background:var(--surface)}
+.dnd-reference-card h3{font-size:16px}.dnd-reference-card h3 small{font-size:11px;color:var(--muted)}
+.dnd-reference-card p{font-size:13px;line-height:1.6;margin-top:8px;white-space:pre-wrap}
+.campaign-list-row{display:flex;gap:8px;align-items:stretch;flex-wrap:wrap}
+.campaign-list-row>.btn:first-child{flex:1;justify-content:flex-start}
+.stat-tile small{font-size:10px;color:#d9c6ee}
+@media(max-width:730px){.dnd-skill-choices,.dnd-score-preview{grid-template-columns:minmax(0,1fr)}.campaign-list-row>.btn{min-height:44px}.dnd-reference-card{padding:12px}[data-dnd-results]{max-height:55svh}.dnd-wizard-actions .btn{flex:1}}
+
+[data-dnd-split-boost][hidden]{display:none}

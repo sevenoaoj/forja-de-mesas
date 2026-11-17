@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS campaigns (
+  id TEXT PRIMARY KEY,
+  owner TEXT NOT NULL,
+  player TEXT NOT NULL,
+  rev INTEGER NOT NULL,
+  state TEXT NOT NULL
+);

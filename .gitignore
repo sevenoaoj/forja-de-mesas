@@ -1,0 +1,35 @@
+# Dados de execução e cópias de campanhas
+.data/
+.recovery/
+backups/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.forja
+*.log
+
+# Saídas de build e ferramentas locais
+dist/
+releases/
+node_modules/
+.tools/
+.wrangler/
+coverage/
+
+# Credenciais e configuração local
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+*.pem
+*.key
+
+# Contexto local de ferramentas e editor
+.openai/
+.superdesign/
+.codex/
+.vscode/
+.idea/
+.DS_Store

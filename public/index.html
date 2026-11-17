@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101018">
+  <meta name="description" content="Organize sua campanha de RPG com fichas, mesa virtual e livros de regras compartilhados.">
+  <title>Forja de Mesas — RPG de mesa</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/table.css">
+  <link rel="stylesheet" href="/music.css">
+  <link rel="stylesheet" href="/dnd.css">
+  <link rel="stylesheet" href="/rolls.css">
+  <link rel="stylesheet" href="/gm-screen.css">
+  <link rel="stylesheet" href="/sheet-mosaic.css">
+  <link rel="stylesheet" href="/sheet-templates.css">
+  <link rel="stylesheet" href="/sheet-history.css">
+  <link rel="stylesheet" href="/journal.css">
+  <link rel="stylesheet" href="/inventory.css">
+  <script type="module" src="/app.mjs"></script>
+  <link rel="stylesheet" href="/soundboard.css">
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <a href="/" class="brand"><span class="brand-mark" aria-hidden="true">⬡</span><span>Forja de Mesas<small>RPG DE MESA</small></span></a>
+      <div class="sidebar-content">
+        <p class="nav-label">CAMPANHA</p>
+        <button class="campaign-picker" data-act="campaigns" title="Trocar campanha"><span class="campaign-icon">✧</span><span id="campaign-name">Escolher campanha</span><span class="caret">⌄</span></button>
+        <p class="nav-label tools-label">FERRAMENTAS</p>
+        <nav id="navigation" aria-label="Ferramentas"></nav>
+      </div>
+      <div class="profile"><span class="profile-icon" aria-hidden="true">✦</span><span id="profile"></span></div>
+    </aside>
+    <div class="workspace">
+      <header class="top"><div class="breadcrumb">Campanhas <span>›</span> <strong id="breadcrumb">Visão geral</strong></div><div id="header-actions" class="actions"></div></header>
+      <section id="audio-consent" class="audio-consent" aria-label="Ativar som da mesa" hidden>
+        <p data-audio-consent-text>Ative o áudio para ouvir a trilha e os efeitos compartilhados da mesa.</p>
+        <button type="button" class="btn primary" data-act="audioToggle">Ativar som da mesa</button>
+      </section>
+      <section id="audio-dock" aria-label="Tocador do YouTube" hidden>
+        <div class="dock-heading">
+          <strong data-track-title></strong>
+          <div class="actions"><button type="button" class="btn small" data-act="audioToggle">Desativar áudio</button><a class="btn small" data-youtube-link href="#" target="_blank" rel="noopener noreferrer">YouTube ↗</a></div>
+        </div>
+        <div class="actions audio-master-controls" data-audio-master hidden>
+          <button type="button" class="btn small" data-audio-play data-act="trackCommand" data-id="pause">Pausar na mesa</button>
+          <button type="button" class="btn small" data-act="trackCommand" data-id="restart">Reiniciar</button>
+          <button type="button" class="btn small" data-act="trackCommand" data-id="stop">Encerrar</button>
+        </div>
+        <label class="music-volume"><span>Volume nesta aba</span><input aria-label="Volume da música nesta aba" type="range" min="0" max="100" value="65" data-music-volume></label>
+        <p class="player-status" data-player-status role="status" hidden></p>
+        <div data-youtube></div>
+      </section>
+      <main id="main" tabindex="-1"><p>Carregando campanha…</p></main>
+      <section id="audio-controls" aria-label="Som nesta aba" hidden>
+        <button type="button" class="audio-launcher" data-audio-panel-toggle aria-expanded="false" aria-controls="audio-options" aria-label="Abrir controles de áudio" title="Controles de áudio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4zM15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14"/></svg></button>
+        <section id="audio-options" class="audio-options" data-audio-panel aria-label="Opções de áudio" hidden>
+          <div class="audio-options-heading"><strong>Áudio da mesa</strong><button type="button" class="btn small ghost" data-audio-panel-close aria-label="Fechar controles de áudio">×</button></div>
+        <button type="button" class="btn small" data-act="audioToggle" aria-pressed="false">Ativar som</button>
+        <label>Volume da música<input aria-label="Volume da música nesta aba" type="range" min="0" max="100" value="65" data-music-volume></label>
+        <label>Volume dos efeitos<input aria-label="Volume dos efeitos nesta aba" type="range" min="0" max="100" value="65" data-overlay-effect-volume></label>
+        <details id="master-soundboard" class="sound-dock" hidden open><summary class="btn small">Soundboard da sessão</summary><div data-sound-dock-body></div></details>
+        <details id="master-playlist" hidden>
+          <summary class="btn small">Playlist <span aria-hidden="true">⌃</span></summary>
+          <section class="music-dock-panel" aria-label="Playlist do mestre">
+            <div class="music-dock-heading"><strong>Playlist da sessão</strong><button type="button" class="btn small" data-playlist-close aria-label="Recolher playlist">×</button></div>
+            <div class="music-dock-now" data-playlist-now></div>
+            <label class="music-dock-volume">Volume da música na mesa <input type="range" min="0" max="100" value="70" aria-label="Volume da música na mesa" data-playlist-volume></label>
+            <label class="music-dock-search">Buscar faixa<input type="search" placeholder="Nome ou etiqueta" aria-label="Buscar faixa na playlist" data-playlist-search></label>
+            <div data-playlist-library></div>
+          </section>
+        </details>
+        <button type="button" class="btn small" data-act="nav" data-id="audio">Áudio ↗</button>
+        </section>
+      </section>
+      <footer>Forja de Mesas</footer>
+    </div>
+  </div>
+  <section id="dice-display" class="dice-show" aria-label="Resultado dos dados" hidden></section>
+  <dialog id="narration-display" class="narration-show" aria-labelledby="narration-heading" hidden></dialog>
+  <dialog id="dialog" aria-labelledby="dialog-title"><div id="dialog-content"></div><p id="dialog-notice" role="status" aria-live="polite"></p></dialog>
+  <p id="notice" role="status" aria-live="polite"></p>
+</body>
+</html>

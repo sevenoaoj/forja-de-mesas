@@ -1,0 +1,112 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {api} from '../api.mjs';
+import {newCampaign} from '../model.mjs';
+import {mutateGmScreen} from '../gm-screen-model.mjs';
+import {renderGmScreen,renderGmCards,gmCardEditor} from '../public/gm-screen.mjs';
+async function room(){
+ const rows=new Map();
+ const store={async create(row){rows.set(row.id,structuredClone(row));},async get(id){return structuredClone(rows.get(id));},async save(row){await Promise.resolve();if(rows.get(row.id).rev!==row.rev)return false;rows.set(row.id,structuredClone({...row,rev:row.rev+1}));return true;}};
+ const request=(path,method,key,body)=>api(new Request('http://app/api/campaigns'+path,{method,headers:key?{Authorization:'Bearer '+key}:{},body:body===undefined?undefined:JSON.stringify(body)}),store);
+ const created=await(await request('','POST',null,{name:'Escudo',example:true})).json(),base='/'+created.id;
+ const action=(action,data={},key=created.key)=>request(base+'/action','POST',key,{action,data});
+ const view=async(key=created.key)=>(await request(base,'GET',key)).json();
+ const save=async data=>{const response=await action('gmCardSave',{kind:'note',category:'session',title:'Segredo do mestre',body:'O duque é o vilão',...data});assert.equal(response.status,200);return response.json();};
+ return {created,base,rows,request,action,view,save};
+}
+test('cartões são persistentes, organizáveis e preservam anotações e fichas antigas',async()=>{
+ const r=await room();await r.action('notes',{text:'Notas anteriores'});
+ let state=(await r.save({title:'Primeiro'})).state;const first=state.gmScreen.cards[0];
+ state=(await r.save({title:'Segundo',kind:'checklist',body:'[ ] Pista\n[x] Cena pronta'})).state;const second=state.gmScreen.cards[1];
+ assert.equal(state.notes,'Notas anteriores');assert.equal(state.characters.length,3);
+ assert.deepEqual(second.items.map(item=>item.done),[false,true]);
+ await r.action('gmCardMove',{id:second.id,direction:-1,targetId:first.id});
+ await r.action('gmCardPin',{id:first.id,pinned:true});await r.action('gmCardCollapse',{id:first.id,collapsed:true});
+ state=(await r.view()).state;assert.equal(state.gmScreen.cards[0].id,second.id);assert.equal(state.gmScreen.cards[1].pinned,true);assert.equal(state.gmScreen.cards[1].collapsed,true);
+ const response=await r.action('gmCardSave',{...first,title:'Renomeado',body:'Atualização'});assert.equal(response.status,200);
+ assert.equal((await r.action('gmCardSave',{...first,title:'Edição antiga'})).status,409);
+ const fresh=(await r.view()).state.gmScreen.cards.find(card=>card.id===first.id);
+ assert.equal(fresh.pinned,true);assert.equal(fresh.collapsed,true);
+ assert.equal((await r.action('gmCardDelete',{id:first.id,version:1})).status,409);
+ assert.equal((await r.action('gmCardDelete',{id:first.id,version:fresh.version})).status,200);
+ assert.equal((await r.view()).state.gmScreen.cards.length,1);
+});
+test('tarefas usam estado explícito, rejeitam itens inválidos e protegem edições simultâneas',async()=>{
+ const r=await room(),card=(await r.save({kind:'checklist',body:'[ ] Investigar\n[ ] Descansar'})).state.gmScreen.cards[0];
+ const data={id:card.id,itemId:card.items[0].id,done:true};
+ assert.equal((await r.action('gmCardToggle',data)).status,200);await r.action('gmCardToggle',data);
+ assert.equal((await r.view()).state.gmScreen.cards[0].items[0].done,true);
+ assert.equal((await r.action('gmCardSave',{...card,body:'Texto antigo'})).status,409);
+ assert.equal((await r.action('gmCardToggle',{...data,itemId:'inexistente'})).status,400);
+ const current=(await r.view()).state.gmScreen.cards[0];
+ const responses=await Promise.all([r.action('gmCardSave',{...current,body:'A'}),r.action('gmCardSave',{...current,body:'B'})]);
+ assert.deepEqual(responses.map(response=>response.status).sort(),[200,409]);
+});
+test('jogadores e convites nunca recebem cartões, tarefas, referências ou resultados secretos',async()=>{
+ const r=await room();await r.save({kind:'table',body:'Segredo alfa\nSegredo beta'});
+ const member='a'.repeat(64);await r.request(r.base+'/join','POST',r.created.invite,{key:member});await r.action('characterClaim',{id:'lyra'},member);
+ const card=(await r.view()).state.gmScreen.cards[0];
+ const sync=async key=>(await r.request(r.base+'/sync','GET',key)).json();
+ const before=(await sync(member)).rollVersion;
+ await r.action('gmTableRoll',{id:card.id});
+ for(const key of [member,r.created.invite]){
+  assert.equal((await r.view(key)).state.gmScreen,undefined);
+  const result=await r.action('roll',{formula:'1d6'},key);
+  if(result.status===200)assert.ok(!JSON.stringify(await result.json()).includes('Segredo'));
+  for(const action of ['gmPartyFields','gmCardSave','gmCardDelete','gmCardPin','gmCardMove','gmCardToggle','gmCardCollapse','gmTableRoll'])assert.equal((await r.action(action,{...card},key)).status,403,action);
+ }
+ const after=await sync(member);assert.ok(!JSON.stringify(after).includes('Segredo'));
+ // Player's own roll can change the version; private table rolls alone must not.
+ const version=after.rollVersion;await r.action('gmTableRoll',{id:card.id});assert.equal((await sync(member)).rollVersion,version);assert.ok(before);
+});
+test('sorteio usa o servidor, armazena a entrada escolhida e integra o histórico privado',async()=>{
+ const r=await room(),card=(await r.save({kind:'table',title:'Encontro secreto',body:'Patrulha\nMercador\nViajante'})).state.gmScreen.cards[0];
+ const response=await r.action('gmTableRoll',{id:card.id});assert.equal(response.status,200);
+ const row=await response.json(),roll=row.state.rolls[0],last=row.state.gmScreen.cards[0].lastRoll;
+ assert.equal(roll.formula,'1d3');assert.equal(roll.rolledBy,'master');assert.equal(roll.visibility,'gm');
+ assert.equal(last.rollId,roll.id);assert.equal(last.text,card.items[roll.total-1].text);assert.ok(roll.label.includes(last.text));
+ assert.equal((await r.action('gmTableRoll',{id:'sumiu'})).status,404);
+ assert.equal((await r.action('gmCardSave',{title:'Inválida',kind:'table',category:'session',body:'Só uma'})).status,400);
+});
+test('referências validam destinos e preservam o número da página',async()=>{
+ const r=await room();
+ const row=await r.save({kind:'reference',targetKind:'character',targetId:'lyra',page:8});assert.equal(row.state.gmScreen.cards[0].targetId,'lyra');
+ const ref={kind:'reference',category:'rules',title:'Regra',targetKind:'rule',targetId:'rule-advantage'};
+ const {dndCatalog}=await import('../dnd.mjs');ref.targetId=dndCatalog.find(item=>item.category==='rules').id;
+ assert.equal((await r.action('gmCardSave',ref)).status,200);
+ assert.equal((await r.action('gmCardSave',{...ref,targetId:'regra-falsa'})).status,400);
+ assert.equal((await r.action('gmCardSave',{...ref,targetKind:'book',targetId:'livro-falso'})).status,404);
+ const stored=r.rows.get(r.created.id);stored.state.books=[{id:'book',name:'Meu livro',size:1}];
+ const withBook=await r.save({kind:'reference',targetKind:'book',targetId:'book',page:42});assert.equal(withBook.state.gmScreen.cards.at(-1).page,42);
+});
+test('combate do escudo usa a mesma rodada e ordem já existente na mesa',async()=>{
+ const r=await room();assert.equal((await r.action('combatSet',{entries:[{name:'A',value:12},{name:'B',value:7}],active:0,round:1})).status,200);
+ await r.action('combatNext',{direction:1});let row=await r.view();assert.equal(row.state.table.combat.active,1);
+ await r.action('combatNext',{direction:1});row=await r.view();assert.equal(row.state.table.combat.round,2);assert.equal(row.state.table.combat.active,0);
+});
+test('validação limita o tamanho do escudo e recusa ações privadas antes de alterar o estado',()=>{
+ const state=newCampaign('Livre');
+ assert.throws(()=>mutateGmScreen(state,'gmCardSave',{},false),error=>error.status===403);assert.equal(state.gmScreen,undefined);
+ assert.throws(()=>mutateGmScreen(state,'gmCardSave',{title:'x',category:'outro',kind:'note'},true),error=>error.status===400);
+ for(let i=0;i<80;i++)mutateGmScreen(state,'gmCardSave',{title:'N'+i,category:'world',kind:'note'},true);
+ assert.throws(()=>mutateGmScreen(state,'gmCardSave',{title:'81',category:'world',kind:'note'},true),error=>error.status===409);
+});
+const esc=value=>String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+const ui={esc,button:(label,act,style,icon,id)=>'<button data-act="'+act+'" data-id="'+esc(id)+'">'+esc(label)+'</button>',head:title=>'<h1>'+title+'</h1>',input:(name,label,value)=>'<input name="'+name+'" value="'+esc(value)+'">',area:(name,label,value)=>'<textarea name="'+name+'">'+esc(value)+'</textarea>',submit:label=>'<button>'+label+'</button>',select:(name,label,options)=>'<select name="'+name+'">'+Object.entries(options).map(([id,text])=>'<option value="'+esc(id)+'">'+esc(text)+'</option>').join('')+'</select>'};
+test('interface filtra sem acentos, escapa segredos e dá prioridade aos fixados',()=>{
+ const state=newCampaign('Livre',true);state.gmScreen={cards:[{id:'1',title:'Abertura',body:'Revelação <script>',category:'session',kind:'note'},{id:'2',title:'NPC fixado',body:'Rival',category:'world',kind:'note',pinned:true}]};
+ const row={master:true,state};const html=renderGmCards(row,ui);assert.ok(html.indexOf('NPC fixado')<html.indexOf('Abertura'));assert.ok(html.includes('&lt;script&gt;'));assert.ok(!html.includes('<script>'));
+ assert.ok(renderGmCards(row,ui,{query:'revelacao'}).includes('Abertura'));assert.ok(!renderGmCards(row,ui,{category:'world'}).includes('Abertura'));
+ assert.equal(renderGmScreen({...row,master:false},ui),'');assert.equal(renderGmCards({...row,master:false},ui),'');
+ const screen=renderGmScreen(row,ui,{notes:'Rascunho'});assert.ok(screen.includes('Fichas à mão'));assert.ok(screen.includes('Vitalidade'));assert.ok(screen.includes('Rascunho não salvo'));
+ const editor=gmCardEditor(null,row,ui);assert.ok(editor.includes('Referência vinculada'));assert.ok(editor.includes('Ficha · Lyra Vesper'));
+});
+
+test('mestre escolhe atributos do resumo e preferências ficam privadas',async()=>{
+ const r=await room();assert.equal((await r.action('gmPartyFields',{id:'lyra',fields:['f3']})).status,200);
+ const row=await r.view();assert.deepEqual(row.state.gmScreen.partyFields.lyra,['f3']);
+ assert.equal((await r.view(r.created.invite)).state.gmScreen,undefined);
+ assert.equal((await r.action('gmPartyFields',{id:'lyra',fields:['f5']})).status,400);
+ assert.equal((await r.action('gmPartyFields',{id:'lyra',fields:['f3','f3']})).status,400);
+ assert.equal((await r.action('gmPartyFields',{id:'sumiu',fields:[]})).status,404);
+});

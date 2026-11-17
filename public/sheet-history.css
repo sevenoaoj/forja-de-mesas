@@ -1,0 +1,10 @@
+.sheet-history{margin-block:1rem;padding:1rem;border:1px solid var(--border,#494052);border-radius:12px;background:var(--surface,#201b29)}
+.sheet-history>summary{cursor:pointer;font-weight:650;display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;list-style-position:inside}
+.sheet-history>summary>.muted{font-size:.85em;font-weight:400;margin-inline-start:auto}
+.sheet-history-list{list-style:none;padding:0;margin:1rem 0;display:grid;gap:.75rem;max-height:34rem;overflow:auto;overscroll-behavior:contain}
+.sheet-history-list>li{padding:.8rem;border-inline-start:3px solid var(--sheet-accent,#ab82ee);border-radius:6px;background:rgba(255,255,255,.035);overflow-wrap:anywhere}
+.sheet-history-heading{display:grid;gap:.3rem;margin-bottom:.6rem}
+.sheet-history-heading>.muted{font-size:.82em}
+.sheet-history-list ul{padding-inline-start:1.25rem;font-size:.9em;margin:.6rem 0}
+.sheet-history-list .btn{white-space:normal;min-height:36px;text-align:center}
+@media(max-width:600px){.sheet-history{padding:.75rem}.sheet-history-list{max-height:28rem}.sheet-history>summary>.muted{margin-inline-start:0;flex-basis:100%}.sheet-history-list .btn{width:100%;min-height:44px}}

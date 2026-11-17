@@ -1,0 +1,13 @@
+const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+const date=value=>Number.isFinite(value)?new Date(value).toLocaleString('pt-BR',{dateStyle:'short',timeStyle:'short'}):'Data indisponível';
+export function renderSheetHistory(character,{open=false}={}){
+ if(!character||character.access==='summary')return '';
+ const entries=character.sheetHistory?.entries||[];
+ return '<details class="sheet-history"'+(open?' open':'')+'><summary>Histórico da ficha <span class="muted">'+entries.length+' alterações recentes</span></summary><p class="muted">Visível apenas para o dono da ficha e o mestre. Restaurar recupera o conteúdo anterior à alteração; a foto e as permissões atuais são mantidas.</p>'+(entries.length?'<ol class="sheet-history-list">'+entries.map(entry=>'<li><div class="sheet-history-heading"><strong>'+esc(entry.summary)+'</strong><span class="muted">'+esc(entry.actor)+' · '+esc(date(entry.at))+' · #'+esc(entry.version)+'</span></div>'+(entry.details?.length>1?'<ul>'+entry.details.map(detail=>'<li>'+esc(detail)+'</li>').join('')+'</ul>':'')+(entry.before?'<button type="button" class="btn small" data-act="sheetHistoryRestore" data-id="'+esc(character.id)+'" data-entry="'+esc(entry.id)+'">Restaurar conteúdo anterior</button>':'<p class="muted">'+esc(entry.unavailable||'Cópia indisponível para restauração.')+'</p>')+'</li>').join('')+'</ol>':'<p class="muted">As próximas alterações salvas aparecerão aqui.</p>')+'<p class="muted">São guardadas até 20 alterações por ficha. Cópias antigas podem expirar para limitar o armazenamento da campanha.</p></details>';
+}
+export function renderSheetHistoryRestore(character,entryId){
+ if(!character||character.access==='summary')throw new Error('Ficha indisponível.');
+ const entry=character.sheetHistory?.entries?.find(entry=>entry.id===entryId);
+ if(!entry?.before)throw new Error('Cópia indisponível para restauração.');
+ return '<form data-form="sheetHistoryRestore"><input type="hidden" name="id" value="'+esc(character.id)+'"><input type="hidden" name="entryId" value="'+esc(entry.id)+'"><input type="hidden" name="expectedVersion" value="'+esc(character.sheetHistory.version)+'"><p>Restaurar <strong>'+esc(character.name)+'</strong> para o conteúdo imediatamente anterior a esta alteração?</p><blockquote><strong>'+esc(entry.summary)+'</strong><p class="muted">'+esc(entry.actor)+' · '+esc(date(entry.at))+'</p></blockquote><p>Campos, recursos, perícias, habilidades, fórmulas e organização serão recuperados. A foto, o dono e a visibilidade permanecem atuais. Esta restauração cria outra alteração que também poderá ser desfeita.</p><button type="submit" class="btn primary">Restaurar ficha</button></form>';
+}
