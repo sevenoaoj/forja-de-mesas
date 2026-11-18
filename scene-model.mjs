@@ -2,7 +2,7 @@ import {normalizeTable} from './table-model.mjs';
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
 const clean=(value,max)=>typeof value==='string'?value.trim().slice(0,max):'';
 const name=value=>{const result=clean(value,100);if(!result)fail(400,'Informe um nome.');return result;};
-export const sceneActions=new Set(['sceneCreate','sceneUpdate','sceneDuplicate','sceneDelete','sceneActivate','sceneMove','sessionCreate','sessionUpdate','sessionDelete']);
+export const sceneActions=new Set(['sessionMaterial','sceneCreate','sceneUpdate','sceneDuplicate','sceneDelete','sceneActivate','sceneMove','sessionCreate','sessionUpdate','sessionDelete']);
 export function sceneLibrary(state){
  return state.sceneLibrary||{version:0,activeId:'scene-initial',sessions:[{id:'session-initial',name:'Sessão 1',date:'',notes:''}],scenes:[{id:'scene-initial',name:state.scene||'Primeira cena',sessionId:'session-initial',notes:''}]};
 }
@@ -22,6 +22,18 @@ export function sceneSummary(state){
 }
 export function sceneMaps(state){return [...new Map([state.map,...(state.sceneLibrary?.scenes||[]).map(scene=>scene.map)].filter(Boolean).map(asset=>[asset.id,asset])).values()];}
 export function sceneTokenPortraits(state){return [...new Map([...(state.tokens||[]),...(state.sceneLibrary?.scenes||[]).flatMap(scene=>scene.tokens||[])].map(token=>token.portrait).filter(Boolean).map(asset=>[asset.id,asset])).values()];}
+export function removeSessionMaterial(state,kind,id){
+ const library=state.sceneLibrary;
+ if(!library)return;
+ let changed=false;
+ for(const session of library.sessions){
+  const links=session.materials;
+  if(!links?.some(ref=>ref.kind===kind&&ref.id===id))continue;
+  session.materials=links.filter(ref=>ref.kind!==kind||ref.id!==id);
+  changed=true;
+ }
+ if(changed)library.version++;
+}
 export function withScene(state,id,master,operation){
  const active=activeSceneId(state);if(!id||id===active)return operation(state);
  if(!master)fail(409,'A cena mudou. Aguarde a sincronização antes de agir.');
@@ -36,7 +48,19 @@ export function mutateScenes(state,action,data,master){
  if(!sceneActions.has(action))return false;if(!master)fail(403,'Somente o mestre organiza cenas e sessões.');
  const lib=ensure(state);
  if(data.expectedVersion!==undefined&&data.expectedVersion!==(lib.version||0))fail(409,'A organização mudou em outra aba. Atualize antes de salvar.');
- if(action==='sessionCreate'){
+ if(action==='sessionMaterial'){
+  const session=requireSession(lib,data.sessionId);
+  const documents={note:state.journal,character:state.characters,item:state.inventory};
+  if(!Object.hasOwn(documents,data.kind)||typeof data.attached!=='boolean')fail(400,'Material inválido.');
+  const links=session.materials||[],matches=ref=>ref.kind===data.kind&&ref.id===data.id;
+  if(data.attached){
+   if(!documents[data.kind]?.some(e=>e.id===data.id&&(data.kind!=='item'||!e.characterId)))fail(404,'Material indisponível.');
+   if(!links.some(matches)){
+    if(links.length>=400)fail(409,'O roteiro comporta até 400 materiais.');
+    session.materials=[...links,{kind:data.kind,id:data.id}];
+   }
+  }else session.materials=links.filter(ref=>!matches(ref));
+ }else if(action==='sessionCreate'){
   if(lib.sessions.length>=40)fail(409,'Use até 40 sessões por campanha.');
   lib.sessions.push({id:crypto.randomUUID(),name:name(data.name),date:sessionDate(data.date),notes:clean(data.notes,2000)});
  }else if(action==='sessionUpdate'){

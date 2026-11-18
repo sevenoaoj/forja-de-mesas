@@ -71,6 +71,11 @@ export function newCampaign(name, example = false) {
 }
 
 export function sheetFields(state,character) {
+  if(state.sheetModelVersion){
+    const common=state.fields||[];
+    const ids=new Set(common.map(field=>field.id));
+    return [...common,...(character?.layout||character?.fields||[]).filter(field=>!ids.has(field.id))];
+  }
   return character?.layout ? [...character.layout] : [...(state.fields||[]),...(character?.fields||[])];
 }
 
@@ -194,4 +199,21 @@ export function sheetSavedRollFormula(character,button){
  const spell=dndCatalog.find(entry=>entry.id===button.dndSpell.spellId);
  if(!spell)formulaError('Magia indisponível.');
  return dndSpellFormula(character,spell,button.dndSpell.part);
+}
+
+export const stressRegions = Object.freeze({
+  head:'Cabeça', torso:'Tronco', leftArm:'Braço esquerdo', rightArm:'Braço direito',
+  leftLeg:'Perna esquerda', rightLeg:'Perna direita'
+});
+
+const complexStressRegions=Object.freeze({
+  ...stressRegions,leftHand:'Mão esquerda',rightHand:'Mão direita',leftFoot:'Pé esquerdo',rightFoot:'Pé direito'
+});
+export function stressRegionsFor(mode){
+  return mode==='complex'?complexStressRegions:stressRegions;
+}
+// Older sheets stored head and trunk together. Keep the accumulated stress on the trunk.
+export function bodyStressWithHead(stress){
+  if(!stress||stress.regions.head)return stress;
+  return {...stress,mode:'simple',regions:{...stress.regions,head:{value:0,limit:3}}};
 }

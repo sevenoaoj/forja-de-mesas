@@ -1,9 +1,9 @@
 import {lootEffect} from './loot.mjs';
-import {renderDarkness,updateDarkness,renderVisionCones,updateVisionCones,visionSources,tokenInVision,normalizeRotation} from './table-vision.mjs';
+import {lightShape,renderDarkness,updateDarkness,renderVisionCones,updateVisionCones,visionSources,tokenInVision,normalizeRotation} from './table-vision.mjs';
 import {tokenIconSvg} from './token-icons.mjs';
 import {renderTableRollPanel,renderTableRollContent,renderFreeRollPreview,tableRollPreview,tableRollTabs} from './table-rolls.mjs';
 import {renderRollHistory} from './rolls.mjs';
-import {normalizeTable} from './table-model.mjs';
+import {normalizeTable,pingNames,mapPixelsPerCell} from './table-model.mjs';
 import {colors,sheetFields,sheetValue,skillValues,displaySheetFormula,rollFormulaLimit,sheetTestBase,sheetAttributeTest,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
 
 const escape = value => String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -13,6 +13,8 @@ const icons = {
   measure:'<path d="m3 15 12-12 6 6L9 21zM8 10l3 3m1-7 3 3M4 14l3 3"/>',
   ping:'<circle cx="12" cy="10" r="3"/><path d="M19 10c0 6-7 11-7 11S5 16 5 10a7 7 0 1 1 14 0z"/>',
   draw:'<path d="m4 16 12-12 4 4L8 20H4zM13 7l4 4"/>',
+  lights:'<circle cx="12" cy="12" r="4"/><path d="M12 1v4m0 14v4M1 12h4m14 0h4M4 4l3 3m10 10 3 3M4 20l3-3M17 7l3-3"/>',
+  walls:'<path d="M2 5h20v14H2zM2 12h20M9 5v7m7 0v7"/>',
   fog:'<path d="M5 16a5 5 0 0 1-1-10 7 7 0 0 1 13-1 5 5 0 1 1 2 10M3 19h18M7 22h10"/>',
   zoomIn:'<circle cx="10" cy="10" r="7"/><path d="m15 15 6 6M7 10h6m-3-3v6"/>',
   zoomOut:'<circle cx="10" cy="10" r="7"/><path d="m15 15 6 6M7 10h6"/>',
@@ -49,6 +51,25 @@ function fogStrokeShape(stroke,color){
  return '<path d="'+stroke.points.map((p,i)=>(i?'L':'M')+p.x+' '+p.y).join(' ')+'" fill="none" stroke="'+color+'" stroke-width="'+(stroke.radius*2)+'" stroke-linecap="round" stroke-linejoin="round"/>';
 }
 
+export function renderAtmosphere({weather,tone,level,toneOpacity=100}){
+  const counts={rain:[32,64,98],snow:[22,42,68],embers:[14,28,46],storm:[56,82,110],dust:[16,30,46]};
+  const count=counts[weather]?.[{light:0,medium:1,heavy:2}[level]]||0;
+  // Stable samples keep the field in place when the scene is redrawn.
+  const fraction=value=>value-Math.floor(value);
+  const particles=Array.from({length:count},(_,i)=>{
+    const depth=fraction((i+1)*0.618034),phase=fraction((i+1)*0.754878);
+    const x=fraction((i+1)*0.569841+0.17)*100;
+    const seconds=({rain:1.25,snow:10,embers:7,storm:0.9,dust:6}[weather])/(0.6+depth);
+    const style='left:'+x.toFixed(2)+'%;--dust-x:'+x.toFixed(2)+'%;--period:'+seconds.toFixed(2)+'s;--delay:-'+(phase*seconds).toFixed(2)+'s;--phase:'+(phase*100).toFixed(1)+'%;--scale:'+(0.45+depth*0.95).toFixed(2)+';--alpha:'+(0.28+depth*0.68).toFixed(2)+';--sway:'+(8+depth*19).toFixed(1)+'px';
+    return '<i style="'+style+'"></i>';
+  }).join('');
+  const ripples=['rain','storm'].includes(weather)?Array.from({length:Math.floor(count/6)},(_,i)=>
+    '<b style="left:'+(fraction(i*0.618034+0.21)*100).toFixed(1)+'%;top:'+(fraction(i*0.414214+0.31)*100).toFixed(1)+'%;--period:'+(1.7+fraction(i*0.732)*2).toFixed(2)+'s;--delay:-'+(i*0.79).toFixed(2)+'s"></b>').join(''):'';
+  const lightning=weather==='storm'?'<svg class="vtt-lightning" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path d="M70 -4 66 7 69 6 62 18 65 16 58 30 M65 13 71 12 74 15" fill="none" stroke="#e5eaff" stroke-width="1.7" vector-effect="non-scaling-stroke"/></svg>':'';
+  const strength=Math.min(100,Math.max(0,Number(toneOpacity)||0))/100;
+  return '<div style="--tone-opacity:'+strength+'" class="vtt-atmosphere" data-weather="'+escape(weather)+'" data-tone="'+escape(tone)+'" data-level="'+escape(level)+'" aria-hidden="true"><span class="vtt-tone"></span>'+lightning+particles+ripples+'</div>';
+}
+
 export function createTabletop({action,openCharacter,openLoot=()=>{},report,requestAsset,realtime=()=>{}}) {
   let row;
   let table;
@@ -58,8 +79,8 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
   let events;
   let resize;
   let gesture;
-  let selected='';
-  let turnPreview=null,rotationPreview=null,localPlacement=null,visionPending=false,visionFrame=null,visionGeneration=0;
+  let selected='',routeDraft=null,sampleClock=0;
+  let rotationPreview=null,localPlacement=null,visionPending=false,visionFrame=null,visionGeneration=0;
   let rotationSending=false,pendingRotation=null;
   const rotationAnimations=new Map(),drawnRotations=new Map();
   let rollingCharacter='';
@@ -71,7 +92,9 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
   let historyMarkup='';
   let rollFormula='1d20';
   let tool='select';
-  let shape='freehand';
+  let shape='freehand',pingSignal='point';
+  let lightColor='#ffb760',lightMode='draw',lightAngle=0,lightScope='';
+  let wallMode='wall';
   let fogOperation='reveal';
   let fogShape='brush',fogBrushPixels=160;
   const brushRadius=()=>{const map=row?.state.map;const pixels=table.grid.mode==='manual'&&map?.width&&map?.height?Math.max(map.width/table.grid.columns,map.height/table.grid.rows):table.grid.cellPixels;return clamp(fogBrushPixels/(2*pixels),.001,8);};
@@ -95,7 +118,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
   let tokenListKey=null,tokenListMarkup='';
   let busy=false;
   let focusAfterMove='';
-  let measurement;
+  let measurement=null,measureMode='direct';
   const touches=new Map();
 
   function toolButton(id,label) {
@@ -121,17 +144,26 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     return {x:move.from.x+(move.position.x-move.from.x)*progress,y:move.from.y+(move.position.y-move.from.y)*progress};
   }
   const movingRemotely=()=>[...remoteMoves.values()].some(move=>move.active&&move.duration&&clock()-move.receivedAt<move.duration);
-  function visualTokens(){return (row.state.tokens||[]).map(token=>({...token,...(gesture?.kind==='token'&&gesture.item.id===token.id?gesture.previewPosition||{}:localPlacement?.id===token.id?localPlacement.position:remoteMoves.get(token.id)?.active?remotePosition(token):{}),rotation:displayedRotation(token)}));}
-  function tokenShown(token,tokens=visualTokens(),sources=visionSources(row,tokens,{selected,preview:playerPreview})){
-    return !table.darkness.enabled||row.master||token.characterId&&token.characterId===row.characterId||tokenInVision(token,sources,table.grid);
+  function patrolOffset(token){
+    if(!token.motion)return {};
+    const {at,ms,vx,vy}=token.motion,dt=clamp((row.serverTime||at)+clock()-sampleClock-at,0,ms);
+    return {x:token.x+vx*dt,y:token.y+vy*dt};
   }
-  function queueVision(){if(visionPending)return;visionPending=true;const generation=visionGeneration;const paint=()=>{if(generation!==visionGeneration)return;visionPending=false;visionFrame=null;if(root&&world){paintVision();if(rotationAnimations.size||movingRemotely())queueVision();}};if(typeof globalThis.requestAnimationFrame==='function')visionFrame=globalThis.requestAnimationFrame(paint);else queueMicrotask(paint);}
+  function visualTokens(){return (row.state.tokens||[]).map(token=>({...token,...(gesture?.kind==='token'&&gesture.item.id===token.id?gesture.previewPosition||{}:localPlacement?.id===token.id?localPlacement.position:remoteMoves.get(token.id)?.active?remotePosition(token):patrolOffset(token)),rotation:displayedRotation(token)}));}
+  function tokenShown(token,tokens=visualTokens(),sources=visionSources(row,tokens,{selected,preview:playerPreview})){
+    return !table.darkness.enabled&&!(table.fog.enabled&&table.fog.mode==='war')||row.master&&!playerPreview||token.characterId&&token.characterId===row.characterId||tokenInVision(token,sources,table.grid,table.walls);
+  }
+  function queueVision(){if(visionPending)return;visionPending=true;const generation=visionGeneration;const paint=()=>{if(generation!==visionGeneration)return;visionPending=false;visionFrame=null;if(root&&world){paintVision();if(rotationAnimations.size||movingRemotely()||typeof requestAnimationFrame==='function'&&row.state.tokens.some(t=>t.motion&&(row.serverTime||t.motion.at)+clock()-sampleClock<t.motion.at+t.motion.ms))queueVision();}};if(typeof globalThis.requestAnimationFrame==='function')visionFrame=globalThis.requestAnimationFrame(paint);else queueMicrotask(paint);}
   function paintVision(){
     const tokens=visualTokens(),byId=new Map(tokens.map(token=>[token.id,token])),sources=visionSources(row,tokens,{selected,preview:playerPreview}),shown=new Map(tokens.map(token=>[token.id,tokenShown(token,tokens,sources)])),host=root.querySelector('.vtt-darkness-host');
     if(!row.master&&selected&&!tokens.some(token=>token.id===selected&&shown.get(token.id))){selected='';const selection=root.querySelector('[data-table-selection]');if(selection)selection.innerHTML=selectedMarkup();}
-    updateDarkness(host,row,table,tokens,{selected,preview:playerPreview});
+    const drags=new Map();
+    for(const [id,move] of remoteMoves)if(move.active)drags.set(id,move.dragId);
+    if(localPlacement?.dragId)drags.set(localPlacement.id,localPlacement.dragId);
+    if(gesture?.kind==='token'&&gesture.moved)drags.set(gesture.item.id,gesture.dragId);
+    updateDarkness(host,row,table,tokens,{selected,preview:playerPreview,drags});
     updateVisionCones(root.querySelector('.vtt-vision-cones-host'),row,table,tokens,{selected,preview:playerPreview,showCones});
-    const sharing=root.querySelector('[data-table-action="visionShare"]');if(sharing){sharing.setAttribute('aria-pressed',String(table.darkness.mode==='group'));sharing.setAttribute('title',table.darkness.mode==='group'?'Voltar à visão individual dos jogadores':'Compartilhar visão entre jogadores');const label=sharing.querySelector?.('[data-vision-share-label]');if(label)label.textContent=table.darkness.mode==='group'?'Visão: compartilhada':'Visão: individual';}
+    const sharing=root.querySelector('[data-table-action="visionShare"]');if(sharing){sharing.setAttribute('aria-pressed',String(table.darkness.mode==='group'));sharing.setAttribute('title',table.darkness.mode==='group'?'Voltar à visão individual dos jogadores':'Compartilhar visão entre jogadores');const label=sharing.querySelector?.('[data-vision-share-label]');if(label)label.textContent=table.darkness.mode==='teams'?'Visão: por grupos':table.darkness.mode==='group'?'Visão: compartilhada':'Visão: individual';}
     const cones=root.querySelector('[data-table-action="visionCones"]');if(cones){cones.setAttribute('aria-pressed',String(showCones));cones.disabled=!table.darkness.enabled||playerPreview;}
     for(const node of root.querySelectorAll('[data-table-token]')){
       const token=byId.get(node.dataset.tableToken);if(!token)continue;
@@ -144,53 +176,45 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       tokenPaint.set(node,{x:token.x,y:token.y,rotation,visible});
     }
     const selectedToken=tokens.find(token=>token.id===selected);
-    if(selectedToken){const output=root.querySelector('[data-facing-value]'),slider=root.querySelector('[data-table-facing]');if(output)output.textContent=(Math.round(normalizeRotation(selectedToken.rotation))%360)+'°';if(slider&&globalThis.document?.activeElement!==slider)slider.value=String(Math.round(normalizeRotation(rotationTarget(selected)))%360);}
+    if(selectedToken){const output=root.querySelector('[data-facing-value]');if(output)output.textContent=(Math.round(normalizeRotation(selectedToken.rotation))%360)+'°';}
     const list=root.querySelector('[data-table-token-list]');if(list){const markup=tokenList(tokens,shown);if(list.innerHTML!==markup)list.innerHTML=markup;}
-    const hint=root.querySelector('[data-vision-hint]');if(hint){hint.hidden=!table.darkness.enabled;if(table.darkness.enabled){const mode=table.darkness.mode==='group'?'Visão compartilhada entre jogadores':'Visão individual';hint.textContent=row.master?(playerPreview?mode+' · Prévia dos jogadores; as guias do mestre estão ocultas.':mode+(showCones?' · Cones de todos os tokens. Tracejado indica token oculto dos jogadores.':' · Cones ocultados apenas nesta tela.')):visionSources(row,tokens).length?mode+' · Selecione seu token para ajustar a direção.':'Sem token de visão nesta cena. Peça ao mestre para vincular seu personagem a um token.';}}
+    const hint=root.querySelector('[data-vision-hint]');if(hint){hint.hidden=!table.darkness.enabled;if(table.darkness.enabled){const mode=table.darkness.mode==='teams'?'Visão por grupos':table.darkness.mode==='group'?'Visão compartilhada entre jogadores':'Visão individual';hint.textContent=row.master?(playerPreview?mode+' · Prévia dos jogadores; as guias do mestre estão ocultas.':mode+(showCones?' · Cones de todos os tokens. Tracejado indica token oculto dos jogadores.':' · Cones ocultados apenas nesta tela.')):visionSources(row,tokens).length?mode+' · Selecione seu token para ajustar a direção.':'Sem token de visão nesta cena. Peça ao mestre para vincular seu personagem a um token.';}}
   }
-  function mayRotate(token){return Boolean(token&&(row.master||token.characterId===row.characterId&&!token.locked&&!token.hidden&&token.canMove!==false));}
+  function mayRotate(token){return Boolean(token&&token.kind!=='item'&&(row.master||token.characterId===row.characterId&&!token.locked&&!token.hidden&&token.canMove!==false));}
   function rotationTarget(id){return rotationPreview?.id===id?rotationPreview.rotation:row.state.tokens.find(t=>t.id===id)?.rotation||0;}
-  function previewRotation(id,rotation){
-    const token=row.state.tokens.find(t=>t.id===id);if(!mayRotate(token))return;
-    if(gesture?.kind==='token'&&gesture.item.id===id){gesture.rotation=normalizeRotation(rotation);sendTokenPreview(gesture,'move');return;}
-    if(turnPreview&&turnPreview.id!==id)finishTurn('cancel');
-    turnPreview??={id,dragId:globalThis.crypto?.randomUUID?.()||String(Date.now())+'-'+(++dragSequence),seq:0};
-    turnPreview.rotation=normalizeRotation(rotation);sendTurn('move');
-  }
-  function sendTurn(phase){
-    if(!turnPreview)return;const token=visualTokens().find(t=>t.id===turnPreview.id);if(!token)return;
-    try{realtime({type:'tokenPreview',id:token.id,x:token.x,y:token.y,rotation:turnPreview.rotation,dragId:turnPreview.dragId,seq:++turnPreview.seq,phase})?.catch?.(()=>{});}catch{}
-  }
-  function finishTurn(phase){const dragId=turnPreview?.dragId;sendTurn(phase);turnPreview=null;return dragId;}
   async function rotateToken(id,rotation){
     const token=row.state.tokens.find(t=>t.id===id);if(!mayRotate(token)){if(rotationPreview?.id===id){rotationPreview=null;rotationAnimations.delete(id);queueVision();}return;}
     rotation=normalizeRotation(rotation);animateRotation(id,rotation);
     if(gesture?.kind==='token'&&gesture.item.id===id){gesture.rotation=rotation;sendTokenPreview(gesture,'move');}
-    const dragId=turnPreview?.id===id?finishTurn('end'):undefined;
-    const intent={id,rotation,dragId,generation:visionGeneration,sceneId:row.state.sceneId};rotationPreview=intent;pendingRotation=intent;queueVision();
+    const intent={id,rotation,generation:visionGeneration,sceneId:row.state.sceneId};rotationPreview=intent;pendingRotation=intent;queueVision();
     if(rotationSending)return;
     rotationSending=true;let sent;
-    try{while(pendingRotation){sent=pendingRotation;pendingRotation=null;if(sent.generation!==visionGeneration)break;if(!mayRotate(row.state.tokens.find(t=>t.id===sent.id)))continue;try{await action('tokenRotate',{id:sent.id,rotation:sent.rotation,...(sent.dragId?{dragId:sent.dragId}:{}),...(sent.sceneId?{sceneId:sent.sceneId}:{})});}catch(error){if(sent.generation===visionGeneration){rotationAnimations.delete(sent.id);report(error.message);}}}}
+    try{while(pendingRotation){sent=pendingRotation;pendingRotation=null;if(sent.generation!==visionGeneration)break;if(!mayRotate(row.state.tokens.find(t=>t.id===sent.id)))continue;try{await action('tokenRotate',{id:sent.id,rotation:sent.rotation,...(sent.sceneId?{sceneId:sent.sceneId}:{})});}catch(error){if(sent.generation===visionGeneration){rotationAnimations.delete(sent.id);report(error.message);}}}}
     finally{rotationSending=false;if(rotationPreview===sent)rotationPreview=null;queueVision();}
   }
 
   function tokenPortrait(token){return token.kind==='item'&&token.loot?.item?.portrait?.id||(!token.icon||token.icon==='auto')&&(token.portrait?.id||row.state.characters?.find(character=>character.id===token.characterId)?.portrait?.id);}
 
+  function activeCombatant(){
+    const combat=row.state.table?.combat;
+    return combat?.entries?.[combat.active];
+  }
+
   function tokenMarkup(token) {
     const {grid}=table;
     const size=Number(token.size)||1;
     const status=(token.statuses||[]).slice(0,3).map(value=>'<span>'+escape(value)+'</span>').join('');
-    return '<button type="button" class="vtt-token '+escape(token.color||'violet')+(token.hidden?' is-hidden':'')+(token.locked?' is-locked':'')+(selected===token.id?' is-selected':'')+(token.kind==='item'?' is-item':'')+(!tokenShown(token)?' is-out-of-vision':'')+'" '+
+    return '<button type="button" class="vtt-token '+escape(token.color||'violet')+(token.hidden?' is-hidden':'')+(token.locked?' is-locked':'')+(selected===token.id?' is-selected':'')+(activeCombatant()?.tokenId===token.id?' is-active-turn':'')+(token.kind==='item'?' is-item':'')+(!tokenShown(token)?' is-out-of-vision':'')+'" '+
       'data-table-token="'+escape(token.id)+'" style="--vtt-facing:'+normalizeRotation(token.rotation)+'deg;left:'+token.x/grid.columns*100+'%;top:'+token.y/grid.rows*100+'%;width:'+size/grid.columns*100+'%;height:'+size/grid.rows*100+'%" '+
       'aria-label="'+escape(token.name)+(token.locked?' · Bloqueado':'')+(token.hidden?' · Oculto':'')+'" title="'+escape(token.name)+'">'+
-      '<span '+(token.kind==='item'?'hidden ':'')+'class="vtt-token-facing" aria-hidden="true"><span class="vtt-facing-handle" data-table-facing-handle></span></span><span class="vtt-token-face"><span class="vtt-token-letter">'+(tokenIconSvg(token.icon)||escape(token.name?.[0]?.toUpperCase()||'✦'))+'</span>'+
+      '<span '+(token.kind==='item'?'hidden ':'')+'class="vtt-token-facing" aria-hidden="true"></span><span class="vtt-token-face"><span class="vtt-token-letter">'+(tokenIconSvg(token.icon)||escape(token.name?.[0]?.toUpperCase()||'✦'))+'</span>'+
       (tokenPortrait(token)?'<img alt="" hidden data-table-token-image="'+escape(tokenPortrait(token))+'">':'')+
       (token.kind==='item'&&!tokenPortrait(token)&&/^https?:\/\//i.test(token.loot?.item?.portrait||'')?'<img alt="" hidden data-loot-portrait src="'+escape(token.loot.item.portrait)+'" referrerpolicy="no-referrer" decoding="async">':'')+'</span><span class="vtt-token-label">'+escape(token.name)+'</span>'+
       (status?'<span class="vtt-token-status">'+status+'</span>':'')+'</button>';
   }
 
   function fogMarkup() {
-    if (!table.fog.enabled) return '';
+    if (!table.fog.enabled||table.fog.mode==='war') return '';
     const {columns,rows}=table.grid;
     const id='vtt-fog-'+String(row.id||'example').replace(/[^a-zA-Z0-9_-]/g,'');
     const paint=(revealed,hidden)=>table.fog.revealed.map(rect=>fogStrokeShape({...rect,kind:'rectangle'},revealed)).join('')+(table.fog.strokes||[]).map(stroke=>fogStrokeShape(stroke,stroke.operation==='reveal'?revealed:hidden)).join('');
@@ -216,14 +240,57 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       '<g mask="url(#'+id+'-revealed)"><rect width="'+columns+'" height="'+rows+'" fill="url(#'+id+'-tone)" mask="url(#'+id+'-feather)"/></g></g></svg>';
   }
 
+  function lightMarkers(){
+    return table.lights.map(l=>'<circle cx="'+l.x+'" cy="'+l.y+'" r=".15" fill="'+l.color+'" stroke="white" stroke-width="2" vector-effect="non-scaling-stroke"/>').join('');
+  }
+  function pickLight(p){
+    const bounds=world.getBoundingClientRect();
+    let nearest=null,best=14;
+    for(const light of table.lights){
+      const d=Math.hypot((light.x-p.x)*bounds.width/table.grid.columns,(light.y-p.y)*bounds.height/table.grid.rows);
+      if(d<=best){best=d;nearest=light;}
+    }
+    return nearest;
+  }
+  function lampAt(active,end){
+    const distance=Math.hypot(end.x-active.start.x,end.y-active.start.y);
+    return {...active.start,scope:lightScope||active.light?.scope||'global',radius:distance<.25?(active.light?.radius||3):Math.min(distance,80),
+      angle:lightAngle||active.light?.angle||360,rotation:distance<.25?(active.light?.rotation||0):normalizeRotation(Math.atan2(end.y-active.start.y,end.x-active.start.x)*180/Math.PI+90)};
+  }
+  function wallLine(w){
+    const color=w.kind==='door'?(w.open?'#77efd4':'#ffd17b'):'#c6b6ff';
+    const line='x1="'+w.x+'" y1="'+w.y+'" x2="'+w.toX+'" y2="'+w.toY+'" vector-effect="non-scaling-stroke" stroke-linecap="round"';
+    return '<line '+line+' stroke="#151122" stroke-width="6"/><line '+line+' stroke="'+color+'" stroke-width="3" '+(w.open?'stroke-dasharray="3 6"':'')+'/>';
+  }
+
+  // Measure picks in screen pixels so editing works at any zoom.
+  function wallPick(p,endpoints=false){
+    const bounds=world.getBoundingClientRect(),sx=bounds.width/table.grid.columns,sy=bounds.height/table.grid.rows;
+    let best=endpoints?8:14,hit=null;
+    for(const wall of table.walls){
+      if(!endpoints&&wallMode==='toggle'&&wall.kind!=='door')continue;
+      const dx=(wall.toX-wall.x)*sx,dy=(wall.toY-wall.y)*sy;
+      const t=clamp(((p.x-wall.x)*sx*dx+(p.y-wall.y)*sy*dy)/(dx*dx+dy*dy),0,1);
+      for(const fraction of endpoints?[0,1]:[t]){
+        const x=wall.x+(wall.toX-wall.x)*fraction,y=wall.y+(wall.toY-wall.y)*fraction;
+        const distance=Math.hypot((p.x-x)*sx,(p.y-y)*sy);
+        if(distance<=best){best=distance;hit={wall,x,y};}
+      }
+    }
+    return hit;
+  }
+  function wallPoint(p){const hit=wallPick(p,true);return hit?{x:hit.x,y:hit.y}:p;}
+
   function sceneMarkup() {
     const {columns,rows,visible}=table.grid;
     const drawings=table.drawings.map(item=>drawingShape(item)).join('');
     return '<div class="vtt-world'+(row.master?' is-master':'')+(row.master&&playerPreview?' is-player-preview':'')+'" style="--vtt-fog-opacity:'+fogOpacity+';aspect-ratio:'+columns+'/'+rows+';--vtt-columns:'+columns+';--vtt-rows:'+rows+'">'+
-      '<div class="vtt-map" aria-hidden="true"></div>'+
+      '<div class="vtt-map" aria-hidden="true"></div>'+renderAtmosphere(table.atmosphere)+
       '<div class="vtt-grid'+(visible?'':' is-off')+'" aria-hidden="true"></div>'+
       '<svg class="vtt-drawings" viewBox="0 0 '+columns+' '+rows+'" preserveAspectRatio="none" aria-hidden="true">'+drawings+'</svg>'+
       '<div class="vtt-token-layer">'+(row.state.tokens||[]).map(tokenMarkup).join('')+'</div><div class="vtt-loot-effects" aria-hidden="true"></div><div class="vtt-darkness-host">'+renderDarkness(row,table,row.state.tokens||[],{selected,preview:playerPreview})+'</div>'+fogMarkup()+'<div class="vtt-vision-cones-host">'+renderVisionCones(row,table,row.state.tokens||[],{selected,preview:playerPreview,showCones})+'</div>'+
+      (row.master?'<svg class="vtt-light-markers" viewBox="0 0 '+columns+' '+rows+'" preserveAspectRatio="none" aria-hidden="true">'+lightMarkers()+'</svg>':'')+
+      (row.master?'<svg class="vtt-walls" viewBox="0 0 '+columns+' '+rows+'" preserveAspectRatio="none" aria-hidden="true">'+table.walls.map(wallLine).join('')+'</svg>':'')+
       '<svg class="vtt-preview" viewBox="0 0 '+columns+' '+rows+'" preserveAspectRatio="none" aria-hidden="true"></svg>'+
       '<div class="vtt-pings" aria-hidden="true"></div></div>';
   }
@@ -237,12 +304,18 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       '<small>'+escape((token.statuses||[]).join(' · ')||(token.hidden?'Oculto':token.locked?'Bloqueado':'Na cena'))+'</small></span></button></li>').join('')+'</ul>':'<p class="vtt-empty">Nenhum token visível nesta cena.</p>';
   }
 
+  function myCombatTurn(){
+    const entry=activeCombatant();
+    return Boolean(!row.master&&row.characterId&&entry?.tokenId&&row.state.tokens.some(token=>token.id===entry.tokenId&&token.characterId===row.characterId));
+  }
   function combatMarkup() {
     const combat=table.combat;
     const hiddenTurn=row.state.table?.combat?.active===-1;
     const entries=combat.entries;
+    const active=activeCombatant(),myTurn=myCombatTurn();
+    const endTurn=myTurn?'<button type="button" class="btn primary" data-table-action="combatEndOwn" data-entry="'+escape(active.id)+'" data-round="'+combat.round+'">Encerrar meu turno</button>':'';
     return '<section class="vtt-side-section" data-table-combat><div class="vtt-side-heading"><h2>Iniciativa</h2>'+ (row.master?button('Organizar','tableCombat','','flag'):'')+'</div>'+
-      (entries.length?'<div class="vtt-round">Rodada '+combat.round+(hiddenTurn?' · Turno do mestre':'')+'</div><ol class="vtt-combat">'+entries.map((entry,index)=>'<li class="'+(!hiddenTurn && index===combat.active?'current':'')+'"><span>'+escape(entry.name)+'</span><strong>'+entry.value+'</strong>'+(!hiddenTurn && index===combat.active?'<small>Turno atual</small>':'')+'</li>').join('')+'</ol>'+(row.master?'<div class="vtt-turn-controls"><button type="button" class="btn small" data-table-action="combatPrevious" aria-label="Voltar um turno">←</button><button type="button" class="btn primary" data-table-action="combatNext">Próximo turno →</button></div>':''):'<p class="vtt-empty">Organize a ordem dos participantes para acompanhar o combate.</p>')+'</section>';
+      (entries.length?'<div class="vtt-round">Rodada '+combat.round+(hiddenTurn?' · Turno do mestre':myTurn?' · Sua vez':'')+'</div><ol class="vtt-combat">'+entries.map((entry,index)=>'<li class="'+(!hiddenTurn && index===combat.active?'current':'')+'"><span>'+escape(entry.name)+'</span><strong>'+entry.value+'</strong>'+(!hiddenTurn && index===combat.active?'<small>Turno atual</small>':'')+'</li>').join('')+'</ol>'+(row.master?'<div class="vtt-turn-controls"><button type="button" class="btn small" data-table-action="combatPrevious" aria-label="Voltar um turno">←</button><button type="button" class="btn primary" data-table-action="combatNext">Próximo turno →</button></div>':endTurn):'<p class="vtt-empty">Organize a ordem dos participantes para acompanhar o combate.</p>')+'</section>';
   }
 
   function rollCharacters() {
@@ -295,6 +368,24 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     }catch(error){report(error.message);}
   }
 
+  function routeControls(token){
+    if(!row.master||token.characterId&&!row.state.characters?.some(c=>c.id===token.characterId&&c.characterType==='npc'))return '';
+    const control=(key,title,disabled=false)=>'<button type="button" class="btn small" data-patrol="'+key+'" '+(disabled?'disabled':'')+'>'+title+'</button>';
+    if(routeDraft?.id===token.id){
+      const {points,mode,speed}=routeDraft;
+      return '<div class="vtt-route-controls"><strong>Rota · '+points.length+' pontos</strong><small>Toque no mapa para marcar cada parada.</small><label>Percurso <select data-route-mode><option value="return">Ida e volta</option><option value="loop" '+(mode==='loop'?'selected':'')+'>Circuito fechado</option></select></label><label>Ritmo <select data-route-speed>'+[[.5,'Passeio'],[1,'Caminhada'],[2,'Rápido']].map(([n,label])=>'<option value="'+n+'" '+(n===speed?'selected':'')+'>'+label+'</option>').join('')+'</select></label>'+control('undo','Desfazer ponto',points.length<2)+control('start','Iniciar rota',points.length<2)+control('cancel','Cancelar')+'</div>';
+    }
+    return '<div class="vtt-route-controls">'+control('draw',token.patrol?'Redesenhar rota':'Traçar rota')+(token.patrol?control(token.patrol.started?'pause':'resume',token.patrol.started?'Pausar rota':'Retomar rota')+control('clear','Remover rota'):'')+'</div>';
+  }
+  function paintRoute(){
+    const preview=root?.querySelector('.vtt-preview');
+    if(!preview)return;
+    if(routeDraft){
+      const half=routeDraft.size/2,points=routeDraft.points.map(p=>[p.x+half,p.y+half]);
+      preview.innerHTML='<polyline points="'+points.join(' ')+'" fill="none" stroke="#76e3c3" stroke-width="3" stroke-dasharray="6 3" vector-effect="non-scaling-stroke"/>'+points.map(([x,y])=>'<circle cx="'+x+'" cy="'+y+'" r=".14" fill="#76e3c3"/>').join('');
+    }else preview.replaceChildren();
+    root.querySelector('[data-table-selection]').innerHTML=selectedMarkup();
+  }
   function selectedMarkup() {
     const token=(row.state.tokens||[]).find(token=>token.id===selected);
     if (!token) return '<p class="vtt-selection-empty">Selecione um token no mapa ou na lista.</p>';
@@ -304,14 +395,16 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       [['up','↑','cima'],['left','←','esquerda'],['down','↓','baixo'],['right','→','direita']].map(([direction,symbol,label])=>
         '<button type="button" class="btn" data-table-move="'+direction+'" aria-label="Mover '+escape(token.name)+' para '+label+'">'+symbol+'</button>'
       ).join('')+'</div>':'';
-    return '<div class="vtt-selection"><div><strong>'+escape(token.name)+'</strong><small>'+escape((row.master?(token.hidden?'Oculto dos jogadores · ':'Compartilhado com a mesa · '):'')+((token.statuses||[]).join(' · ')||'Sem condições'))+'</small></div><div class="actions">'+
+    return '<div class="vtt-selection"><div><strong>'+escape(token.name)+'</strong>'+(row.master&&token.realName?'<small>Nome verdadeiro · '+escape(token.realName)+'</small>':'')+'<small>'+escape((row.master?(token.hidden?'Oculto dos jogadores · ':'Compartilhado com a mesa · '):'')+((token.statuses||[]).join(' · ')||'Sem condições'))+'</small></div><div class="actions">'+
       (row.state.characters?.some(character=>character.id===token.characterId&&character.access!=='summary')?'<button type="button" class="btn small" data-table-character="'+escape(token.characterId)+'">Abrir ficha</button>':'')+
-      (row.master?'<button type="button" class="btn small" data-table-action="tokenVisibility" aria-pressed="'+Boolean(token.hidden)+'">'+(token.hidden?'Mostrar aos jogadores':'Ocultar dos jogadores')+'</button>'+button('Editar token','tableTokenEdit',token.id)+(row.state.characters?.some(character=>character.id===token.characterId&&character.claimed&&!character.hidden)?button('Mensagem privada','tableTokenMessage',token.id):''):'')+'</div>'+movePad+(movable?'<div class="vtt-rotation-controls" role="group" aria-label="Direção do token"><button type="button" class="btn small" data-table-action="rotateLeft" aria-label="Girar 15 graus à esquerda">↶</button><label>Direção <output data-facing-value>'+Math.round(normalizeRotation(token.rotation))+'°</output><input type="range" min="0" max="359" step="1" value="'+Math.round(normalizeRotation(token.rotation))+'" data-table-facing aria-label="Direção em graus"></label><button type="button" class="btn small" data-table-action="rotateRight" aria-label="Girar 15 graus à direita">↷</button><small>0° norte · Q/E ou Shift + roda · Ctrl para precisão</small></div>':'')+(row.master&&table.darkness.enabled?'<button type="button" class="btn small" data-table-action="visionPreview" aria-pressed="'+playerPreview+'">'+(playerPreview?'Voltar à visão do mestre':table.darkness.mode==='group'?'Prévia da visão compartilhada':'Ver pela visão deste token')+'</button>':'')+'</div>';
+      (row.master?'<button type="button" class="btn small" data-table-action="tokenVisibility" aria-pressed="'+Boolean(token.hidden)+'">'+(token.hidden?'Mostrar aos jogadores':'Ocultar dos jogadores')+'</button>'+button('Editar token','tableTokenEdit',token.id)+(row.state.characters?.some(character=>character.id===token.characterId&&character.claimed&&!character.hidden)?button('Mensagem privada','tableTokenMessage',token.id):''):'')+'</div>'+routeControls(token)+movePad+(movable?'<div class="vtt-rotation-controls" role="group" aria-label="Direção do token"><button type="button" class="btn small" data-table-action="rotateLeft" aria-label="Girar 15 graus à esquerda">Q ↶</button><span>Direção <output data-facing-value>'+Math.round(normalizeRotation(token.rotation))+'°</output></span><button type="button" class="btn small" data-table-action="rotateRight" aria-label="Girar 15 graus à direita">E ↷</button><small>Q/E para girar · Ao arrastar, use a roda</small></div>':'')+(row.master&&table.darkness.enabled?'<button type="button" class="btn small" data-table-action="visionPreview" aria-pressed="'+playerPreview+'">'+(playerPreview?'Voltar à visão do mestre':table.darkness.mode==='group'?'Prévia da visão compartilhada':'Ver pela visão deste token')+'</button>':'')+'</div>';
   }
 
   function drawingOptions() {
     if (!row.master) return '';
-    return '<div class="vtt-drawing-options" '+(tool==='draw'?'':'hidden')+'><label>Traço<select data-table-shape><option value="freehand" '+(shape==='freehand'?'selected':'')+'>Desenho livre</option><option value="line" '+(shape==='line'?'selected':'')+'>Linha</option><option value="rectangle" '+(shape==='rectangle'?'selected':'')+'>Retângulo</option><option value="circle" '+(shape==='circle'?'selected':'')+'>Elipse</option></select></label><label>Cor<input type="color" value="'+drawingColor+'" data-table-color></label><button type="button" class="btn small danger" data-table-action="drawingUndo">Desfazer último</button><button type="button" class="btn small danger" data-table-action="tableDrawingClear">Limpar desenhos</button></div>'+
+    return '<div class="vtt-light-options" '+(tool==='lights'?'':'hidden')+'><label><input data-light-enabled type="checkbox" '+(table.darkness.enabled?'checked':'')+'> Escuridão ativa</label><label>Escuridão ambiente <output data-light-level-output>'+table.darkness.level+'%</output><input data-light-level type="range" min="0" max="100" value="'+table.darkness.level+'"></label><label>Emissores <select data-light-mode><option value="draw">Colocar ou ajustar</option><option value="delete" '+(lightMode==='delete'?'selected':'')+'>Apagar</option></select></label><label>Formato <select data-light-angle>'+[[0,'Atual (nova luz circular)'],[360,'Circular'],[35,'Facho estreito · 35°'],[90,'Cone amplo · 90°'],[180,'Meia-luz · 180°']].map(([n,label])=>'<option value="'+n+'" '+(n===lightAngle?'selected':'')+'>'+label+'</option>').join('')+'</select></label><label>Visibilidade <select data-light-scope>'+[['','Manter atual (nova luz global)'],['global','Global · além do alcance de visão'],['local','Local · dentro do campo de visão']].map(([value,label])=>'<option value="'+value+'" '+(value===lightScope?'selected':'')+'>'+label+'</option>').join('')+'</select></label><label>Cor <input data-light-color type="color" value="'+lightColor+'"></label></div>'+
+      '<div class="vtt-wall-options" '+(tool==='walls'?'':'hidden')+'><label>Barreiras de visão <select data-wall-mode>'+[['wall','Desenhar parede'],['door','Desenhar porta fechada'],['toggle','Abrir ou fechar porta'],['delete','Excluir segmento']].map(([value,label])=>'<option value="'+value+'" '+(wallMode===value?'selected':'')+'>'+label+'</option>').join('')+'</select></label><small>Ative a escuridão para aplicar as barreiras à visão.</small></div>'+
+      '<div class="vtt-drawing-options" '+(tool==='draw'?'':'hidden')+'><label>Traço<select data-table-shape><option value="freehand" '+(shape==='freehand'?'selected':'')+'>Desenho livre</option><option value="line" '+(shape==='line'?'selected':'')+'>Linha</option><option value="rectangle" '+(shape==='rectangle'?'selected':'')+'>Retângulo</option><option value="circle" '+(shape==='circle'?'selected':'')+'>Elipse</option></select></label><label>Cor<input type="color" value="'+drawingColor+'" data-table-color></label><button type="button" class="btn small danger" data-table-action="drawingUndo">Desfazer último</button><button type="button" class="btn small danger" data-table-action="tableDrawingClear">Limpar desenhos</button></div>'+
       '<div class="vtt-fog-options" '+(tool==='fog'?'':'hidden')+'><label>Formato<select data-fog-shape><option value="brush" '+(fogShape==='brush'?'selected':'')+'>Pincel livre</option><option value="rectangle" '+(fogShape==='rectangle'?'selected':'')+'>Retângulo na grade</option></select></label><label data-fog-brush-options '+(fogShape==='brush'?'':'hidden')+'>Diâmetro do pincel <output data-fog-brush-size>'+fogBrushPixels+' px</output><input type="range" data-fog-brush min="10" max="300" step="5" value="'+fogBrushPixels+'"></label><label>No toque<select data-table-fog><option value="reveal" '+(fogOperation==='reveal'?'selected':'')+'>Revelar</option><option value="hide" '+(fogOperation==='hide'?'selected':'')+'>Ocultar</option></select></label><button type="button" class="btn small" data-table-action="fogToggle">'+(table.fog.enabled?'Desativar névoa':'Ativar névoa')+'</button><button type="button" class="btn small danger" data-table-action="fogReset">Cobrir tudo</button><button type="button" class="btn small" data-table-action="fogRevealAll">Revelar tudo</button><button type="button" class="btn small" data-table-action="fogUndo" '+(table.fog.history.length?'':'disabled')+'>Desfazer névoa</button><button type="button" class="btn small" data-table-action="fogPreview" aria-pressed="'+playerPreview+'">'+(playerPreview?'Voltar à visão do mestre':'Prévia dos jogadores')+'</button><label>Opacidade para o mestre<input type="range" min="20" max="90" value="'+Math.round(fogOpacity*100)+'" data-fog-opacity></label><p class="vtt-fog-legend"><span>Verde revela</span><span>Laranja oculta</span> · Mouse: esquerdo revela, direito oculta · Esc cancela</p></div>';
   }
 
@@ -325,15 +418,15 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       portraitURLs.clear();
     }
     if (sceneMap!==(nextRow.state.sceneId||'')+'/'+(nextRow.state.map?.id||'')) {sceneMap=(nextRow.state.sceneId||'')+'/'+(nextRow.state.map?.id||'');zoom=1;offset={x:0,y:0};measurement=null;playerPreview=false;}
-    row=nextRow;
+    row=nextRow;sampleClock=clock();
     table=normalizeTable(row.state);
     rollRevision=Math.max(rollRevision,row.rev||0);historyMarkup=renderRollHistory(row);
     if (!row.master && ['draw','fog'].includes(tool)) tool='select';
     if (!(row.state.tokens||[]).some(token=>token.id===selected)) selected='';
-    return '<section class="vtt"><div class="vtt-heading"><div><p class="vtt-eyebrow" data-table-campaign-name>'+escape(row.state.name)+'</p><h1>Mesa virtual</h1><p class="subtitle" data-table-scene-name>'+escape([row.state.sessionName,row.state.scene].filter(Boolean).join(' · ')||'Cena atual')+'</p></div><div class="actions">'+'<button type="button" class="btn small" data-table-focus-rolls>'+icon('dice')+'Dados da ficha</button>'+(row.master?button('Enviar mapa','upload','map','image')+button('Novo token','tableTokenAdd','','plus')+button('Colocar item','lootPlace','','plus'):'')+'</div></div>'+
+    return '<section class="vtt"><div class="vtt-heading"><div><p class="vtt-eyebrow" data-table-campaign-name>'+escape(row.state.name)+'</p><h1>Mesa virtual</h1><p class="subtitle" data-table-scene-name>'+escape([row.state.sessionName,row.state.scene].filter(Boolean).join(' · ')||'Cena atual')+'</p></div><div class="actions">'+'<button type="button" class="btn small" data-table-focus-rolls>'+icon('dice')+'Dados da ficha</button>'+(row.master?button('Ambiente','tableAtmosphere','','darkness')+button('Enviar mapa','upload','map','image')+button('Novo token','tableTokenAdd','','plus')+button('Colocar item','lootPlace','','plus'):'')+'</div></div>'+
       '<div class="vtt-layout"><div class="vtt-scene-column"><section class="vtt-stage"><div class="vtt-toolbar" role="toolbar" aria-label="Ferramentas da mesa"><div class="vtt-tools">'+
-      toolButton('select','Selecionar')+toolButton('pan','Mover visão')+toolButton('measure','Medir')+toolButton('ping','Apontar')+(row.master?toolButton('draw','Desenhar')+toolButton('fog','Névoa'):'')+'</div>'+
-      '<div class="vtt-view-controls"><span class="vtt-connection" data-table-connection role="status" aria-live="polite">Conectando…</span><button class="vtt-tool" type="button" data-table-zoom="out" aria-label="Diminuir zoom" title="Diminuir zoom">'+icon('zoomOut')+'</button><span data-table-zoom-label>'+Math.round(zoom*100)+'%</span><button class="vtt-tool" type="button" data-table-zoom="in" aria-label="Aumentar zoom" title="Aumentar zoom">'+icon('zoomIn')+'</button><button class="vtt-tool" type="button" data-table-zoom="fit" aria-label="Ajustar mapa à tela" title="Ajustar mapa à tela">'+icon('fit')+'</button>'+(row.master?'<button class="vtt-tool" type="button" data-table-action="darknessToggle" aria-pressed="'+table.darkness.enabled+'" title="'+(table.darkness.enabled?'Desativar escuridão':'Ativar escuridão')+'" aria-label="'+(table.darkness.enabled?'Desativar escuridão':'Ativar escuridão')+'">'+icon('darkness')+'</button>':'')+(row.master?'<button type="button" class="vtt-tool vtt-vision-sharing" data-table-action="visionShare" aria-pressed="'+(table.darkness.mode==='group')+'" title="Compartilhar visão entre jogadores">'+icon('sharedVision')+'<span data-vision-share-label>'+(table.darkness.mode==='group'?'Visão: compartilhada':'Visão: individual')+'</span></button><button type="button" class="vtt-tool vtt-cones-control" data-table-action="visionCones" aria-pressed="'+showCones+'" title="Mostrar cones de todos os tokens, só para o mestre" '+(!table.darkness.enabled||playerPreview?'disabled':'')+'>'+icon('cones')+'<span>Cones</span></button>':'')+(row.master?'<button class="vtt-tool" type="button" data-act="tableSettings" aria-label="Configurar grade" title="Configurar grade">'+icon('settings')+'</button>':'')+'</div></div>'+drawingOptions()+
+      toolButton('select','Selecionar')+toolButton('pan','Mover visão')+toolButton('measure','Medir')+toolButton('ping','Apontar')+(row.master?toolButton('draw','Desenhar')+toolButton('fog','Névoa')+toolButton('walls','Paredes e portas')+toolButton('lights','Iluminação'):'')+'</div>'+
+      '<div class="vtt-view-controls"><span class="vtt-connection" data-table-connection role="status" aria-live="polite">Conectando…</span><button class="vtt-tool" type="button" data-table-zoom="out" aria-label="Diminuir zoom" title="Diminuir zoom">'+icon('zoomOut')+'</button><span data-table-zoom-label>'+Math.round(zoom*100)+'%</span><button class="vtt-tool" type="button" data-table-zoom="in" aria-label="Aumentar zoom" title="Aumentar zoom">'+icon('zoomIn')+'</button><button class="vtt-tool" type="button" data-table-zoom="fit" aria-label="Ajustar mapa à tela" title="Ajustar mapa à tela">'+icon('fit')+'</button>'+(row.master?'<button class="vtt-tool" type="button" data-table-action="darknessToggle" aria-pressed="'+table.darkness.enabled+'" title="'+(table.darkness.enabled?'Desativar escuridão':'Ativar escuridão')+'" aria-label="'+(table.darkness.enabled?'Desativar escuridão':'Ativar escuridão')+'">'+icon('darkness')+'</button>':'')+(row.master?'<button type="button" class="vtt-tool vtt-vision-sharing" data-table-action="visionShare" aria-pressed="'+(table.darkness.mode==='group')+'" title="Compartilhar visão entre jogadores">'+icon('sharedVision')+'<span data-vision-share-label>'+(table.darkness.mode==='teams'?'Visão: por grupos':table.darkness.mode==='group'?'Visão: compartilhada':'Visão: individual')+'</span></button><button type="button" class="vtt-tool vtt-cones-control" data-table-action="visionCones" aria-pressed="'+showCones+'" title="Mostrar cones de todos os tokens, só para o mestre" '+(!table.darkness.enabled||playerPreview?'disabled':'')+'>'+icon('cones')+'<span>Cones</span></button>':'')+(row.master?'<button class="vtt-tool" type="button" data-act="tableSettings" aria-label="Configurar grade" title="Configurar grade">'+icon('settings')+'</button>':'')+'</div></div><div class="vtt-measure-options" '+(tool==='measure'?'':'hidden')+'><label>Régua <select data-measure-mode><option value="direct">Linha direta</option><option value="path" '+(measureMode==='path'?'selected':'')+'>Percurso por pontos</option></select></label><button type="button" class="btn small" data-table-action="measureUndo" '+(measureMode==='path'?'':'hidden')+'>Desfazer ponto</button><button type="button" class="btn small" data-table-action="measureClear">Limpar medida</button></div><div class="vtt-ping-options" '+(tool==='ping'?'':'hidden')+'><label>Sinal no mapa <select data-ping-signal>'+Object.entries(pingNames).map(([key,label])=>'<option value="'+key+'" '+(key===pingSignal?'selected':'')+'>'+label+'</option>').join('')+'</select></label></div>'+drawingOptions()+
       '<div class="vtt-viewport" tabindex="0" role="region" aria-label="Mapa interativo. Use as ferramentas para medir, apontar e movimentar tokens.">'+sceneMarkup()+
       (!row.state.map?'<p class="vtt-map-hint">'+(row.master?'Envie um mapa ou use a grade para começar.':'A cena está pronta para os tokens.')+'</p>':'')+'</div>'+
       '<div class="vtt-statusbar"><span data-table-help role="status" aria-live="polite">'+help()+'</span><span>'+table.grid.columns+' × '+table.grid.rows+' células · '+table.grid.size+' '+escape(table.grid.unit)+' / célula'+(table.fog.enabled?' · Névoa ativa':'')+'</span></div><p class="vtt-vision-hint" data-vision-hint '+(table.darkness.enabled?'':'hidden')+'>'+(row.master?'Escuridão ativa · selecione um token para inspecionar seu campo de visão.':'Escuridão ativa · sua visão acompanha seus tokens. Use os controles de direção após selecionar seu token.')+'</p><div data-table-selection>'+selectedMarkup()+'</div></section><section class="vtt-roll-feed" data-table-roll-history aria-label="Histórico de rolagens">'+historyMarkup+'</section></div>'+
@@ -341,7 +434,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
   }
 
   function help() {
-    return ({select:'Arraste tokens · Dois dedos movem e ampliam · Setas movem a seleção',pan:'Arraste o mapa para mudar a visão',measure:'Arraste entre dois pontos para medir',ping:'Clique no mapa para apontar para o grupo',draw:shape==='freehand'?'Desenhe livremente · Esc cancela':'Arraste para desenhar uma forma',fog:(fogShape==='brush'?'Pincel livre · ':'Retângulo na grade · ')+'Mouse: esquerdo revela · direito oculta · No toque, escolha a operação · Esc cancela'})[tool]+' · Botão do meio: mover câmera';
+    return ({lights:lightMode==='delete'?'Toque no centro da luz para removê-la':'Toque para colocar uma luz ou arraste para apontar e definir o alcance · Comece no centro de uma luz para ajustá-la',walls:['wall','door'].includes(wallMode)?'Arraste de uma ponta à outra · Pontas próximas se conectam · Esc cancela':wallMode==='toggle'?'Toque na porta para abrir ou fechar':'Toque no segmento que deseja excluir',select:'Arraste tokens · Dois dedos movem e ampliam · Setas movem a seleção',pan:'Arraste o mapa para mudar a visão',measure:measureMode==='path'?'Toque no mapa para marcar cada ponto do percurso':'Arraste entre dois pontos para medir',ping:'Clique no mapa para apontar para o grupo',draw:shape==='freehand'?'Desenhe livremente · Esc cancela':'Arraste para desenhar uma forma',fog:(fogShape==='brush'?'Pincel livre · ':'Retângulo na grade · ')+'Mouse: esquerdo revela · direito oculta · No toque, escolha a operação · Esc cancela'})[tool]+' · Botão do meio: mover câmera';
   }
 
   function updateTransform() {
@@ -377,6 +470,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
   }
 
   function setSelection(id,focus=false) {
+    if(routeDraft&&routeDraft.id!==id){routeDraft=null;root.querySelector('.vtt-preview').replaceChildren();}
     selected=id;
     const linked=row.state.tokens.find(token=>token.id===id)?.characterId;
     if(rollCharacters().some(c=>c.id===linked)&&rollingCharacter!==linked) {rollingCharacter=linked;rollingMastery='';rollFormula=rollCharacter()?.preset==='herdeiros-destino'?'2d6':'1d20';}
@@ -412,10 +506,17 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
 
   function switchTool(next) {
     if(gesture)cancelPointer();
+    if(routeDraft){routeDraft=null;root.querySelector('[data-table-selection]').innerHTML=selectedMarkup();}
     tool=next;
     measurement=null;
     root.querySelector('.vtt-preview').replaceChildren();
     root.querySelectorAll('[data-table-tool]').forEach(node=>node.setAttribute('aria-pressed',String(node.dataset.tableTool===tool)));
+    const ruler=root.querySelector('.vtt-measure-options');if(ruler)ruler.hidden=tool!=='measure';
+    const pingOptions=root.querySelector('.vtt-ping-options');if(pingOptions)pingOptions.hidden=tool!=='ping';
+    const lightOptions=root.querySelector('.vtt-light-options');
+    if(lightOptions)lightOptions.hidden=tool!=='lights';
+    const wallOptions=root.querySelector('.vtt-wall-options');
+    if(wallOptions)wallOptions.hidden=tool!=='walls';
     const drawingOptions=root.querySelector('.vtt-drawing-options');
     const fogOptions=root.querySelector('.vtt-fog-options');
     if (drawingOptions) drawingOptions.hidden=tool!=='draw';
@@ -435,22 +536,34 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     updateTransform();
   }
 
-  function paintMeasurement(start,end) {
-    const preview=root.querySelector('.vtt-preview');
-    const dx=Math.abs(end.x-start.x),dy=Math.abs(end.y-start.y);
-    const cells=table.grid.distance==='chebyshev'?Math.max(dx,dy):table.grid.distance==='manhattan'?dx+dy:Math.hypot(dx,dy);
-    const distance=cells*table.grid.size;
+  function paintMeasurement(points){
+    const preview=root.querySelector('.vtt-preview'),status=root.querySelector('[data-table-help]');
+    if(!points?.length){preview.replaceChildren();status.textContent=help();return;}
+    let distance=0;
+    const lines=[];
+    for(let i=1;i<points.length;i++){
+      const a=points[i-1],b=points[i],dx=Math.abs(b.x-a.x),dy=Math.abs(b.y-a.y);
+      const cells=table.grid.distance==='chebyshev'?Math.max(dx,dy):table.grid.distance==='manhattan'?dx+dy:Math.hypot(dx,dy);
+      distance+=cells*table.grid.size;
+      lines.push('<line x1="'+a.x+'" y1="'+a.y+'" x2="'+b.x+'" y2="'+b.y+'" stroke="#f0d89a" stroke-width="0.06"/>');
+    }
+    preview.innerHTML=lines.join('')+points.map(p=>'<circle cx="'+p.x+'" cy="'+p.y+'" r="0.12" fill="#f0d89a"/>').join('');
     const text=distance.toLocaleString('pt-BR',{maximumFractionDigits:2})+' '+table.grid.unit;
-    preview.innerHTML='<line x1="'+start.x+'" y1="'+start.y+'" x2="'+end.x+'" y2="'+end.y+'" stroke="#f0d89a" stroke-width="0.06"/><circle cx="'+start.x+'" cy="'+start.y+'" r="0.12" fill="#f0d89a"/><circle cx="'+end.x+'" cy="'+end.y+'" r="0.12" fill="#f0d89a"/>';
-    root.querySelector('[data-table-help]').textContent=text+' · '+({chebyshev:'diagonais iguais',manhattan:'sem diagonais'}[table.grid.distance]||'linha reta');
+    const rule={chebyshev:'diagonais iguais',manhattan:'sem diagonais'}[table.grid.distance]||'linha reta';
+    status.textContent=points.length===1?'Origem marcada · toque no próximo ponto':text+' · '+rule+(measureMode==='path'?' · '+lines.length+(lines.length===1?' trecho':' trechos'):'');
   }
 
   function updatePreview(end) {
     const preview=root.querySelector('.vtt-preview');
     if (!gesture) return;
     const start=gesture.start;
-    if (gesture.kind==='measure') {
-      paintMeasurement(start,end);
+    if(gesture.kind==='lights'&&lightMode==='draw'){
+      preview.innerHTML=lightShape(lampAt(gesture,end))+' fill="'+lightColor+'" fill-opacity=".24" stroke="'+lightColor+'" stroke-width="2" vector-effect="non-scaling-stroke"/>';
+    }else if(gesture.kind==='walls'&&['wall','door'].includes(wallMode)){
+      const tip=wallPoint(end);
+      preview.innerHTML=wallLine({kind:wallMode,...start,toX:tip.x,toY:tip.y});
+    }else if (gesture.kind==='measure') {
+      paintMeasurement(measureMode==='path'?[...(measurement||[]),end]:[start,end]);
     } else if (gesture.kind==='fog') {
       const operation=gesture.operation||fogOperation;
       const color=operation==='reveal'?'#9ce4cd':'#ffbd87';
@@ -475,7 +588,6 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
 
   function resetGesture() {
     queueVision();
-    if(gesture?.kind==='rotate'){rotationPreview=null;queueVision();}
     gesture=null;
     if(viewport)delete viewport.dataset.panning;
     root?.querySelector('.vtt-preview')?.replaceChildren();
@@ -494,7 +606,8 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
   function beginPinch(event) {
     if (gesture?.kind==='token') {sendTokenPreview(gesture,'cancel');restoreToken(gesture.item.id);}
     resetGesture();
-    measurement=null;
+    if(measureMode!=='path')measurement=null;
+    else if(tool==='measure')paintMeasurement(measurement);
     const [first,second]=touchPair();
     gesture={kind:'pinch',distance:Math.max(1,Math.hypot(first.x-second.x,first.y-second.y)),
       center:touchCenter(first,second),zoom,offset:{...offset}};
@@ -536,23 +649,30 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     viewport.focus({preventScroll:true});
     const token=event.target.closest('[data-table-token]');
     const start=point(event);
+    if(routeDraft&&row.master&&row.state.tokens.some(t=>t.id===routeDraft.id)){
+      if(routeDraft.points.length>=48){report('Use até 48 pontos.');return;}
+      const size=routeDraft.size;
+      routeDraft.points.push({x:clamp(start.x-size/2,0,table.grid.columns-size),y:clamp(start.y-size/2,0,table.grid.rows-size)});
+      paintRoute();event.preventDefault();return;
+    }
     root.querySelector('.vtt-preview').replaceChildren();
-    measurement=null;
+    if(tool!=='measure'||measureMode!=='path')measurement=null;
+    else paintMeasurement(measurement);
     if (token && tool==='select') {
       const item=row.state.tokens.find(item=>item.id===token.dataset.tableToken);
       setSelection(item.id,true);
       if (!row.master && (item.locked||item.hidden||item.canMove===false||item.kind==='item')) return;
-      if(event.target.closest('[data-table-facing-handle]')){gesture={kind:'rotate',start,token,item,moved:false,rotation:item.rotation||0,pointer:event.pointerId};viewport.setPointerCapture(event.pointerId);event.preventDefault();return;}
       clearTimeout(remoteMoves.get(item.id)?.timer);remoteMoves.delete(item.id);token.classList.toggle('is-remote-moving',false);
       gesture={kind:'token',start,token,item,moved:false,pointer:event.pointerId,dragId:globalThis.crypto?.randomUUID?.()||String(Date.now())+'-'+(++dragSequence),seq:0};
     } else if (tool==='pan' || (tool==='select' && !token)) {
       gesture={kind:'pan',client:{x:event.clientX,y:event.clientY},offset:{...offset},pointer:event.pointerId};
     } else if (tool==='ping') {
-      perform('tablePing',start);
+      perform('tablePing',{...start,signal:pingSignal});
       return;
     } else {
-      gesture={kind:tool,start,pointer:event.pointerId,shape,color:drawingColor,points:tool==='fog'&&fogShape==='brush'||tool==='draw'&&shape==='freehand'?[{x:Number(start.x.toFixed(4)),y:Number(start.y.toFixed(4))}]:undefined,fogShape,radius:brushRadius(),operation:event.pointerType==='touch'?fogOperation:event.button===2?'hide':'reveal'};
-      if(tool==='fog')updatePreview(start);
+      gesture={kind:tool,start:tool==='walls'?wallPoint(start):start,pointer:event.pointerId,shape,color:drawingColor,points:tool==='fog'&&fogShape==='brush'||tool==='draw'&&shape==='freehand'?[{x:Number(start.x.toFixed(4)),y:Number(start.y.toFixed(4))}]:undefined,fogShape,radius:brushRadius(),operation:event.pointerType==='touch'?fogOperation:event.button===2?'hide':'reveal'};
+      if(tool==='lights'){gesture.light=pickLight(start);if(gesture.light)gesture.start={x:gesture.light.x,y:gesture.light.y};}
+      if(tool==='fog'||tool==='lights')updatePreview(start);
     }
     viewport.setPointerCapture(event.pointerId);
     event.preventDefault();
@@ -570,12 +690,19 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     }
     const end=point(event);
     gesture.end=end;
-    if(gesture.kind==='rotate'){const size=Number(gesture.item.size)||1;gesture.rotation=normalizeRotation(Math.atan2(end.y-gesture.item.y-size/2,end.x-gesture.item.x-size/2)*180/Math.PI+90);gesture.moved=true;rotationAnimations.delete(gesture.item.id);rotationPreview={id:gesture.item.id,rotation:gesture.rotation};previewRotation(gesture.item.id,gesture.rotation);queueVision();return;}
     if (gesture.kind==='token') {
       const size=Number(gesture.item.size)||1;
       let x=clamp(gesture.item.x+end.x-gesture.start.x,0,table.grid.columns-size);
       let y=clamp(gesture.item.y+end.y-gesture.start.y,0,table.grid.rows-size);
       gesture.previewPosition={x,y};
+      if(table.fog.enabled&&table.fog.mode==='war'){
+        const trail=gesture.trail??=[];
+        const last=trail.at(-1)||gesture.item;
+        if(Math.hypot(x-last.x,y-last.y)>=.5){
+          if(trail.length===64)gesture.trail=trail.filter((_,index)=>index%2===0);
+          gesture.trail.push({x,y,rotation:displayedRotation(gesture.item)});
+        }
+      }
       gesture.position=table.grid.snap?{x:Math.round(x),y:Math.round(y)}:{x,y};
       gesture.moved=Math.abs(end.x-gesture.start.x)+Math.abs(end.y-gesture.start.y)>.03;
       gesture.token.style.left=x/table.grid.columns*100+'%';
@@ -598,16 +725,37 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     if (!gesture || gesture.pointer!==event.pointerId) return;
     const active=gesture;
     const end=active.kind==='fog'&&active.fogShape==='brush'?point(event):active.end||point(event);
-    if (active.kind==='measure') {measurement={start:active.start,end};paintMeasurement(active.start,end);gesture=null;}
-    else resetGesture();
+    if(active.kind==='measure'){
+      if(measureMode==='path'){
+        measurement??=[];
+        const last=measurement.at(-1);
+        if(!last||Math.hypot(last.x-end.x,last.y-end.y)>.01)measurement.push(end);
+      }else measurement=[active.start,end];
+      paintMeasurement(measurement);gesture=null;
+    }else{
+      resetGesture();
+      if(active.kind==='pan'&&tool==='measure')paintMeasurement(measurement);
+    }
     if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
-    if(active.kind==='rotate'&&active.moved)rotateToken(active.item.id,active.rotation);
     if (active.kind==='token' && active.moved) {
       focusAfterMove=active.item.id;
       active.token.style.left=active.position.x/table.grid.columns*100+'%';active.token.style.top=active.position.y/table.grid.rows*100+'%';
       sendTokenPreview(active,'end');
-      localPlacement={id:active.item.id,position:active.position};queueVision();
-      perform('tokenMove',{id:active.item.id,...active.position,dragId:active.dragId}).finally(()=>{focusAfterMove='';localPlacement=null;queueVision();});
+      localPlacement={id:active.item.id,position:active.position,dragId:active.dragId};queueVision();
+      perform('tokenMove',{id:active.item.id,...active.position,dragId:active.dragId,...(active.trail?.length?{trail:active.trail}:{})}).finally(()=>{focusAfterMove='';localPlacement=null;queueVision();});
+    }
+    if(active.kind==='lights'&&row.master){
+      if(lightMode==='delete'){if(active.light)perform('tableLightDelete',{id:active.light.id});}
+      else perform('tableLightSet',{...lampAt(active,point(event)),id:active.light?.id,color:lightColor});
+    }
+    if(active.kind==='walls' &&row.master){
+      if(['wall','door'].includes(wallMode)){
+        const tip=wallPoint(point(event));
+        if(Math.hypot(tip.x-active.start.x,tip.y-active.start.y)>.02)perform('tableWallAdd',{kind:wallMode,...active.start,toX:tip.x,toY:tip.y});
+      }else{
+        const hit=wallPick(point(event));
+        if(hit)perform(wallMode==='delete'?'tableWallDelete':'tableDoorSet',{id:hit.wall.id,open:!hit.wall.open});
+      }
     }
     if(active.kind==='draw'){
       if(active.shape==='freehand'){addFreehandPoint(active,end);if(active.points.length>1)perform('tableDrawingAdd',{kind:'freehand',points:active.points,color:active.color});}
@@ -620,7 +768,6 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
   }
 
   function cancelPointer(event) {
-    if(turnPreview){finishTurn('cancel');rotationPreview=null;queueVision();}
     touches.clear();
     if (!gesture) return;
     if (gesture.kind==='token') {
@@ -657,7 +804,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
   }
 
   function mountEvents(signal) {
-    root.addEventListener('click',event=>{
+    root.addEventListener('click',async event=>{
       if(event.target.closest('[data-table-focus-rolls]')) {
         const panel=root.querySelector('[data-table-rolls]');
         panel?.scrollIntoView?.({block:'nearest'});panel?.focus({preventScroll:true});
@@ -695,10 +842,30 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
         if (zoomButton.dataset.tableZoom==='fit') {zoom=1;offset={x:0,y:0};updateTransform();}
         else changeZoom(zoom*(zoomButton.dataset.tableZoom==='in'?1.25:.8));
       }
+      const patrol=event.target.closest('[data-patrol]')?.dataset.patrol;
+      if(patrol&&row.master){
+        const token=row.state.tokens.find(t=>t.id===selected);if(!token)return;
+        if(patrol==='draw'){
+          switchTool('select');routeDraft={id:selected,size:token.size||1,points:[{x:token.x,y:token.y}],speed:token.patrol?.speed||1,mode:token.patrol?.mode||'return'};
+        }else if(patrol==='undo')routeDraft?.points.pop();
+        else if(patrol==='cancel')routeDraft=null;
+        else if(patrol==='start'&&routeDraft){
+          const draft=routeDraft;
+          if(busy)return;
+          busy=true;
+          try{await action('tokenPatrol',{id:selected,operation:'start',points:draft.points,speed:draft.speed,mode:draft.mode,sceneId:row.state.sceneId});if(routeDraft===draft)routeDraft=null;}
+          catch(error){report(error.message);}finally{busy=false;}
+        }else perform('tokenPatrol',{id:selected,operation:patrol});
+        paintRoute();return;
+      }
       const movement=event.target.closest('[data-table-move]')?.dataset.tableMove;
       if (movement) moveTokenBy(selected,{up:[0,-1],left:[-1,0],down:[0,1],right:[1,0]}[movement]);
       const command=event.target.closest('[data-table-action]')?.dataset.tableAction;
-      if(command==='visionShare'&&row.master)perform('tableSettings',{darkness:{mode:table.darkness.mode==='group'?'individual':'group'}});
+      if(command==='measureUndo'||command==='measureClear'){
+        if(command==='measureClear')measurement=null;else measurement?.pop();
+        paintMeasurement(measurement);
+      }
+      else if(command==='visionShare'&&row.master)perform('tableSettings',{darkness:{mode:table.darkness.mode==='individual'?(Object.keys(table.darkness.teams||{}).length?'teams':'group'):'individual'}});
       else if(command==='visionCones'&&row.master&&table.darkness.enabled&&!playerPreview){showCones=!showCones;queueVision();}
       else if(command==='darknessToggle'&&row.master)perform('tableSettings',{darkness:{enabled:!table.darkness.enabled}});
       else if(command==='rotateLeft'||command==='rotateRight'){const token=row.state.tokens.find(t=>t.id===selected);if(token)rotateToken(token.id,rotationTarget(token.id)+(command==='rotateLeft'?-15:15));}
@@ -719,6 +886,10 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       else if (command==='fogUndo') perform('tableFog',{operation:'undo'});
       else if (command==='fogRevealAll') perform('tableFog',{operation:'reveal',enabled:true,x:0,y:0,width:table.grid.columns,height:table.grid.rows});
       else if (command==='fogReset') perform('tableFog',{operation:'reset',enabled:true});
+      else if(command==='combatEndOwn'){
+        const {entry,round}=event.target.closest('[data-table-action]').dataset;
+        perform(command,{entryId:entry,round:Number(round)});
+      }
       else if (command==='combatPrevious') perform('combatNext',{direction:-1});
       else if (command) perform(command);
     },{signal});
@@ -727,7 +898,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       event.preventDefault();rollForCharacter({formula:rollFormula});
     },{signal});
     root.addEventListener('input',event=>{
-      if(event.target.matches('[data-table-facing]')){rotationAnimations.delete(selected);rotationPreview={id:selected,rotation:normalizeRotation(event.target.value)};previewRotation(selected,rotationPreview.rotation);const label=root.querySelector('[data-facing-value]');if(label)label.textContent=Math.round(rotationPreview.rotation)+'°';queueVision();}
+      if(event.target.matches('[data-light-level]'))root.querySelector('[data-light-level-output]').textContent=event.target.value+'%';
       if(event.target.matches('[data-fog-brush]')&&row.master){fogBrushPixels=clamp(Number(event.target.value)||160,10,300);root.querySelector('[data-fog-brush-size]').textContent=fogBrushPixels+' px';}
       if(event.target.matches('[data-table-roll-formula]')){rollFormula=event.target.value;root.querySelector('[data-table-roll-preview]').innerHTML=renderFreeRollPreview(row,rollCharacter(),rollView());}
       if(event.target.matches('[data-table-roll-search]')){rollingQuery=event.target.value;updateRollContent();}
@@ -737,7 +908,21 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       }
     },{signal});
     root.addEventListener('change',event=>{
-      if(event.target.matches('[data-table-facing]'))rotateToken(selected,Number(event.target.value));
+      if(event.target.matches('[data-light-scope]'))lightScope=event.target.value;
+      if(event.target.matches('[data-light-angle]'))lightAngle=Number(event.target.value);
+      if(event.target.matches('[data-light-color]'))lightColor=event.target.value;
+      if(event.target.matches('[data-measure-mode]')){
+        measureMode=event.target.value==='path'?'path':'direct';measurement=null;
+        root.querySelector('[data-table-action="measureUndo"]').hidden=measureMode!=='path';
+        paintMeasurement(measurement);
+      }
+      if(event.target.matches('[data-ping-signal]'))pingSignal=event.target.value;
+      if(routeDraft&&event.target.matches('[data-route-mode]'))routeDraft.mode=event.target.value;
+      if(routeDraft&&event.target.matches('[data-route-speed]'))routeDraft.speed=Number(event.target.value);
+      if(event.target.matches('[data-light-enabled]'))perform('tableSettings',{darkness:{enabled:event.target.checked}});
+      if(event.target.matches('[data-light-level]'))perform('tableSettings',{darkness:{level:Number(event.target.value)}});
+      if(event.target.matches('[data-light-mode]')){lightMode=event.target.value;root.querySelector('[data-table-help]').textContent=help();}
+      if(event.target.matches('[data-wall-mode]')&&row.master){cancelPointer();wallMode=event.target.value;root.querySelector('[data-table-help]').textContent=help();}
       if(event.target.matches('[data-fog-shape]')&&row.master){cancelPointer();fogShape=event.target.value==='rectangle'?'rectangle':'brush';root.querySelector('[data-fog-brush-options]').hidden=fogShape!=='brush';root.querySelector('[data-table-help]').textContent=help();}
       if(event.target.matches('[data-table-roll-mode]')){rollingMode=['normal','advantage','disadvantage'].includes(event.target.value)?event.target.value:'normal';updateRollContent();}
       if(event.target.matches('[data-table-roll-character]')) {
@@ -761,7 +946,10 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     viewport.addEventListener('keydown',keyDown,{signal});
     viewport.addEventListener('wheel',event=>{
       event.preventDefault();
-      if(event.shiftKey&&selected){const token=row.state.tokens.find(t=>t.id===selected);if(token)rotateToken(selected,rotationTarget(selected)+(event.deltaY<0?-1:1)*(event.ctrlKey?1:15));return;}
+      if(gesture?.kind==='token'){
+        if(event.deltaY)rotateToken(gesture.item.id,rotationTarget(gesture.item.id)+Math.sign(event.deltaY)*(event.ctrlKey?1:15));
+        return;
+      }
       const bounds=viewport.getBoundingClientRect();
       changeZoom(zoom*(event.deltaY<0?1.1:1/1.1),{x:event.clientX-bounds.left,y:event.clientY-bounds.top});
     },{signal,passive:false});
@@ -799,9 +987,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       }
       dimensions=mapDimensions;
     }
-    const cell=Math.max(dimensions.width/table.grid.columns,dimensions.height/table.grid.rows);
-    // Automatic mode pads the last partial cells, keeping the chosen pixel calibration.
-    const pixels=table.grid.mode==='image'&&row.state.map.width?table.grid.cellPixels:cell;
+    const pixels=mapPixelsPerCell(row.state.map.width?table.grid:{...table.grid,mode:'manual'},dimensions);
     root?.querySelector('.vtt-map')?.style.setProperty('background-size',dimensions.width/(pixels*table.grid.columns)*100+'% '+dimensions.height/(pixels*table.grid.rows)*100+'%');
     if (row.master&&!busy&&!row.state.map.width&&migratedMap!==key) {
       migratedMap=key;
@@ -889,12 +1075,13 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     const nextTable=normalizeTable(next.state);
     if(next.state.sceneId!==row.state.sceneId||next.state.map?.id!==row.state.map?.id||nextTable.grid.columns!==table.grid.columns||nextTable.grid.rows!==table.grid.rows||nextTable.grid.mode!==table.grid.mode||nextTable.grid.cellPixels!==table.grid.cellPixels||next.state.map?.width!==row.state.map?.width||next.state.map?.height!==row.state.map?.height){cancelPointer();return false;}
     const oldRotations=new Map((row.state.tokens||[]).map(t=>[t.id,t.rotation||0]));
+    const wasMyTurn=myCombatTurn();
     const oldTable=table,oldPositions=new Map((row.state.tokens||[]).map(item=>[item.id,{x:item.x,y:item.y}]));
-    row=next;table=nextTable;
+    row=next;sampleClock=clock();table=nextTable;
     const currentTokens=row.state.tokens||[];
     if(rotationPreview&&!mayRotate(currentTokens.find(t=>t.id===rotationPreview.id))){rotationAnimations.delete(rotationPreview.id);rotationPreview=null;pendingRotation=null;}
     for(const token of currentTokens)if(oldRotations.has(token.id)&&oldRotations.get(token.id)!==(token.rotation||0)&&rotationPreview?.id!==token.id)animateRotation(token.id,token.rotation);
-    if(gesture?.kind==='token'||gesture?.kind==='rotate'){
+    if(gesture?.kind==='token'){
       const fresh=currentTokens.find(item=>item.id===gesture.item.id);
       if(!fresh||!row.master&&(fresh.locked||fresh.hidden||fresh.canMove===false))cancelPointer();
     }
@@ -905,7 +1092,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       const oldPosition=oldPositions.get(item.id),remote=remoteMoves.get(item.id);
       if(remote&&oldPosition&&(oldPosition.x!==item.x||oldPosition.y!==item.y)){clearTimeout(remote.timer);remote.active=false;remote.timer=setTimeout(()=>node.classList.toggle('is-remote-moving',false),100);}
       if(!(gesture?.kind==='token'&&gesture.item.id===item.id)&&!remoteMoves.get(item.id)?.active)restoreToken(item.id);
-      node.classList.toggle('is-hidden',item.hidden===true);node.classList.toggle('is-locked',item.locked===true);
+      node.classList.toggle('is-active-turn',activeCombatant()?.tokenId===item.id);node.classList.toggle('is-hidden',item.hidden===true);node.classList.toggle('is-locked',item.locked===true);
       const size=Number(item.size)||1;node.style.width=size/table.grid.columns*100+'%';node.style.height=size/table.grid.rows*100+'%';
       for(const color of colors)node.classList.toggle(color,(item.color||'violet')===color);
       const letter=node.querySelector?.('.vtt-token-letter');if(letter){const symbol=tokenIconSvg(item.icon);if(symbol)letter.innerHTML=symbol;else letter.textContent=item.name?.[0]?.toUpperCase()||'✦';}
@@ -919,6 +1106,15 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     const existing=new Set([...root.querySelectorAll('[data-table-token]')].map(node=>node.dataset.tableToken));
     for(const item of currentTokens)if(!existing.has(item.id))layer?.insertAdjacentHTML?.('beforeend',tokenMarkup(item));
     const grid=root.querySelector('.vtt-grid');grid?.classList.toggle('is-off',!table.grid.visible);
+    if(row.master){
+      const layer=root.querySelector('.vtt-light-markers');
+      if(layer&&JSON.stringify(oldTable.lights)!==JSON.stringify(table.lights))layer.innerHTML=lightMarkers();
+      const checkbox=root.querySelector('[data-light-enabled]'),level=root.querySelector('[data-light-level]'),output=root.querySelector('[data-light-level-output]');
+      if(checkbox)checkbox.checked=table.darkness.enabled;
+      if(level&&oldTable.darkness.level!==table.darkness.level){level.value=String(table.darkness.level);if(output)output.textContent=level.value+'%';}
+    }
+    if(JSON.stringify(oldTable.atmosphere)!==JSON.stringify(table.atmosphere)){const layer=root.querySelector('.vtt-atmosphere');if(layer)layer.outerHTML=renderAtmosphere(table.atmosphere);}
+    if(row.master&&JSON.stringify(oldTable.walls)!==JSON.stringify(table.walls)){const layer=root.querySelector('.vtt-walls');if(layer)layer.innerHTML=table.walls.map(wallLine).join('');}
     if(JSON.stringify(oldTable.drawings)!==JSON.stringify(table.drawings))root.querySelector('.vtt-drawings').innerHTML=table.drawings.map(item=>drawingShape(item)).join('');
     if(JSON.stringify(oldTable.fog)!==JSON.stringify(table.fog)){
       const fog=root.querySelector('.vtt-fog');
@@ -927,7 +1123,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       else if(table.fog.enabled)world.insertAdjacentHTML?.('beforeend',fogMarkup());
     }
     const list=root.querySelector('[data-table-token-list]');if(list){const markup=tokenList();if(list.innerHTML!==markup)list.innerHTML=markup;}
-    const combat=root.querySelector('[data-table-combat]');if(combat&&JSON.stringify(oldTable.combat)!==JSON.stringify(table.combat))combat.outerHTML=combatMarkup();
+    const combat=root.querySelector('[data-table-combat]');if(combat&&(wasMyTurn!==myCombatTurn()||JSON.stringify(oldTable.combat)!==JSON.stringify(table.combat)))combat.outerHTML=combatMarkup();
     if(!currentTokens.some(token=>token.id===selected))selected='';
     if(!(gesture?.kind==='token')&&!root.querySelector('[data-table-selection]')?.contains?.(globalThis.document?.activeElement)){const selection=root.querySelector('[data-table-selection]');if(selection)selection.innerHTML=selectedMarkup();}
     const darknessToggle=root.querySelector('[data-table-action="darknessToggle"]');if(darknessToggle){darknessToggle.setAttribute('aria-pressed',String(table.darkness.enabled));darknessToggle.setAttribute('title',table.darkness.enabled?'Desativar escuridão':'Ativar escuridão');darknessToggle.setAttribute('aria-label',table.darkness.enabled?'Desativar escuridão':'Ativar escuridão');}
@@ -938,7 +1134,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     const scene=root.querySelector('[data-table-scene-name]');if(scene)scene.textContent=[row.state.sessionName,row.state.scene].filter(Boolean).join(' · ')||'Cena atual';
     const rollPanel=root.querySelector('[data-table-rolls]'),active=globalThis.document?.activeElement;
     if(characterSignature!==JSON.stringify(row.state.characters||[])&&!(rollPanel?.contains?.(active)&&active?.matches?.('input,textarea,select')))updateRollPanel();
-    if(measurement&&tool==='measure')paintMeasurement(measurement.start,measurement.end);
+    if(measurement&&tool==='measure')paintMeasurement(measurement);
     queueVision();updateTokenScale();paintPings();paintLoot();loadPortraits();syncRolls(next);
     return true;
   }
@@ -958,7 +1154,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       if(seenPings.has(ping.id))continue;
       seenPings.add(ping.id);if(seenPings.size>150)seenPings.delete(seenPings.values().next().value);
       const age=Math.max(0,now-ping.at);if(age>=lifetime)continue;
-      const markup='<span class="vtt-ping" data-ping-id="'+escape(ping.id)+'" style="left:'+ping.x/table.grid.columns*100+'%;top:'+ping.y/table.grid.rows*100+'%;--ping-age:-'+age+'ms"><span class="vtt-ping-ring"></span><span class="vtt-ping-dot"></span><span class="vtt-ping-name">'+escape(ping.name||'Participante')+'</span></span>';
+      const markup='<span class="vtt-ping" data-signal="'+(ping.signal||'point')+'" data-ping-id="'+escape(ping.id)+'" style="left:'+ping.x/table.grid.columns*100+'%;top:'+ping.y/table.grid.rows*100+'%;--ping-age:-'+age+'ms"><span class="vtt-ping-ring"></span><span class="vtt-ping-dot"></span><span class="vtt-ping-name">'+(ping.signal&&ping.signal!=='point'?pingNames[ping.signal]+' · ':'')+escape(ping.name||'Participante')+'</span></span>';
       if(layer.insertAdjacentHTML)layer.insertAdjacentHTML('beforeend',markup);else layer.innerHTML+=markup;
       const timer=setTimeout(()=>{pingTimers.delete(timer);const node=[...(layer.querySelectorAll?.('[data-ping-id]')||[])].find(node=>node.dataset.pingId===ping.id);if(node)node.remove();else if(!layer.insertAdjacentHTML)layer.replaceChildren();},lifetime-age);
       pingTimers.add(timer);
@@ -977,11 +1173,10 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
   }
 
   function mount(nextRoot,nextRow) {
-    if(turnPreview)finishTurn('cancel');
     if(gesture)cancelPointer();
     events?.abort();
     resize?.disconnect();
-    root=nextRoot;row=nextRow;table=normalizeTable(row.state);
+    root=nextRoot;row=nextRow;sampleClock=clock();table=normalizeTable(row.state);
     viewport=root.querySelector('.vtt-viewport');
     world=root.querySelector('.vtt-world');
     if (!viewport || !world) return;
@@ -997,7 +1192,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       resize=new ResizeObserver(()=>updateTransform());
       resize.observe(viewport);
     }
-    if (measurement && tool==='measure') paintMeasurement(measurement.start,measurement.end);
+    if (measurement && tool==='measure') paintMeasurement(measurement);
     paintPings();paintLoot();queueVision();
     setConnectionStatus(connectionStatus);
     loadPortraits();
@@ -1021,7 +1216,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
   }
 
   function dispose() {
-    if(turnPreview)finishTurn('cancel');
+    routeDraft=null;
     if(gesture?.kind==='token')sendTokenPreview(gesture,'cancel');
     visionGeneration++;if(visionFrame!==null)globalThis.cancelAnimationFrame?.(visionFrame);visionFrame=null;visionPending=false;pendingRotation=null;rotationAnimations.clear();drawnRotations.clear();
     events?.abort();resize?.disconnect();for(const timer of pingTimers)clearTimeout(timer);pingTimers.clear();clearRemoteMoves();gesture=null;touches.clear();rotationPreview=null;localPlacement=null;root=null;viewport=null;world=null;

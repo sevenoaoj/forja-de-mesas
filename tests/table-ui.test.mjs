@@ -574,24 +574,28 @@ test('token independente exibe seu retrato e atualização troca a imagem sem re
  assert.equal(f.controller.syncScene(next),true);assert.equal(image.dataset.tableTokenImage,'custom');assert.equal(image.hidden,true);f.controller.dispose();
 });
 
-test('girar token usa ação específica, funciona por botões, tecla e Shift+roda sem mover a câmera',async()=>{
+test('Q/E giram a visão e a roda livre ajusta a câmera',async()=>{
  const f=fixture();f.click({tableSelect:'lyra'});const transform=f.world.style.transform;
- f.click({tableAction:'rotateRight'});await Promise.resolve();await Promise.resolve();assert.equal(f.calls.at(-1).name,'tokenRotate');assert.equal(f.row.state.tokens[0].rotation,15);assert.equal(f.get('[data-facing-value]').textContent,'15°');assert.equal(f.get('[data-table-facing]').value,'15');
- f.dispatch(f.viewport,'keydown',{key:'q'},f.tokens[0]);await Promise.resolve();await Promise.resolve();assert.equal(f.row.state.tokens[0].rotation,0);
- f.dispatch(f.viewport,'wheel',{shiftKey:true,deltaY:-1,clientX:100,clientY:100});await Promise.resolve();await Promise.resolve();assert.equal(f.row.state.tokens[0].rotation,345);assert.equal(f.world.style.transform,transform);f.dispatch(f.viewport,'wheel',{shiftKey:true,ctrlKey:true,deltaY:-1,clientX:100,clientY:100});await Promise.resolve();await Promise.resolve();assert.equal(f.row.state.tokens[0].rotation,344);f.controller.dispose();
+ for(const [key,angle] of [['e',15],['q',0]]){
+  f.dispatch(f.viewport,'keydown',{key},f.tokens[0]);await Promise.resolve();await Promise.resolve();
+  assert.equal(f.row.state.tokens[0].rotation,angle);
+ }
+ f.dispatch(f.viewport,'wheel',{deltaY:-1,clientX:100,clientY:100});
+ assert.notEqual(f.world.style.transform,transform);assert.equal(f.row.state.tokens[0].rotation,0);
+ assert.doesNotMatch(f.controller.render(f.row),/data-table-facing-handle|data-table-facing /);f.controller.dispose();
 });
 
-test('slider permite prévia local do cone e confirma direção sem alterar alcance',async()=>{
- const f=fixture();f.row.state.table.darkness={enabled:true,mode:'individual'};f.row.state.tokens[0].vision={enabled:true,range:12,angle:90};f.controller.syncScene({...f.row,rev:1});f.click({tableSelect:'lyra'});
- f.click({tableAction:'visionPreview'});assert.equal(f.world.classList.contains('is-player-preview'),true);assert.equal(f.get('[data-table-action="fogPreview"]')['aria-pressed'],'true');f.click({tableAction:'visionPreview'});assert.equal(f.world.classList.contains('is-player-preview'),false);
- const slider=new Element({tableFacing:''});slider.value='90';f.dispatch(f.root,'input',{},slider);await Promise.resolve();assert.match(f.get('.vtt-darkness-host').innerHTML,/vtt-darkness/);assert.equal(f.calls.length,0);assert.equal(f.previews.at(-1).rotation,90);assert.equal(f.previews.at(-1).phase,'move');
- f.dispatch(f.root,'change',{},slider);await Promise.resolve();await Promise.resolve();assert.equal(f.calls.at(-1).name,'tokenRotate');assert.equal(f.row.state.tokens[0].rotation,90);assert.equal(f.row.state.tokens[0].vision.range,12);f.controller.dispose();
-});
-
-test('arrastar a seta gira o campo de visão; Escape cancela e não envia movimento',async()=>{
- const f=fixture();f.click({tableSelect:'lyra'});const token=f.row.state.tokens[0],center={x:token.x+.5,y:token.y+.5},handle=new Element();handle.closest=selector=>selector==='[data-table-token]'?f.tokens[0]:selector==='[data-table-facing-handle]'?handle:null;
- f.dispatch(f.viewport,'pointerdown',f.point(center.x,center.y-1),handle);f.dispatch(f.viewport,'pointermove',f.point(center.x+1,center.y));assert.equal(f.previews.at(-1).rotation,90);assert.equal(f.previews.at(-1).phase,'move');f.dispatch(f.viewport,'pointerup',f.point(center.x+1,center.y));await Promise.resolve();await Promise.resolve();assert.equal(f.calls.length,1);assert.equal(f.calls[0].name,'tokenRotate');assert.equal(f.row.state.tokens[0].rotation,90);
- f.dispatch(f.viewport,'pointerdown',f.point(center.x+1,center.y),handle);f.dispatch(f.viewport,'pointermove',f.point(center.x,center.y+1));f.dispatch(f.viewport,'keydown',{key:'Escape'});f.dispatch(f.viewport,'pointerup',f.point(center.x,center.y+1));assert.equal(f.calls.length,1);f.controller.dispose();
+test('prévia pode ser alternada e luzes não revelam tokens fora do cone',async()=>{
+ const f=fixture();f.row.state.table.darkness={enabled:true,mode:'individual',level:35};
+ f.row.state.table.lights=[{id:'torch',x:6,y:5,radius:4,color:'#ffaa33'}];
+ f.controller.syncScene({...f.row,rev:1});f.click({tableSelect:'lyra'});
+ f.click({tableAction:'visionPreview'});await Promise.resolve();
+ assert.equal(f.world.classList.contains('is-player-preview'),true);
+ assert.equal(f.tokens[1].classList.contains('is-out-of-vision'),true);
+ assert.match(f.get('.vtt-darkness-host').innerHTML,/fill-opacity="0.35"/);
+ assert.match(f.get('.vtt-darkness-host').innerHTML,/#ffaa33/);
+ f.click({tableAction:'visionPreview'});await Promise.resolve();assert.equal(f.tokens[1].classList.contains('is-out-of-vision'),false);
+ f.controller.dispose();
 });
 
 test('escuridão acompanha posição local e prévia remota, mantendo máscara ativa durante sincronização',async()=>{
@@ -620,17 +624,18 @@ test('giros rápidos acumulam a direção mais recente com no máximo uma requis
 
 test('pintura de visão é agrupada por quadro e usa o mesmo ângulo na arte e no cone',async()=>{
  const originalRaf=globalThis.requestAnimationFrame,originalCancel=globalThis.cancelAnimationFrame;
+ const previousMatch=globalThis.matchMedia;globalThis.matchMedia=()=>({matches:true});
  const frames=new Map();let serial=0,f;
  globalThis.requestAnimationFrame=fn=>{frames.set(++serial,fn);return serial;};globalThis.cancelAnimationFrame=id=>frames.delete(id);
  const frame=()=>{const jobs=[...frames.values()];frames.clear();jobs.forEach(fn=>fn());};
  try{
   f=fixture();f.row.state.table.darkness={enabled:true,mode:'individual'};f.controller.syncScene({...f.row,rev:1});f.click({tableSelect:'lyra'});frame();
   let paints=0;const original=f.tokens[0].style.setProperty;f.tokens[0].style.setProperty=function(key,value){if(key==='--vtt-facing')paints++;original.call(this,key,value);};
-  const slider=new Element({tableFacing:''});
-  for(let i=0;i<100;i++){slider.value=String(i);f.dispatch(f.root,'input',{},slider);}
-  assert.equal(frames.size,1);assert.equal(paints,0);frame();assert.equal(paints,1);assert.equal(f.tokens[0].style['--vtt-facing'],'99deg');assert.match(f.get('.vtt-darkness-host').innerHTML,/rotate\(99\)/);
+  for(let i=0;i<100;i++)f.controller.receiveRealtime({type:'tokenPreview',id:'lyra',x:4,y:4,rotation:i,seq:i+1,dragId:'test-turn',phase:'move'});
+  assert.equal(frames.size,1);assert.equal(paints,0);frame();assert.equal(paints,1);
+  assert.equal(f.tokens[0].style['--vtt-facing'],'99deg');assert.match(f.get('.vtt-darkness-host').innerHTML,/rotate\(99\)/);
   f.controller.dispose();assert.equal(frames.size,0);
- }finally{f?.controller.dispose();globalThis.requestAnimationFrame=originalRaf;globalThis.cancelAnimationFrame=originalCancel;}
+ }finally{globalThis.matchMedia=previousMatch;f?.controller.dispose();globalThis.requestAnimationFrame=originalRaf;globalThis.cancelAnimationFrame=originalCancel;}
 });
 
 test('animação cruza o norte pelo caminho curto e conserva imagem e visão alinhadas',async()=>{
@@ -642,7 +647,7 @@ test('animação cruza o norte pelo caminho curto e conserva imagem e visão ali
   f=fixture();f.row.state.table.darkness={enabled:true,mode:'individual'};f.controller.syncScene({...f.row,rev:1});f.click({tableSelect:'lyra'});frame(0);
   const next=structuredClone(f.row);next.rev=2;next.state.tokens[0].rotation=350;f.controller.syncScene(next);frame(150);
   assert.equal(f.tokens[0].style['--vtt-facing'],'350deg');
-  f.dispatch(f.viewport,'wheel',{shiftKey:true,deltaY:1,clientX:100,clientY:100});await Promise.resolve();await Promise.resolve();f.controller.syncScene({...f.row,rev:3});
+  f.dispatch(f.viewport,'keydown',{key:'e'},f.tokens[0]);await Promise.resolve();await Promise.resolve();f.controller.syncScene({...f.row,rev:3});
   frame(195);const middle=Number.parseFloat(f.tokens[0].style['--vtt-facing']);assert.ok(middle>350||middle<5);assert.notEqual(middle,350);assert.match(f.get('.vtt-darkness-host').innerHTML,new RegExp('rotate\\('+middle+'\\)'));
   frame(300);assert.equal(f.tokens[0].style['--vtt-facing'],'5deg');assert.equal(frames.size,0);
  }finally{f?.controller.dispose();globalThis.requestAnimationFrame=originalRaf;globalThis.cancelAnimationFrame=originalCancel;globalThis.performance=originalPerformance;}
@@ -700,9 +705,35 @@ test('interpolação remota mantém posição do token e origem do cone no mesmo
 test('rotação pelo controle durante movimento usa a mesma prévia com posição atual',async()=>{
  const f=fixture();f.click({tableSelect:'lyra'});const item=f.row.state.tokens[0];
  f.dispatch(f.viewport,'pointerdown',f.point(item.x+.5,item.y+.5),f.tokens[0]);f.dispatch(f.viewport,'pointermove',f.point(item.x+1.5,item.y+.5));
- const walk=f.previews.at(-1),slider=new Element({tableFacing:''});slider.value='90';f.dispatch(f.root,'input',{},slider);
- const turn=f.previews.at(-1);assert.equal(turn.dragId,walk.dragId);assert.equal(turn.x,walk.x);assert.equal(turn.rotation,90);assert.ok(turn.seq>walk.seq);
- f.dispatch(f.root,'change',{},slider);await Promise.resolve();await Promise.resolve();
- f.dispatch(f.viewport,'pointermove',f.point(item.x+2.5,item.y+.5));assert.equal(f.previews.at(-1).rotation,90);assert.equal(f.previews.at(-1).dragId,walk.dragId);
- f.dispatch(f.viewport,'pointerup',f.point(item.x+2.5,item.y+.5));await Promise.resolve();await Promise.resolve();assert.equal(f.row.state.tokens[0].rotation,90);assert.equal(f.row.state.tokens[0].x,6);f.controller.dispose();
+ const walk=f.previews.at(-1),camera=f.world.style.transform;f.dispatch(f.viewport,'wheel',{deltaY:1});assert.equal(f.world.style.transform,camera);
+ const turn=f.previews.at(-1);assert.equal(turn.dragId,walk.dragId);assert.equal(turn.x,walk.x);assert.equal(turn.rotation,15);assert.ok(turn.seq>walk.seq);
+ await Promise.resolve();await Promise.resolve();
+ f.dispatch(f.viewport,'pointermove',f.point(item.x+2.5,item.y+.5));assert.equal(f.previews.at(-1).rotation,15);assert.equal(f.previews.at(-1).dragId,walk.dragId);
+ f.dispatch(f.viewport,'pointerup',f.point(item.x+2.5,item.y+.5));await Promise.resolve();await Promise.resolve();assert.equal(f.row.state.tokens[0].rotation,15);assert.equal(f.row.state.tokens[0].x,6);f.controller.dispose();
+});
+
+test('mesa destaca o token ativo e oferece encerrar turno apenas à ficha vinculada',()=>{
+ const f=fixture({master:false});
+ f.row.characterId='lyra';f.row.state.tokens.find(t=>t.id==='lyra').characterId='lyra';
+ f.row.state.table.combat={round:2,active:0,entries:[{id:'vez',name:'Lyra',value:15,tokenId:'lyra'}]};
+ const html=f.controller.render(f.row);
+ assert.match(html,/is-active-turn/);assert.match(html,/data-entry="vez" data-round="2"/);
+ f.row.characterId='dorian';
+ assert.doesNotMatch(f.controller.render(f.row),/Encerrar meu turno/);
+ f.row.state.table.combat.active=-1;
+ assert.doesNotMatch(f.controller.render(f.row),/is-active-turn|Encerrar meu turno/);
+ f.controller.dispose();
+});
+
+test('jogador mede percurso por vários pontos, desfaz e limpa sem alterar a cena',()=>{
+ const f=fixture({master:false,distance:'manhattan'});f.click({tableTool:'measure'});
+ const select=new Element({measureMode:'1'});select.value='path';f.dispatch(f.root,'change',{},select);
+ for(const [x,y] of [[1,1],[4,5],[2,5]]){
+   f.dispatch(f.viewport,'pointerdown',f.point(x,y));f.dispatch(f.viewport,'pointerup',f.point(x,y));
+ }
+ assert.match(f.get('[data-table-help]').textContent,/18 m.*2 trechos/);
+ f.click({tableAction:'measureUndo'});
+ assert.match(f.get('[data-table-help]').textContent,/14 m.*1 trecho/);
+ f.click({tableAction:'measureClear'});
+ assert.equal(f.get('.vtt-preview').innerHTML,'');assert.equal(f.calls.length,0);f.controller.dispose();
 });

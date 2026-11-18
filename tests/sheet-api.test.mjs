@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {api} from '../api.mjs';
 import {newCampaign,sheetFields,resolveSheetFormula,displaySheetFormula,parseDiceFormula} from '../model.mjs';
 
-async function room() {
+async function room(options={}) {
   const rows=new Map();
   const store={
     async create(row){rows.set(row.id,structuredClone(row));},
@@ -11,7 +11,7 @@ async function room() {
     async save(row){await Promise.resolve();if(rows.get(row.id).rev!==row.rev)return false;rows.set(row.id,structuredClone({...row,rev:row.rev+1}));return true;}
   };
   const call=(path,method,key,body)=>api(new Request('http://app/api/campaigns'+path,{method,headers:key?{Authorization:'Bearer '+key}:{},body:body===undefined?undefined:JSON.stringify(body)}),store);
-  const created=await(await call('','POST',null,{name:'Fichas',example:true})).json();
+  const created=await(await call('','POST',null,{name:'Fichas',example:true,...options})).json();
   const member='a'.repeat(64);
   await call('/'+created.id+'/join','POST',created.invite,{key:member});
   const act=(action,data,master=false)=>call('/'+created.id+'/action','POST',master?created.key:member,{action,data});
@@ -191,4 +191,122 @@ test('duas rolagens concorrentes não gastam a mesma maestria duas vezes',async(
   const view=await r.view();
   assert.equal(view.state.rolls.filter(roll=>roll.mastery).length,1);
   assert.equal(view.state.characters.find(c=>c.id===view.characterId).masteries[0].remaining,0);
+});
+
+test('estresse corporal é opcional por ficha, com limites do mestre e ajustes privados do dono',async()=>{
+  const r=await room(),id='lyra',limits={torso:2,leftArm:3,rightArm:3,leftLeg:3,rightLeg:3};
+  const config=(enabled,master=true,custom=limits)=>r.act('bodyStressConfig',{id,enabled,limits:custom},master);
+  const step=(region,delta,target=id)=>r.act('bodyStressStep',{id:target,region,step:delta});
+  const read=async()=>(await r.view()).state.characters.find(c=>c.id===id).bodyStress;
+  assert.equal(await read(),undefined);
+  assert.equal((await step('torso',1)).status,409);
+  assert.equal((await config(true,false)).status,403);
+  assert.equal((await config(true,true,{...limits,leftLeg:0})).status,400);
+  assert.equal((await config(true)).status,200);
+  assert.equal((await step('torso',1,'dorian')).status,403);
+  assert.equal((await step('torso',-1)).status,409);
+  for(const res of await Promise.all([step('torso',1),step('torso',1)]))assert.equal(res.status,200);
+  assert.deepEqual((await read()).regions.torso,{value:2,limit:2});
+  assert.equal((await step('torso',1)).status,409);
+  assert.equal((await config(true,true,{...limits,torso:1})).status,409);
+  assert.equal((await config(false)).status,200);
+  assert.equal((await step('torso',-1)).status,409);
+  assert.equal((await config(true)).status,200);
+  assert.equal((await read()).regions.torso.value,2);
+  assert.equal((await step('torso',-1)).status,200);
+  await r.act('bodyStressConfig',{id:'dorian',enabled:true,limits},true);
+  assert.equal((await r.view()).state.characters.find(c=>c.id==='dorian').bodyStress,undefined);
+});
+
+test('modelo da campanha propaga campos e preserva valores e exceções individuais',async()=>{
+  const r=await room();
+  const original=(await r.view(true)).state.fields;
+  const extra=local('a','Marca pessoal','text','Runa','História');
+  assert.equal((await r.act('sheetFields',{id:'lyra',layout:true,fields:[...original,extra]})).status,200);
+  const mana={id:'mana',label:'Mana',group:'Recursos',type:'counter',initial:'8/10'};
+  const schema=(fields,expectedVersion,master=true)=>r.act('schema',{fields,expectedVersion},master);
+  assert.equal((await schema([...original,mana],0,false)).status,403);
+  assert.equal((await schema([...original,mana],0)).status,200);
+  assert.equal((await schema(original,0)).status,409);
+  assert.equal((await r.act('sheetCounter',{id:'lyra',field:'mana',step:-1})).status,200);
+  assert.equal((await r.act('sheetFields',{id:'lyra',layout:true,fields:[extra]})).status,200);
+  assert.equal((await schema([...original,{...mana,label:'Energia',initial:'5/5'}],1)).status,200);
+  assert.equal((await r.act('character',{name:'Nova ficha'},true)).status,200);
+  let state=(await r.view(true)).state;
+  for(const c of state.characters){
+    assert.equal(sheetFields(state,c).filter(f=>f.id==='mana'&&f.label==='Energia').length,1);
+    assert.equal(sheetFields(state,c).some(f=>f.id===extra.id),c.id==='lyra');
+    assert.equal(c.values.mana,c.name==='Nova ficha'?'5/5':c.id==='lyra'?'7/10':'8/10');
+  }
+  assert.equal((await schema(original,2)).status,200);
+  state=(await r.view(true)).state;
+  assert.ok(state.characters.every(c=>sheetFields(state,c).some(f=>f.id==='mana')));
+  assert.ok(!state.fields.some(f=>f.id==='mana'));
+});
+
+test('jogador recebe o modelo escolhido na criação da campanha',async()=>{
+  const r=await room({example:false,sheetModel:'herdeiros-destino'});
+  assert.equal((await r.act('character',{name:'Alternativo',preset:'herdeiros-destino'})).status,400);
+  const response=await r.act('character',{name:'Primeiro jogador'});
+  assert.equal(response.status,200);
+  const {state}=await response.json(),character=state.characters[0];
+  assert.ok(sheetFields(state,character).some(field=>field.id==='hd-power'));
+  assert.equal(character.rollButtons.length,3);
+  assert.equal(character.masteries[0].attributeId,'hd-essence');
+  assert.equal(state.sheetStarter,undefined);
+});
+
+test('segmentação preserva tronco legado e guarda mãos e pés ao simplificar',async()=>{
+  const r=await room(),id='lyra';
+  const legacy={torso:4,leftArm:3,rightArm:3,leftLeg:3,rightLeg:3};
+  const sheet=r.rows.get(r.id).state.characters.find(c=>c.id===id);
+  sheet.bodyStress={enabled:true,regions:Object.fromEntries(Object.entries(legacy).map(([k,limit])=>[k,{limit,value:k==='torso'?2:0}]))};
+  const step=region=>r.act('bodyStressStep',{id,region,step:1});
+  const simple={...legacy,head:2},complex={...simple,leftHand:2,rightHand:2,leftFoot:2,rightFoot:2};
+  const config=(mode,limits,master=true)=>r.act('bodyStressConfig',{id,enabled:true,mode,limits},master);
+  assert.equal((await step('head')).status,200);
+  assert.equal((await config('complex',complex,false)).status,403);
+  assert.equal((await config('complex',complex)).status,200);
+  assert.equal((await step('leftHand')).status,200);
+  assert.equal((await step('rightFoot')).status,200);
+  assert.equal((await config('simple',simple)).status,200);
+  assert.equal((await step('rightFoot')).status,400);
+  const view=await(await config('complex',complex)).json();
+  const {regions}=view.state.characters.find(c=>c.id===id).bodyStress;
+  assert.equal(regions.head.value,1);
+  assert.equal(regions.torso.value,2);
+  assert.equal(regions.leftHand.value,1);
+  assert.equal(regions.rightFoot.value,1);
+  assert.equal(regions.rightLeg.value,0);
+});
+
+test('recurso privado permanece exclusivo do mestre durante todo o ciclo da ficha',async()=>{
+  const r=await room();
+  const change=(data,master=true)=>r.act('gmResourceChange',{id:'lyra',...data},master);
+  const draft={operation:'save',name:'Vínculo secreto',current:9,maximum:12,color:'#893b91'};
+  assert.equal((await change(draft,false)).status,403);
+  const created=await change(draft);
+  assert.equal(created.status,200);
+  const [resource]=(await created.json()).state.gmResources.lyra;
+  const key={resourceId:resource.id,version:resource.version};
+  for(const data of [{...draft,...key},{...key,operation:'step',step:-1},{...key,operation:'delete'}]){
+    assert.equal((await change(data,false)).status,403);
+  }
+  assert.equal((await r.act('sheetCounter',{id:'lyra',field:resource.id,step:-1})).status,400);
+  const edited=await r.act('character',{id:'lyra',name:'Lyra',gmResources:[]});
+  assert.equal(edited.status,200);
+  for(const player of [await r.view(),await edited.json()]){
+    assert.equal(Object.hasOwn(player.state,'gmResources'),false);
+    assert.ok(!JSON.stringify(player).includes(resource.id));
+    assert.ok(!JSON.stringify(player).includes(draft.name));
+  }
+  assert.equal((await change({...key,operation:'step',step:-1})).status,200);
+  assert.equal((await change({...key,...draft})).status,409);
+  let [updated]=(await r.view(true)).state.gmResources.lyra;
+  assert.equal(updated.current,8);
+  assert.equal((await change({...key,...draft,version:updated.version,current:13})).status,400);
+  assert.equal((await change({...key,...draft,version:updated.version,name:'Outro nome'})).status,200);
+  [updated]=(await r.view(true)).state.gmResources.lyra;
+  assert.equal((await change({...key,version:updated.version,operation:'delete'})).status,200);
+  assert.deepEqual((await r.view(true)).state.gmResources.lyra,[]);
 });

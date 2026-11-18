@@ -4,7 +4,7 @@ const clean=(v,max)=>typeof v==='string'?v.trim().slice(0,max):'';
 export const itemKinds={gear:'Equipamento',weapon:'Arma',armor:'Armadura',consumable:'Consumível',treasure:'Tesouro',quest:'Objeto de missão'};
 
 const owned=(state,item,access)=>!access.guest&&access.memberId&&(state.characters||[]).some(c=>c.id===item.characterId&&!c.hidden&&c.ownerId===access.memberId);
-export function inventoryView(state,access){const readable=new Set(journalView(state,access).map(e=>e.id));return (state.inventory||[]).filter(e=>access.master||owned(state,e,access)).map(e=>{if(access.master)return structuredClone(e);const {gmNotes,sourceId,...safe}=e;return {...safe,journalId:readable.has(e.journalId)?e.journalId:''};});}
+export function inventoryView(state,access){if(access.master)return structuredClone(state.inventory||[]);const readable=new Set(journalView(state,access).map(e=>e.id));return (state.inventory||[]).filter(e=>owned(state,e,access)).map(e=>{const {gmNotes,sourceId,...safe}=e;return {...safe,journalId:readable.has(e.journalId)?e.journalId:''};});}
 const actions=new Set(['itemSave','itemGrant','itemDelete','itemManage']);
 const numeric=(value,label,max,integer=false)=>{const n=Number(value);if(!Number.isFinite(n)||n<0||n>max||integer&&!Number.isInteger(n))fail(400,label+' inválido.');return n;};
 export function mutateInventory(state,action,data={},access={}){

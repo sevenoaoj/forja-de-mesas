@@ -55,7 +55,10 @@ export function mutateSheetTemplates(state,action,data,access){
    if(!Number.isInteger(data.expectedHistoryVersion)||data.expectedHistoryVersion!==(target.sheetHistory?.version||0))fail(409,'A ficha mudou. Revise o modelo antes de aplicá-lo.');
    if(data.expectedVersion!==item.version)fail(409,'O modelo foi alterado. Abra a prévia novamente.');
    const base=sheetTemplateCharacter(item),appearanceVersion=(target.appearance?.version||0)+1;
-   target.layout=base.layout;delete target.fields;target.values=Object.fromEntries(base.layout.map(field=>[field.id,field.initial]));
+   const common=state.sheetModelVersion?state.fields:[];
+   const sharedIds=new Set(common.map(field=>field.id));
+   target.layout=base.layout.filter(field=>!sharedIds.has(field.id));delete target.fields;
+   target.values=Object.fromEntries([...target.layout.map(field=>[field.id,field.initial]),...common.map(field=>[field.id,target.values?.[field.id]??field.initial])]);
    for(const key of ['skills','abilities','rollButtons','masteries'])target[key]=base[key];delete target.preset;
    target.appearance={...(base.appearance||sheetAppearance(state,{...target,appearance:undefined})),version:appearanceVersion};
    return true;

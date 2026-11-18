@@ -10,14 +10,14 @@ import {browserSessionKey,lastBrowserCampaign,rememberBrowserSession} from './br
 import {mutateNarration,narrationView} from './narration-model.mjs';
 import {mutateSheetTemplates,readableSheetTemplate,sheetTemplateCharacter} from './sheet-template-model.mjs';
 import {captureSheetChanges,recordSheetChanges,mutateSheetHistory} from './sheet-history.mjs';
-import {sceneProjection,sceneSummary,sceneMaps,sceneTokenPortraits,withScene,mutateScenes,activeSceneId} from './scene-model.mjs';
+import {removeSessionMaterial,sceneProjection,sceneSummary,sceneMaps,sceneTokenPortraits,withScene,mutateScenes,activeSceneId} from './scene-model.mjs';
 import {validateSheetAppearance,sheetAppearance} from './sheet-layout.mjs';
 import {mutateGmScreen,gmScreenActions,gmBoard} from './gm-screen-model.mjs';
 import {dndCharacter,dndFields,dndAdd,dndDerived,dndCatalog,dndSpellFormula,dndBook} from './dnd.mjs';
-import {newCampaign,characterType,isPlayerCharacter,playerVisionSource, colors, characterColorHex, rollFormulaLimit, sheetFields, sheetValue,parseDiceFormula,resolveSheetFormula,displaySheetFormula,sheetPreset,sheetAttributeTest,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
+import {stressRegionsFor,bodyStressWithHead,newCampaign,characterType,isPlayerCharacter,playerVisionSource, colors, characterColorHex, rollFormulaLimit, sheetFields, sheetValue,parseDiceFormula,resolveSheetFormula,displaySheetFormula,sheetPreset,sheetAttributeTest,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
 import {emptyAudio,soundPresets,audioDelay} from './media.mjs';
 import {musicActions,changeMusic,musicCommand,audioView} from './music-model.mjs';
-import {mutateTable,tableView,tableSceneActions} from './table-model.mjs';
+import {playerSight,mutateTable,tableView,tableSceneActions} from './table-model.mjs';
 import {accessFor,ownedCharacter,requireOwnCharacter,authorizeAction,publicState,rollView,rollVersion} from './access.mjs';
 
 const json = (value, status = 200) => Response.json(value, {status, headers:{'Cache-Control':'no-store'}});
@@ -27,7 +27,7 @@ const uid = () => crypto.randomUUID();
 const key = () => uid().replaceAll('-', '') + uid().slice(0,8);
 const int = (value, max) => Math.max(0,Math.min(max,Math.round(Number(value)||0)));
 const color = value => colors.includes(value) ? value : colors[0];
-const privateActions = new Set(['settings','schema','notes','initiative','tokenAdd','tokenDelete','bookDelete','track','soundPlay','soundDelete','characterType','characterVisibility','characterRelease','sheetMasteryRefresh',...musicActions,...soundboardActions,...gmScreenActions]);
+const privateActions = new Set(['gmResourceChange','bodyStressConfig','settings','schema','notes','initiative','tokenAdd','tokenDelete','bookDelete','track','soundPlay','soundDelete','characterType','characterVisibility','characterRelease','sheetMasteryRefresh',...musicActions,...soundboardActions,...gmScreenActions]);
 const updateList = (list, entry) => list.some(item => item.id === entry.id)
   ? list.map(item => item.id === entry.id ? entry : item) : [...list, entry];
 const validTypes = new Set(['text','number','counter','long','check']);
@@ -114,7 +114,10 @@ function sheetAction(state,action,data) {
         seen.add(id);
         return {id,label,group:str(field.group,80)||'Geral',type:field.type,initial:str(field.initial,2000)};
       });
-      character.layout=layout;
+      if(state.sheetModelVersion){
+        for(const field of state.fields)seen.add(field.id);
+      }
+      character.layout=state.sheetModelVersion?layout.filter(field=>!state.fields.some(shared=>shared.id===field.id)):layout;
       delete character.fields;
       character.values=Object.fromEntries(Object.entries(character.values||{}).filter(([id])=>seen.has(id)));
       return;
@@ -170,18 +173,49 @@ function validateActionAccess(state,action,data,access){
   if(action==='gmCardSave'&&data.kind==='reference'&&data.targetKind==='rule'&&!dndCatalog.some(entry=>entry.id===data.targetId))fail(400,'Regra indisponível.');
 }
 
+function prepareMaterial(state,data,access,kind,id){
+  if(!data.prepSession)return;
+  if(!access.master||data.id)fail(403,'A preparação cria materiais como mestre.');
+  mutateScenes(state,'sessionMaterial',{sessionId:data.prepSession,id,kind,attached:true},true);
+  if(data.prepNote&&kind==='character'){
+    const note=state.journal?.find(entry=>entry.id===data.prepNote);
+    if(!note)fail(409,'A anotação de origem foi removida.');
+    note.characterIds=[...(note.characterIds||[]).filter(key=>state.characters.some(c=>c.id===key)),id];
+    note.version++;
+  }
+}
+
 function mutate(state, action, data, access) {
   const {master}=access;
   validateActionAccess(state,action,data,access);
   if(mutateNarration(state,action,data,access))return;
-  if(mutateInventory(state,action,data,access))return;
+  if(mutateInventory(state,action,data,access)){
+    if(action==='itemDelete')removeSessionMaterial(state,'item',data.id);
+    if(action==='itemSave'&&data.prepSession)prepareMaterial(state,data,access,'item',state.inventory.at(-1).id);
+    return;
+  }
   const lootResult=mutateLoot(state,action,data,access);if(lootResult)return lootResult;
-  if(mutateJournal(state,action,data,access))return;
+  if(mutateJournal(state,action,data,access)){
+    if(action==='journalDelete')removeSessionMaterial(state,'note',data.id);
+    if(action==='journalDelete'&&state.gmScreen){
+      if(state.gmScreen.notePositions)delete state.gmScreen.notePositions[data.id];
+      if(state.gmScreen.noteEdges)state.gmScreen.noteEdges=state.gmScreen.noteEdges.filter(edge=>edge.from!==data.id&&edge.to!==data.id);
+    }
+    if(action==='journalSave'&&!data.id&&data.canvasPoint){
+      const note=state.journal.at(-1);
+      mutateGmScreen(state,'gmCanvasLayout',{changes:[{id:note.id,x:data.canvasPoint.x,y:data.canvasPoint.y}]},master);
+    }
+    return;
+  }
   if(mutateSheetTemplates(state,action,data,access))return;
   if(mutateSheetHistory(state,action,data,access))return;
   if(mutateGmScreen(state,action,data,master))return;
   if(mutateScenes(state,action,data,master))return;
-  if(tableSceneActions.has(action)){withScene(state,data.sceneId,master,world=>mutateTable(world,action,data,master,master?'Mestre':ownedCharacter(state,access)?.name));return;}
+  if(tableSceneActions.has(action)){
+    const actor=ownedCharacter(state,access);
+    withScene(state,data.sceneId,master,world=>mutateTable(world,action,data,master,master?'Mestre':actor?.name,actor?.id));
+    return;
+  }
   if(soundboardActions.has(action)){changeAudio(state,action,data);return;}
   if (musicActions.has(action)) {changeAudio(state,action,data);return;}
   switch (action) {
@@ -232,6 +266,30 @@ function mutate(state, action, data, access) {
       }
       break;
     }
+    case 'gmResourceChange': {
+      const character=findCharacter(state,data.id);
+      const resources=(state.gmResources??={})[character.id]??=[];
+      const resource=resources.find(item=>item.id===data.resourceId);
+      if(data.resourceId&&!resource)fail(404,'Recurso privado não encontrado.');
+      if(data.operation==='step'){
+        if(!resource||![1,-1].includes(data.step))fail(400,'Ajuste inválido.');
+        resource.current=Math.max(0,Math.min(resource.maximum,resource.current+data.step));
+        resource.version++;
+        break;
+      }
+      if(resource&&resource.version!==Number(data.version))fail(409,'Este recurso mudou. Abra o editor novamente.');
+      if(data.operation==='delete'&&resource){
+        state.gmResources[character.id]=resources.filter(item=>item.id!==resource.id);
+        break;
+      }
+      if(data.operation!=='save')fail(400,'Operação inválida.');
+      if(!resource&&resources.length>=100)fail(409,'Limite de 100 recursos privados por ficha.');
+      const name=str(data.name,80),{current,maximum}=data;
+      if(!name||![current,maximum].every(Number.isSafeInteger)||current<0||current>maximum||maximum>1000000)fail(400,'Informe um nome e valores inteiros entre zero e o máximo de 1000000.');
+      if(typeof data.color!=='string'||!/^#[a-f0-9]{6}$/i.test(data.color))fail(400,'Cor inválida.');
+      state.gmResources[character.id]=updateList(resources,{id:resource?.id||uid(),name,current,maximum,color:data.color,version:(resource?.version||0)+1});
+      break;
+    }
     case 'settings':
       state.name = str(data.name,100) || state.name;
       state.system = str(data.system,80);
@@ -241,13 +299,51 @@ function mutate(state, action, data, access) {
       break;
     case 'schema': {
       if (!Array.isArray(data.fields) || data.fields.length > 100) fail(400,'Use até 100 campos.');
+      if(data.expectedVersion!==undefined&&data.expectedVersion!==(state.sheetModelVersion||0))fail(409,'O modelo mudou em outra aba. Reabra o editor.');
+      const previous=state.fields;
       const seen = new Set();
       state.fields = data.fields.map(field => {
-        const id = /^[\w-]{1,60}$/.test(field.id) ? field.id : uid();
+        const id = field?.id || uid();
+        if(typeof id!=='string'||!/^[\w:-]{1,60}$/.test(id)||id in Object.prototype)fail(400,'Identificador de campo inválido.');
         if (seen.has(id) || !str(field.label,80) || !validTypes.has(field.type)) fail(400,'Campo inválido ou duplicado.');
         seen.add(id);
         return {id,label:str(field.label,80),group:str(field.group,80)||'Geral',type:field.type,initial:str(field.initial,2000)};
       });
+      if(state.sheetModelVersion||data.expectedVersion!==undefined){
+        if(state.ruleset==='dnd-2024'&&dndFields().some(core=>!state.fields.some(f=>f.id===core.id&&f.type===core.type)))fail(400,'Mantenha os campos do sistema D&D e seus tipos.');
+        for(const character of state.characters){
+          const prior=sheetFields({...state,fields:previous},character);
+          character.values ||= {};
+          for(const field of [...prior,...state.fields])character.values[field.id] ??= field.initial;
+          for(const field of prior){
+            if(state.fields.some(shared=>shared.id===field.id&&shared.type!==field.type))fail(409,'O tipo de '+field.label+' é usado em uma ficha. Adicione um novo campo com outro nome.');
+          }
+          // Retired fields stay on existing sheets with their original values.
+          character.layout=prior.filter(field=>!seen.has(field.id));
+          delete character.fields;
+        }
+        if(data.source){
+          const preset=sheetPreset(data.source);
+          const starter=preset||sheetTemplateCharacter(readableSheetTemplate(state,access,data.source));
+          const {skills,abilities,rollButtons,masteries,appearance}=starter;
+          state.sheetStarter={skills,abilities,rollButtons,masteries,appearance};
+        }
+        if(state.sheetStarter){
+          const starter=state.sheetStarter;
+          const numbers=new Set(state.fields.filter(field=>field.type==='number').map(field=>field.id));
+          starter.skills=starter.skills?.filter(skill=>!skill.attribute||numbers.has(skill.attribute));
+          starter.masteries=starter.masteries?.filter(item=>numbers.has(item.attributeId));
+          starter.rollButtons=starter.rollButtons?.filter(item=>Array.from(item.formula.matchAll(/@\{([^}]+)\}/g),match=>match[1]).every(id=>seen.has(id)));
+          if(data.source)for(const character of state.characters){
+            for(const key of ['skills','abilities','rollButtons','masteries']){
+              const entries=character[key]||[];
+              const existing=new Set(entries.map(entry=>entry.id));
+              character[key]=[...entries,...structuredClone((starter[key]||[]).filter(entry=>!existing.has(entry.id)))];
+            }
+          }
+        }
+        state.sheetModelVersion=(state.sheetModelVersion||0)+1;
+      }
       break;
     }
     case 'characterClaim': {
@@ -286,7 +382,8 @@ function mutate(state, action, data, access) {
       const dnd=!old&&data.dnd?dndCharacter(data.dnd):null;
       const preset=!old&&data.preset?sheetPreset(data.preset):null;
       if(!old&&data.preset&&!preset) fail(400,'Modelo de ficha indisponível.');
-      const base=old||template||dnd||(preset?{layout:preset.fields,preset:preset.id,rollButtons:preset.rollButtons,masteries:preset.masteries}:null);
+      if(state.sheetModelVersion&&!old&&!master&&(data.templateId||data.preset||Boolean(data.dnd)!==(state.ruleset==='dnd-2024')))fail(400,'Crie o personagem com o modelo da campanha.');
+      const base=old||template||dnd||(preset?{layout:preset.fields,preset:preset.id,rollButtons:preset.rollButtons,masteries:preset.masteries}:structuredClone(state.sheetStarter||null));
       const values = Object.fromEntries(sheetFields(state,base).map(field => [
         field.id, str(data.values?.[field.id] ?? base?.values?.[field.id] ?? field.initial, 4000)
       ]));
@@ -310,6 +407,7 @@ function mutate(state, action, data, access) {
       if (!old&&!master) character.ownerId=access.memberId;
       if (character.hidden||!isPlayerCharacter(character)) delete character.ownerId;
       state.characters = updateList(state.characters,character);
+      prepareMaterial(state,data,access,'character',character.id);
       break;
     }
     case 'sheetMasteryRefresh': {
@@ -334,6 +432,38 @@ function mutate(state, action, data, access) {
       }
       break;
     }
+    case 'bodyStressConfig': {
+      const character=findCharacter(state,data.id);
+      if(typeof data.enabled!=='boolean')fail(400,'Escolha se o estresse corporal está ativo.');
+      if(!data.enabled){
+        if(character.bodyStress)character.bodyStress.enabled=false;
+        break;
+      }
+      const previous=bodyStressWithHead(character.bodyStress);
+      const mode=data.mode??previous?.mode??'simple';
+      if(!['simple','complex'].includes(mode))fail(400,'Modo de segmentação inválido.');
+      const regions={...previous?.regions};
+      for(const [key,label] of Object.entries(stressRegionsFor(mode))){
+        const limit=data.mode===undefined && data.limits?.[key]===undefined && key==='head'
+          ? regions.head?.limit??3 : data.limits?.[key];
+        const value=regions[key]?.value??0;
+        if(!Number.isInteger(limit)||limit<1||limit>99)fail(400,'Informe um limite entre 1 e 99 para '+label+'.');
+        if(limit<value)fail(409,'O limite de '+label+' precisa comportar o estresse já marcado.');
+        regions[key]={limit,value};
+      }
+      character.bodyStress={enabled:true,mode,regions};
+      break;
+    }
+    case 'bodyStressStep': {
+      const character=findCharacter(state,data.id);
+      if(!character.bodyStress?.enabled)fail(409,'O estresse corporal está desativado nesta ficha.');
+      character.bodyStress=bodyStressWithHead(character.bodyStress);
+      if(!Object.hasOwn(stressRegionsFor(character.bodyStress.mode),data.region)||![-1,1].includes(data.step))fail(400,'Ajuste de estresse inválido.');
+      const region=character.bodyStress.regions[data.region],next=region.value+data.step;
+      if(next<0||next>region.limit)fail(409,'A região já atingiu o limite desse ajuste.');
+      region.value=next;
+      break;
+    }
     case 'sheetAppearance': {
       const character=findCharacter(state,data.id);
       if(data.expectedVersion!==(character.appearance?.version||0))fail(409,'A aparência foi alterada em outra aba. Descarte o rascunho para carregar a versão atual antes de editar.');
@@ -353,6 +483,8 @@ function mutate(state, action, data, access) {
     case 'characterDelete':
       if (!master) fail(403,'Ação reservada ao mestre.');
       state.characters = state.characters.filter(item=>item.id!==data.id);
+      removeSessionMaterial(state,'character',data.id);
+      if(state.gmResources)delete state.gmResources[data.id];
       state.tokens = state.tokens.map(token=>token.characterId===data.id ? {...token,characterId:''} : token);
       for(const scene of state.sceneLibrary?.scenes||[])if(scene.tokens)scene.tokens=scene.tokens.map(token=>token.characterId===data.id?{...token,characterId:''}:token);
       break;
@@ -442,21 +574,45 @@ function randomDie(faces) {
   return buffer[0] % faces + 1;
 }
 
+function projectedTable(scoped,access,own){
+  const table=tableView(scoped,access.master);
+  if(table.tokens.some(t=>t.motion))table.table.hasPatrols=true;
+  table.tokens=table.tokens.map(token=>({...token,visionSource:playerVisionSource(scoped,token)}));
+  if (!access.master) {
+    const darkness=table.table.darkness,teams=darkness.teams||{},team=teams[own?.id];
+    const sees=playerSight(scoped,table.table,own?.id);
+    const unseen=new Set();
+    table.tokens=table.tokens.filter(token=>{
+      if(sees(token))return true;
+      unseen.add(token.id);
+      return false;
+    });
+    if(unseen.size){
+      const combat=table.table.combat,active=combat.entries[combat.active];
+      combat.entries=combat.entries.filter(e=>!unseen.has(e.tokenId));
+      combat.active=combat.entries.indexOf(active);
+      table.table.lootEvents=table.table.lootEvents.filter(e=>!unseen.has(e.tokenId));
+    }
+    const allowed=id=>!!own&&(own.id===id||darkness.mode==='group'||darkness.mode==='teams'&&team&&teams[id]===team);
+    if(darkness.teams)darkness.teams=Object.fromEntries(Object.entries(teams).filter(([id])=>allowed(id)));
+    if(table.table.fog.memory)table.table.fog.memory=Object.fromEntries(Object.entries(table.table.fog.memory).filter(([id])=>allowed(id)));
+    const visibleCharacters=new Set(scoped.characters.filter(c=>!c.hidden).map(c=>c.id));
+    table.tokens=table.tokens.map(token=>({
+      ...token,
+      characterId:visibleCharacters.has(token.characterId)?token.characterId:'',
+      canMove:Boolean(own&&token.characterId===own.id&&!token.locked&&!token.hidden)
+    }));
+  }
+  return table;
+}
+
 function view(row,access,sceneId) {
   const scoped=sceneProjection(row.state,access.master?sceneId:undefined);
   const state=publicState(scoped,access);
   if(access.master)state.sceneLibrary=sceneSummary(row.state);
   state.audio=audioView(row.state.audio,access.master);
-  const table=tableView(scoped,access.master);
-  const own=ownedCharacter(row.state,access);
-  table.tokens=table.tokens.map(token=>({...token,visionSource:playerVisionSource(row.state,token)}));
-  if (!access.master) {
-    table.tokens=table.tokens.map(token=>({
-      ...token,
-      characterId:state.characters.some(character=>character.id===token.characterId)?token.characterId:'',
-      canMove:Boolean(own&&token.characterId===own.id&&!token.locked&&!token.hidden)
-    }));
-  }
+  const own=ownedCharacter(scoped,access);
+  const table=projectedTable(scoped,access,own);
   Object.assign(state,table);
   return {id:row.id,rev:row.rev,master:access.master,
     role:access.master?'master':access.guest?'guest':'player',
@@ -497,7 +653,7 @@ async function uploadItemPortrait(request,store,row,access){
   const asset={id:uid(),name:str(file.name,180)||'Retrato do item',type,size:file.size};
   try{
     await store.putAsset(row.id+'/'+asset.id,new Blob([await file.arrayBuffer()],{type}));
-    const before=itemPortraits(row.state);const updated=await update(store,row,state=>{mutateInventory(state,'itemSave',data,access);const item=data.id?state.inventory.find(i=>i.id===data.id):state.inventory.at(-1);item.portrait=asset;commitInventory(state,state.inventory);});
+    const before=itemPortraits(row.state);const updated=await update(store,row,state=>{mutate(state,'itemSave',data,access);const item=data.id?state.inventory.find(i=>i.id===data.id):state.inventory.at(-1);item.portrait=asset;commitInventory(state,state.inventory);});
     const retained=new Set(campaignAssets(updated.state).map(a=>a.id));await Promise.allSettled(before.filter(a=>!retained.has(a.id)).map(a=>store.deleteAsset(row.id+'/'+a.id)));return updated;
   }catch(error){await store.deleteAsset(row.id+'/'+asset.id).catch(()=>{});throw error;}
 }
@@ -570,7 +726,7 @@ async function upload(request, store, row, kind,access) {
         withScene(state,request.headers.get('X-Scene-Id'),true,world=>{
           replacedAsset=world.map?.id;world.map=asset;
           mutateTable(world,'tableSettings',{grid:{mode:'image',cellPixels}},true);
-          world.table.fog.revealed=[];world.table.fog.strokes=[];world.table.fog.history=[];
+          delete world.table.fog.memory;world.table.fog.revealed=[];world.table.fog.strokes=[];world.table.fog.history=[];
         });
       }
     });
@@ -602,6 +758,17 @@ export async function api(request,store) {
       if(data.ruleset&&!['free','dnd-2024'].includes(data.ruleset))fail(400,'Sistema inválido.');
       const row = {id:uid(),owner:key(),player:key(),rev:1,state:newCampaign(name,data.example===true)};
       if(data.ruleset==='dnd-2024'){row.state.ruleset='dnd-2024';row.state.system='D&D 2024 · SRD 5.2.1';row.state.fields=dndFields();}
+      if(data.sheetModel){
+        row.state.sheetModelVersion=1;
+        if(data.sheetModel==='blank')row.state.fields=[];
+        else if(data.sheetModel!=='standard'){
+          const preset=sheetPreset(data.sheetModel);
+          if(!preset)fail(400,'Modelo indisponível.');
+          row.state.fields=preset.fields;
+          row.state.sheetStarter={rollButtons:preset.rollButtons,masteries:preset.masteries};
+        }
+        if(data.ruleset==='dnd-2024')row.state.fields=dndFields();
+      }
       await store.create(row);
       return rememberBrowserSession(request,json({...view(row,{master:true}),key:row.owner},201),row.id,row.owner);
     }
@@ -694,8 +861,17 @@ export async function api(request,store) {
     if (method === 'GET' && !route) return json(view(row,access,requestedScene));
     if (method==='GET'&&route==='sync') {
       const rolls=rollView(row.state,master),version=rollVersion(rolls);
-      const changed=new URL(request.url).searchParams.get('rollVersion')!==version;
-      return json({id:row.id,rev:row.rev,master,characterId:ownedCharacter(row.state,access)?.id||null,needsCharacter:!master&&!ownedCharacter(row.state,access),rollVersion:version,serverTime:Date.now(),state:{...(!master?{narrations:narrationView(row.state,access)}:{}),audio:audioView(row.state.audio,master,{includeLibrary:false}),...(changed?{rolls}:{}),...(new URL(request.url).searchParams.get('table')==='1'?sceneView(row,access,requestedScene).state:{})}});
+      const params=new URL(request.url).searchParams,changed=params.get('rollVersion')!==version;
+      let scene={};
+      if(params.get('table')==='1'){
+        // Between campaign revisions only moving tokens and their visible initiative entries can change.
+        if(params.get('patrolRev')===String(row.rev)){
+          const scoped=sceneProjection(row.state,master?requestedScene:undefined);
+          const projection=projectedTable(scoped,access,ownedCharacter(scoped,access));
+          scene={patrolFrame:{sceneId:scoped.sceneId,tokens:projection.tokens.filter(t=>t.motion),combat:projection.table.combat}};
+        }else scene=sceneView(row,access,requestedScene).state;
+      }
+      return json({id:row.id,rev:row.rev,master,characterId:ownedCharacter(row.state,access)?.id||null,needsCharacter:!master&&!ownedCharacter(row.state,access),rollVersion:version,serverTime:Date.now(),state:{...(!master?{narrations:narrationView(row.state,access)}:{}),audio:audioView(row.state.audio,master,{includeLibrary:false}),...(changed?{rolls}:{}),...scene}});
     }
     if (method === 'GET' && route === 'asset') {
       const visibleCharacters=master?row.state.characters:row.state.characters.filter(character=>!character.hidden);

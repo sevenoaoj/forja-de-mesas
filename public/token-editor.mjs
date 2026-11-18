@@ -16,6 +16,8 @@ export function renderTokenAppearance(token={},characters=[]){
 export function updateTokenAppearance(container,characters=[]){
  const editor=container?.querySelector('[data-token-appearance]');if(!editor)return false;
  const read=name=>container.querySelector('[name="'+name+'"]')?.value||'';
+ const privateName=container.querySelector('[data-private-token-name]');
+ if(privateName)privateName.hidden=Boolean(read('characterId'));
  const color=editor.querySelector('[name="color"]:checked')?.value||'violet',icon=editor.querySelector('[name="icon"]:checked')?.value||'auto';
  const file=container.querySelector('[name="tokenPortrait"]')?.files?.[0],removed=container.querySelector('[name="removePortrait"]')?.checked;
  let portraitUrl=file&&!removed?filePreviews.get(file):'';

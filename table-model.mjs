@@ -1,19 +1,24 @@
 import {publicItemToken} from './loot-data.mjs';
-import {normalizeVision,normalizeDarkness,normalizeRotation} from './vision-model.mjs';
+import {visionSources,tokenInVision,recordExploration,normalizeVision,normalizeDarkness,normalizeRotation} from './vision-model.mjs';
 export {normalizeVision,normalizeDarkness,normalizeRotation} from './vision-model.mjs';
 import {tokenIconIds} from './token-icons.mjs';
 import {normalizeFogStrokes} from './fog-geometry.mjs';
-import {tokenCharacterId,colors} from './model.mjs';
+import {playerVisionSource,tokenCharacterId,isPlayerCharacter,colors} from './model.mjs';
 
 const palette = new Set(colors);
 const drawingKinds = new Set(['line','rectangle','circle','freehand']);
+export const weatherNames={clear:'Céu limpo',rain:'Chuva',snow:'Neve',embers:'Brasas',storm:'Tempestade',mist:'Neblina',dust:'Poeira ao vento'};
+export const sceneTones={natural:'Original do mapa',dawn:'Amanhecer',dusk:'Crepúsculo',moon:'Luar',sun:'Sol a pino',forest:'Bosque',ice:'Gélido',sepia:'Sépia'};
+export const pingNames={point:'Apontar',danger:'Perigo',gather:'Reunir aqui',clue:'Pista'};
+const weatherLevels={light:'Leve',medium:'Moderada',heavy:'Intensa'};
+export {weatherLevels};
 const distanceModes = new Set(['euclidean','chebyshev','manhattan']);
 const tableActions = new Set([
-  'tableSettings','tableFog','tableDrawingAdd','tableDrawingDelete','tableDrawingClear',
-  'tablePing','tokenAdd','tokenMove','tokenRotate','tokenUpdate','tokenDelete','combatSet','combatNext'
+  'tableAtmosphere','tableLightSet','tableLightDelete','tableWallAdd','tableWallDelete','tableDoorSet','tableSettings','tableFog','tableDrawingAdd','tableDrawingDelete','tableDrawingClear',
+  'tablePing','tokenPatrol','tokenAdd','tokenMove','tokenRotate','tokenUpdate','tokenDelete','combatSet','combatNext','combatEndOwn'
 ]);
 export const tableSceneActions=tableActions;
-const sharedActions = new Set(['tablePing','tokenMove','tokenRotate']);
+const sharedActions = new Set(['tablePing','tokenMove','tokenRotate','combatEndOwn']);
 const clean = (value,max) => typeof value==='string' ? value.trim().slice(0,max) : '';
 const clamp = (value,min,max) => Math.max(min,Math.min(max,value));
 const number = (value,fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
@@ -26,6 +31,11 @@ export function mapGrid(map,cellPixels=100) {
   if (!map?.width||!map?.height) return null;
   const pixels=Math.max(integer(cellPixels,10,4096,100),Math.ceil(Math.max(map.width,map.height)/80));
   return {columns:clamp(Math.ceil(map.width/pixels),4,80),rows:clamp(Math.ceil(map.height/pixels),4,80),cellPixels:pixels};
+}
+
+// The map is top-left aligned. Partial cells add padding rather than stretching the image.
+export function mapPixelsPerCell(grid,map){
+  return grid.mode==='image'?grid.cellPixels:Math.max(map.width/grid.columns,map.height/grid.rows);
 }
 
 function normalizeGrid(value={},map) {
@@ -47,14 +57,46 @@ function region(value,grid) {
     width:integer(value.width,1,grid.columns-x,1),height:integer(value.height,1,grid.rows-y,1)};
 }
 
+function eligibleForPatrol(state,token){
+  return token.kind!=='item'&&(!token.characterId||state.characters?.some(c=>c.id===token.characterId&&!isPlayerCharacter(c)));
+}
+
+// Time, rather than a background job or an open GM tab, determines the NPC's position.
+export function patrolSample(route,now){
+  const points=route.points,legs=[];
+  const add=(a,b)=>{
+    const dx=b.x-a.x,dy=b.y-a.y,duration=Math.hypot(dx,dy)*1000/route.speed;
+    if(duration>0)legs.push({a,dx,dy,duration});
+  };
+  for(let i=1;i<points.length;i++)add(points[i-1],points[i]);
+  if(route.mode==='loop')add(points.at(-1),points[0]);
+  else for(let i=points.length-1;i>0;i--)add(points[i],points[i-1]);
+  if(!legs.length)return {...points[0]};
+  const elapsed=route.offset+(route.started?Math.max(0,now-route.started):0);
+  let time=elapsed%legs.reduce((sum,l)=>sum+l.duration,0);
+  for(const leg of legs){
+    if(time<leg.duration){
+      const {a,dx,dy,duration}=leg;
+      return {x:a.x+dx*time/duration,y:a.y+dy*time/duration,rotation:normalizeRotation(Math.atan2(dy,dx)*180/Math.PI+90),
+        ...(route.started?{motion:{at:now,ms:Math.min(1200,duration-time),vx:dx/duration,vy:dy/duration}}:{})};
+    }
+    time-=leg.duration;
+  }
+  return {...points[0]};
+}
+
 export function normalizeToken(token,grid) {
   const size=integer(token.size,1,4,1);
+  const patrol=token.patrol;
+  const validRoute=patrol&&['return','loop'].includes(patrol.mode)&&Number.isFinite(patrol.speed)&&patrol.speed>=.25&&patrol.speed<=4&&Number.isFinite(patrol.started)&&Number.isFinite(patrol.offset)&&Array.isArray(patrol.points)&&patrol.points.length>=2&&patrol.points.length<=48&&patrol.points.every(p=>Number.isFinite(p?.x)&&Number.isFinite(p?.y));
   return {
     id:clean(token.id,80),name:clean(token.name,80)||'Token',
+    ...(!token.characterId&&token.kind!=='item'&&clean(token.realName,80)?{realName:clean(token.realName,80)}:{}),
     color:palette.has(token.color)?token.color:'violet',icon:tokenIconIds.has(token.icon)?token.icon:'auto', size,
     x:bounded(token.x,0,grid.columns-size,0),y:bounded(token.y,0,grid.rows-size,0),
     hidden:token.hidden===true,locked:token.locked===true,rotation:normalizeRotation(token.rotation),vision:normalizeVision(token.vision),
     characterId:clean(token.characterId,80),
+    ...(validRoute?{patrol}:{}),
     ...(token.portrait?{portrait:token.portrait}:{}),
     ...(token.kind==='item'&&token.loot?{kind:'item',loot:token.loot,characterId:'',vision:{enabled:false,range:0,angle:360}}:{}),
     statuses:Array.isArray(token.statuses) ? [...new Set(token.statuses.map(status=>clean(status,24)).filter(Boolean))].slice(0,6) : []
@@ -64,7 +106,7 @@ export function normalizeToken(token,grid) {
 export function normalizeTable(state) {
   const value=state.table||{};
   const grid=normalizeGrid(value.grid,state.map);
-  const fog={enabled:value.fog?.enabled===true,strokes:normalizeFogStrokes(value.fog?.strokes,grid),revealed:(Array.isArray(value.fog?.revealed)?value.fog.revealed:[])
+  const fog={...(value.fog?.mode==='war'?{mode:'war'}:{}),...(value.fog?.memory?{memory:value.fog.memory}:{}),enabled:value.fog?.enabled===true,strokes:normalizeFogStrokes(value.fog?.strokes,grid),revealed:(Array.isArray(value.fog?.revealed)?value.fog.revealed:[])
     .filter(item=>item && typeof item==='object').slice(0,150).map(item=>region(item,grid))};
   fog.history=(Array.isArray(value.fog?.history)?value.fog.history:[]).slice(-10).filter(item=>item&&Array.isArray(item.revealed)).map(item=>({
     enabled:item.enabled===true,strokes:normalizeFogStrokes(item.strokes,grid),revealed:item.revealed.slice(0,150).map(rect=>region(rect,grid))
@@ -77,14 +119,29 @@ export function normalizeTable(state) {
     ...(item.kind==='freehand'?{points:(Array.isArray(item.points)?item.points:[]).slice(0,600).filter(point=>point&&Number.isFinite(Number(point.x))&&Number.isFinite(Number(point.y))).map(point=>({x:bounded(point.x,0,grid.columns,0),y:bounded(point.y,0,grid.rows,0)}))}:{})
   }));
   const pings=(Array.isArray(value.pings)?value.pings:[]).filter(item=>item && Number.isFinite(item.at)&&Date.now()-item.at<1500&&item.at<=Date.now()+1000).slice(-12).map(item=>({
-    id:clean(item.id,80),x:bounded(item.x,0,grid.columns,0),y:bounded(item.y,0,grid.rows,0),at:item.at,name:clean(item.name,80)||'Participante'
+    id:clean(item.id,80),...(Object.hasOwn(pingNames,item.signal)?{signal:item.signal}:{}),x:bounded(item.x,0,grid.columns,0),y:bounded(item.y,0,grid.rows,0),at:item.at,name:clean(item.name,80)||'Participante'
   }));
   const combatValue=value.combat||{};
   const entries=(Array.isArray(combatValue.entries)?combatValue.entries:[]).slice(0,100).map(entry=>({
     id:clean(entry.id,80),name:clean(entry.name,80),value:integer(entry.value,-999,999,0),tokenId:clean(entry.tokenId,80)
   })).filter(entry=>entry.name);
   const lootEvents=(Array.isArray(value.lootEvents)?value.lootEvents:[]).filter(e=>e&&Number.isFinite(e.at)&&Date.now()-e.at<3000&&e.at<=Date.now()+1000&&[e.x,e.y,e.toX,e.toY].every(Number.isFinite)).slice(-12).map(e=>({id:clean(e.id,80),tokenId:clean(e.tokenId,80),at:e.at,x:bounded(e.x,0,grid.columns,0),y:bounded(e.y,0,grid.rows,0),toX:bounded(e.toX,0,grid.columns,0),toY:bounded(e.toY,0,grid.rows,0),public:e.public!==false}));
-  return {grid,fog,drawings,pings,lootEvents,darkness:normalizeDarkness(value.darkness),combat:{entries,
+  const walls=(Array.isArray(value.walls)?value.walls:[]).slice(0,256)
+    .filter(w=>w&&clean(w.id,80)&&['wall','door'].includes(w.kind)&&[w.x,w.y,w.toX,w.toY].every(Number.isFinite))
+    .map(w=>({id:clean(w.id,80),kind:w.kind,x:clamp(w.x,0,grid.columns),y:clamp(w.y,0,grid.rows),
+      toX:clamp(w.toX,0,grid.columns),toY:clamp(w.toY,0,grid.rows),open:w.kind==='door'&&w.open===true}))
+    .filter(w=>w.x!==w.toX||w.y!==w.toY);
+  const lights=(Array.isArray(value.lights)?value.lights:[]).slice(0,48)
+    .filter(l=>l&&clean(l.id,80)&&[l.x,l.y,l.radius].every(Number.isFinite)&&/^#[a-f0-9]{6}$/i.test(l.color))
+    .map(l=>({id:clean(l.id,80),x:clamp(l.x,0,grid.columns),y:clamp(l.y,0,grid.rows),
+      radius:clamp(l.radius,.25,80),color:l.color.toLowerCase(),...(l.scope==='local'?{scope:'local'}:{}),...(l.angle>0&&l.angle<360?{angle:bounded(l.angle,1,360,360),rotation:normalizeRotation(l.rotation)}:{})}));
+  const saved=value.atmosphere||{},atmosphere={
+    toneOpacity:integer(saved.toneOpacity,0,100,100),
+    weather:Object.hasOwn(weatherNames,saved.weather)?saved.weather:'clear',
+    tone:Object.hasOwn(sceneTones,saved.tone)?saved.tone:'natural',
+    level:Object.hasOwn(weatherLevels,saved.level)?saved.level:'medium'
+  };
+  return {grid,atmosphere,lights,walls,fog,drawings,pings,lootEvents,darkness:normalizeDarkness(value.darkness),combat:{entries,
     active:integer(combatValue.active,-1,Math.max(0,entries.length-1),0),round:integer(combatValue.round,1,9999,1)}};
 }
 
@@ -92,16 +149,34 @@ export function normalizeTable(state) {
 // Only an explicit GM hide removes the token from player data.
 export function tokenVisible(token) {return token.hidden!==true;}
 
+export function playerSight(state,table,characterId){
+  const restricted=table.darkness.enabled&&table.darkness.mode==='teams'||table.fog.enabled&&table.fog.mode==='war';
+  if(!restricted)return ()=>true;
+  const tokens=state.tokens.map(raw=>({...normalizeToken(raw,table.grid),characterId:tokenCharacterId(state,raw),visionSource:playerVisionSource(state,raw)}));
+  const sources=visionSources({characterId,state:{table}},tokens);
+  return token=>sources.some(source=>source.id===token.id)||tokenInVision(token,sources,table.grid,table.walls);
+}
+
 export function tableView(state,master) {
   const table=normalizeTable(state);
   if (master && table.combat.active<0) table.combat.active=0;
   const allTokens=(state.tokens||[]).map(token=>normalizeToken({...token,characterId:tokenCharacterId(state,token)},table.grid));
+  const now=Date.now();
+  for(const token of allTokens){
+    if(token.patrol&&eligibleForPatrol(state,token)){
+      Object.assign(token,patrolSample(token.patrol,now));
+      token.x=clamp(token.x,0,table.grid.columns-token.size);token.y=clamp(token.y,0,table.grid.rows-token.size);
+    }
+    if(!master)delete token.patrol;
+  }
   const tokens=master ? allTokens : allTokens.filter(token=>tokenVisible(token,table)).map(token=>publicItemToken(token));
   if (!master) {
     delete table.fog.history;table.lootEvents=table.lootEvents.filter(e=>e.public);
     const hidden=new Set(allTokens.filter(token=>!tokenVisible(token,table)).map(token=>token.id));
     const active=table.combat.entries[table.combat.active];
-    table.combat.entries=table.combat.entries.filter(entry=>!hidden.has(entry.tokenId));
+    const aliases=new Map(allTokens.filter(t=>t.realName).map(t=>[t.id,t.name]));
+    table.combat.entries=table.combat.entries.filter(entry=>!hidden.has(entry.tokenId)).map(entry=>
+      aliases.has(entry.tokenId)?{...entry,name:aliases.get(entry.tokenId)}:entry);
     const index=table.combat.entries.findIndex(entry=>entry.id===active?.id);
     table.combat.active=index;
   }
@@ -141,6 +216,10 @@ function subtract(rect,cut) {
 }
 
 function changeFog(table,data) {
+  if(table.fog.mode==='war'&&data.operation){
+    if(data.operation==='reset'){delete table.fog.memory;return;}
+    fail(400,'Selecione névoa manual para pintar ou desfazer.');
+  }
   if (data.operation==='undo') {
     const previous=table.fog.history.pop();
     if (previous) Object.assign(table.fog,previous);
@@ -175,6 +254,7 @@ function changeFog(table,data) {
 function changeSettings(state,table,data) {
   const grid=data.grid||data;
   const next={...table.grid};
+  const hadMapDimensions=Boolean(state.map?.width&&state.map?.height);
   if (data.mapDimensions!==undefined) {
     if (!state.map||data.mapDimensions?.id!==state.map.id) fail(409,'O mapa mudou. Reabra a configuração.');
     const width=requireRange(data.mapDimensions.width,1,32768,'Largura da imagem',true);
@@ -206,15 +286,40 @@ function changeSettings(state,table,data) {
   if(data.darkness!==undefined){
     if(!data.darkness||typeof data.darkness!=='object'||Array.isArray(data.darkness))fail(400,'Configuração de escuridão inválida.');
     if(data.darkness.enabled!==undefined&&typeof data.darkness.enabled!=='boolean')fail(400,'Escuridão inválida.');
-    if(data.darkness.mode!==undefined&&!['individual','group'].includes(data.darkness.mode))fail(400,'Modo de visão inválido.');
+    if(data.darkness.mode!==undefined&&!['individual','group','teams'].includes(data.darkness.mode))fail(400,'Modo de visão inválido.');
+    if(data.darkness.level!==undefined)requireRange(data.darkness.level,0,100,"Intensidade da escuridão");
+    if(data.darkness.teams!==undefined){
+      const teams=data.darkness.teams;
+      if(!teams||typeof teams!=='object'||Array.isArray(teams)||Object.entries(teams).some(([id,name])=>!state.characters.some(c=>c.id===id)||typeof name!=='string'||!name.trim()||name.length>40))fail(400,'Grupo de visão inválido.');
+    }
     table.darkness=normalizeDarkness({...table.darkness,...data.darkness});
+  }
+  if(data.fogMode!==undefined){
+    if(!['war','manual'].includes(data.fogMode))fail(400,'Tipo de névoa inválido.');
+    table.fog.mode=data.fogMode;
   }
   if (data.fogEnabled!==undefined) {
     if (typeof data.fogEnabled!=='boolean') fail(400,'Visibilidade da névoa inválida.');
     table.fog.enabled=data.fogEnabled;
   }
   Object.assign(next,normalizeGrid(next,state.map));
+  if(state.map?.width&&state.map?.height){
+    // Before a legacy image reports its dimensions the client draws it using contain.
+    const previous=hadMapDimensions?table.grid:{...table.grid,mode:'manual'};
+    const ratio=mapPixelsPerCell(previous,state.map)/mapPixelsPerCell(next,state.map);
+    if(ratio!==1){
+      for(const wall of table.walls){
+        wall.x*=ratio;wall.y*=ratio;wall.toX*=ratio;wall.toY*=ratio;
+      }
+      for(const light of table.lights){
+        light.x*=ratio;light.y*=ratio;light.radius*=ratio;
+      }
+    }
+  }
   if(next.columns!==table.grid.columns||next.rows!==table.grid.rows||data.mapDimensions)table.fog.history=[];
+  if(next.columns!==table.grid.columns||next.rows!==table.grid.rows){
+    for(const token of state.tokens)if(token.patrol?.points.some(p=>p.x>next.columns-token.size||p.y>next.rows-token.size))delete token.patrol;
+  }
   table.grid=next;
   table.fog.revealed=table.fog.revealed.filter(rect=>rect.x<next.columns && rect.y<next.rows).map(rect=>({
     ...rect,width:Math.min(rect.width,next.columns-rect.x),height:Math.min(rect.height,next.rows-rect.y)
@@ -224,6 +329,8 @@ function changeSettings(state,table,data) {
 }
 
 function changeToken(state,table,action,data,master) {
+  if(data.realName!==undefined&&(typeof data.realName!=='string'||data.realName.length>80))fail(400,'Use até 80 caracteres no nome verdadeiro.');
+  if(data.patrol!==undefined)fail(400,'Use a ferramenta de rota.');
   if(data.loot!==undefined||data.kind!==undefined)fail(400,'Use o catálogo para colocar itens na mesa.');
   if(data.portrait!==undefined)fail(400,'Envie o retrato pelo importador de imagens.');
   if(data.removePortrait!==undefined&&typeof data.removePortrait!=='boolean')fail(400,'Opção de retrato inválida.');
@@ -253,6 +360,23 @@ function changeToken(state,table,action,data,master) {
   const token=state.tokens.find(token=>token.id===data.id);
   if (!token) fail(404,'Token indisponível.');
   if (!master && (token.locked || !tokenVisible(token,table))) fail(403,'Este token não pode ser movido.');
+  if(action==='tokenPatrol'){
+    if(!eligibleForPatrol(state,token))fail(400,'Escolha um NPC ou um token sem ficha.');
+    const now=Date.now(),route=token.patrol;
+    if(data.operation==='start'){
+      if(!Array.isArray(data.points)||data.points.length<2||data.points.length>48||!['loop','return'].includes(data.mode))fail(400,'Marque de 2 a 48 pontos e escolha o percurso.');
+      const points=data.points.map(p=>({x:requireRange(p?.x,0,table.grid.columns-token.size,'Posição X'),y:requireRange(p?.y,0,table.grid.rows-token.size,'Posição Y')}));
+      if(!points.some(p=>p.x!==points[0].x||p.y!==points[0].y))fail(400,'Escolha dois lugares diferentes.');
+      token.patrol={points,mode:data.mode,speed:requireRange(data.speed,.25,4,'Velocidade'),started:now,offset:0};
+    }else if(route){
+      const {x,y,rotation}=patrolSample(route,now);Object.assign(token,{x,y,rotation});
+      if(data.operation==='pause'){if(route.started)route.offset+=Math.max(0,now-route.started);route.started=0;}
+      else if(data.operation==='resume'){if(!route.started)route.started=now;}
+      else if(data.operation==='clear')delete token.patrol;
+      else fail(400,'Operação de rota inválida.');
+    }else fail(409,'Este token já não possui uma rota.');
+    return;
+  }
   if (action==='tokenDelete') {
     state.tokens=state.tokens.filter(item=>item!==token);
     const active=table.combat.entries[table.combat.active];
@@ -270,9 +394,19 @@ function changeToken(state,table,action,data,master) {
     const x=requireRange(data.x,0,table.grid.columns-token.size,'Posição X');
     const y=requireRange(data.y,0,table.grid.rows-token.size,'Posição Y');
     const moved={...token,x:table.grid.snap?Math.round(x):x,y:table.grid.snap?Math.round(y):y};
-    Object.assign(token,moved);
+    if(table.fog.enabled&&table.fog.mode==='war'&&data.trail!==undefined&&playerVisionSource(state,token)){
+      if(!Array.isArray(data.trail)||data.trail.length>64)fail(400,'Trajeto de exploração inválido.');
+      for(const sample of data.trail){
+        const x=requireRange(sample?.x,0,table.grid.columns-token.size,'Posição X');
+        const y=requireRange(sample?.y,0,table.grid.rows-token.size,'Posição Y');
+        const rotation=requireRange(sample?.rotation,0,360,'Direção');
+        recordExploration(table.fog,{...token,x,y,rotation},table.grid,table.walls);
+      }
+    }
+    Object.assign(token,moved);delete token.patrol;
     return;
   }
+  const originalSize=token.size,previousRealName=token.realName;
   if (data.name!==undefined) {
     const name=clean(data.name,80);
     if (!name) fail(400,'Informe o nome do token.');
@@ -296,9 +430,17 @@ function changeToken(state,table,action,data,master) {
     if (id && !state.characters.some(character=>character.id===id)) fail(400,'Ficha vinculada indisponível.');
     token.characterId=id;
   }
+  if(token.characterId||token.kind==='item'||data.realName==='')delete token.realName;
+  else if(data.realName!==undefined)token.realName=clean(data.realName,80);
+  if(previousRealName||token.realName){
+    for(const entry of table.combat.entries)if(entry.tokenId===token.id)entry.name=token.name;
+  }
   if (data.statuses!==undefined) {
     if (!Array.isArray(data.statuses) || data.statuses.length>6 || data.statuses.some(status=>typeof status!=='string' || !clean(status,24))) fail(400,'Use até seis condições de token.');
     token.statuses=[...new Set(data.statuses.map(status=>clean(status,24)))];
+  }
+  if(token.patrol&&(token.size!==originalSize||!eligibleForPatrol(state,token))){
+    const {x,y}=patrolSample(token.patrol,Date.now());Object.assign(token,{x,y});delete token.patrol;
   }
   Object.assign(token,normalizeToken(token,table.grid));
 }
@@ -319,19 +461,60 @@ function changeCombat(state,table,data) {
   table.combat.round=data.round===undefined ? 1 : requireRange(data.round,1,9999,'Rodada',true);
 }
 
-export function mutateTable(state,action,data,master,actorName=master?'Mestre':'Participante') {
+export function mutateTable(state,action,data,master,actorName=master?'Mestre':'Participante',actorCharacterId=null) {
   if (!tableActions.has(action)) return false;
   if (!master && !sharedActions.has(action)) fail(403,'Ação reservada ao mestre.');
   const table=normalizeTable(state);
   if (table.combat.active<0) table.combat.active=0;
   state.tokens=(state.tokens||[]).map(token=>normalizeToken({...token,characterId:tokenCharacterId(state,token)},table.grid));
   if (action==='tableSettings') changeSettings(state,table,data);
+  else if(action==='tableAtmosphere'){
+    for(const [key,choices] of [['weather',weatherNames],['tone',sceneTones],['level',weatherLevels]]){
+      if(typeof data[key]!=='string'||!Object.hasOwn(choices,data[key]))fail(400,'Escolha um ambiente válido.');
+    }
+    const toneOpacity=data.toneOpacity===undefined?table.atmosphere.toneOpacity:requireRange(data.toneOpacity,0,100,'Opacidade da tonalidade',true);
+    table.atmosphere={weather:data.weather,tone:data.tone,level:data.level,toneOpacity};
+  }
+  else if(action==='tableLightSet'){
+    const light=data.id?table.lights.find(item=>item.id===data.id):{id:uid()};
+    if(!light)fail(404,'Emissor não encontrado.');
+    if(!data.id&&table.lights.length>=48)fail(409,'Limite de 48 emissores nesta cena.');
+    if(typeof data.color!=='string'||!/^#[a-f0-9]{6}$/i.test(data.color))fail(400,'Cor de luz inválida.');
+    Object.assign(light,{color:data.color.toLowerCase(),x:requireRange(data.x,0,table.grid.columns,'Posição X'),
+      y:requireRange(data.y,0,table.grid.rows,'Posição Y'),radius:requireRange(data.radius,.25,80,'Raio')});
+    if(data.scope!==undefined){
+      if(!['local','global'].includes(data.scope))fail(400,'Visibilidade da luz inválida.');
+      light.scope=data.scope;
+    }
+    if(data.angle!==undefined)light.angle=requireRange(data.angle,1,360,'Abertura');
+    if(data.rotation!==undefined)light.rotation=normalizeRotation(requireRange(data.rotation,0,360,'Direção'));
+    if(!data.id)table.lights.push(light);
+  }else if(action==='tableLightDelete'){
+    table.lights=table.lights.filter(light=>light.id!==data.id);
+  }
+  else if(action==='tableWallAdd'){
+    if(table.walls.length>=256)fail(409,'Limite de 256 segmentos nesta cena.');
+    if(!['wall','door'].includes(data.kind))fail(400,'Tipo de barreira inválido.');
+    const wall={id:uid(),kind:data.kind,open:false};
+    for(const key of ['x','y','toX','toY'])wall[key]=requireRange(data[key],0,['x','toX'].includes(key)?table.grid.columns:table.grid.rows,'Coordenada');
+    if(Math.hypot(wall.toX-wall.x,wall.toY-wall.y)<=.02)fail(400,'Marque dois pontos diferentes.');
+    table.walls.push(wall);
+  }else if(action==='tableWallDelete'||action==='tableDoorSet'){
+    const wall=table.walls.find(w=>w.id===data.id);
+    if(!wall)fail(404,'Barreira não encontrada.');
+    if(action==='tableWallDelete')table.walls=table.walls.filter(w=>w!==wall);
+    else{
+      if(wall.kind!=='door'||typeof data.open!=='boolean')fail(400,'Estado de porta inválido.');
+      wall.open=data.open;
+    }
+  }
   else if (action==='tableFog') changeFog(table,data);
   else if (action.startsWith('token')) changeToken(state,table,action,data,master);
   else if (action==='tablePing') {
     const now=Date.now();
+    if(data.signal!==undefined&&(typeof data.signal!=='string'||!Object.hasOwn(pingNames,data.signal)))fail(400,'Sinal desconhecido.');
     table.pings=[...table.pings.filter(ping=>now-ping.at<1500),{
-      id:uid(),x:requireRange(data.x,0,table.grid.columns,'Posição X'),y:requireRange(data.y,0,table.grid.rows,'Posição Y'),at:now,name:clean(actorName,80)||'Participante'
+      id:uid(),...(data.signal?{signal:data.signal}:{}),x:requireRange(data.x,0,table.grid.columns,'Posição X'),y:requireRange(data.y,0,table.grid.rows,'Posição Y'),at:now,name:clean(actorName,80)||'Participante'
     }].slice(-12);
   } else if (action==='tableDrawingAdd') {
     if (table.drawings.length>=150) fail(409,'Limite de 150 desenhos atingido.');
@@ -346,8 +529,14 @@ export function mutateTable(state,action,data,master,actorName=master?'Mestre':'
   } else if (action==='tableDrawingDelete') table.drawings=table.drawings.filter(item=>item.id!==data.id);
   else if (action==='tableDrawingClear') table.drawings=[];
   else if (action==='combatSet') changeCombat(state,table,data);
-  else if (action==='combatNext' && table.combat.entries.length) {
-    const direction=data.direction??1;
+  else if (action==='combatEndOwn'||action==='combatNext' && table.combat.entries.length) {
+    if(action==='combatEndOwn'){
+      const entry=table.combat.entries[table.combat.active];
+      const token=state.tokens.find(item=>item.id===entry?.tokenId);
+      if(!actorCharacterId||!token||token.characterId!==actorCharacterId||!tokenVisible(token,table)||!playerSight(state,table,actorCharacterId)(token))fail(403,'Só é possível encerrar o turno do seu personagem.');
+      if(data.entryId!==entry.id||data.round!==table.combat.round)fail(409,'O turno já mudou.');
+    }
+    const direction=action==='combatEndOwn'?1:data.direction??1;
     if (![1,-1].includes(direction)) fail(400,'Direção inválida.');
     const {entries,active,round}=table.combat;
     if (direction===1) {
@@ -355,6 +544,12 @@ export function mutateTable(state,action,data,master,actorName=master?'Mestre':'
       if (active===entries.length-1) table.combat.round=Math.min(9999,round+1);
     } else if (active>0) table.combat.active--;
     else if (round>1) {table.combat.active=entries.length-1;table.combat.round--;}
+  }
+  if(table.fog.mode==='war'&&table.fog.enabled){
+    const moved=action==='tokenMove'||action==='tokenRotate';
+    if(moved||['tableSettings','tokenAdd','tokenUpdate','tableFog','tableDoorSet','tableWallDelete'].includes(action)){
+      for(const token of state.tokens)if((!moved||token.id===data.id)&&playerVisionSource(state,token))recordExploration(table.fog,token,table.grid,table.walls);
+    }
   }
   state.table=normalizeTable({...state,table});
   return true;

@@ -168,8 +168,8 @@ dialog::backdrop{background:#080710c9}
 .sheet-resource{display:grid;gap:5px}
 .sheet-resource>strong,.sheet-value>strong{font-size:12px;font-weight:600;overflow-wrap:anywhere}
 .resource-meter{display:grid;grid-template-columns:34px minmax(0,1fr) 34px;align-items:center;text-align:center;gap:3px;position:relative;isolation:isolate;
-  overflow:hidden;background:#141c22;border:1px solid #8cc5a357;border-radius:8px;font-weight:700}
-.resource-fill{position:absolute;z-index:-1;inset:0;transform:scaleX(var(--resource-ratio));transform-origin:left center;pointer-events:none;background:linear-gradient(90deg,#1d654b,#347954)}
+  overflow:hidden;background:color-mix(in srgb,var(--resource-color) 12%,#17191e);border:1px solid color-mix(in srgb,var(--resource-color) 50%,#26282d);border-radius:8px;font-weight:700}
+.resource-fill{position:absolute;z-index:-1;inset:0;transform:scaleX(var(--resource-ratio));transform-origin:left center;pointer-events:none;background:var(--resource-color);background:color-mix(in srgb,var(--resource-color) 65%,#111)}
 .resource-meter span{overflow-wrap:anywhere}
 .sheet-icon-button{background:#25212fb8;border:1px solid #ffffff2b;border-radius:7px;min-width:34px;min-height:34px;color:inherit;font-size:16px;padding:3px 6px}
 .sheet-icon-button:hover{border-color:var(--sheet-accent);color:var(--sheet-accent)}
@@ -405,3 +405,33 @@ dialog::backdrop{background:#080710c9}
 .stat-tile>.sheet-inline{width:100%;text-align:center;font-size:inherit}
 .resource-meter>.sheet-inline{flex:1;text-align:center}
 .sheet-color-label{font-size:.78rem;color:var(--muted);cursor:pointer}
+
+.stress-panel {margin-block:1rem;padding:clamp(1rem,3vw,1.6rem)}
+.stress-panel header,.stress-adjust,.stress-adjust div {display:flex;align-items:center;justify-content:space-between;gap:.65rem}
+.stress-panel header {margin-bottom:.8rem;flex-wrap:wrap}
+.stress-panel h2 {margin:0}
+.stress-alert {color:#ffb1ad}
+.stress-layout {display:grid;grid-template-columns:minmax(0,1fr) minmax(12rem,.85fr);gap:1rem}
+.stress-screen {display:grid;place-items:center;background-color:#101d22;background-image:linear-gradient(#8ce5c809 1px,transparent 1px),linear-gradient(90deg,#8ce5c809 1px,transparent 1px);background-size:20px 20px;border:1px solid #34464a;border-radius:10px}
+.stress-screen svg {width:100%;max-height:310px}
+.stress-axis {fill:none;stroke:#638885;stroke-opacity:.32;stroke-dasharray:3 5}
+.stress-orientation {font:11px monospace;fill:#a2bdb8;pointer-events:none}
+.stress-panel [data-level=clear] {--ink:#8bdbc3;--tissue:#29564c}
+.stress-panel [data-level=marked] {--ink:#ffcd77;--tissue:#795731}
+.stress-panel [data-level=full] {--ink:#ffaaa7;--tissue:url(#stress-hatch)}
+.stress-part {fill:var(--tissue);stroke:var(--ink);stroke-width:1.45;stroke-linejoin:round;cursor:pointer}
+.stress-part:is(:hover,[data-selected=true]) {stroke:#fff;stroke-width:2.6}
+.stress-list {display:grid;gap:.35rem}
+.stress-region {display:grid;grid-template-columns:.55rem 1fr auto;align-items:center;text-align:left;gap:.1rem .65rem;border:1px solid var(--line);border-radius:7px;background:var(--surface);padding:.45rem .75rem}
+.stress-region[aria-pressed=true] {border-color:var(--ink);background:#242830}
+.stress-dot {grid-row:span 2;width:.55rem;height:.55rem;background:var(--ink);border-radius:50%}
+.stress-region small {grid-column:2;color:var(--ink)}
+.stress-region b,.stress-adjust output {font-variant-numeric:tabular-nums}
+.stress-adjust {margin-top:.8rem;padding:.65rem .85rem;background:var(--bg);border-radius:8px}
+.stress-adjust button {width:44px;height:44px;font-size:1.25rem}
+.stress-adjust output {min-width:3rem;text-align:center}
+@media(max-width:640px){.stress-layout {grid-template-columns:1fr}.stress-screen svg {max-height:245px}.stress-adjust {flex-wrap:wrap}}
+
+[data-form=bodyStressConfig] label[hidden]{display:none}
+.stress-panel {container-type:inline-size}
+@container(min-width:40rem){.stress-list[data-mode=complex]{grid-template-columns:repeat(2,minmax(0,1fr))}.stress-layout:has(.stress-list[data-mode=complex]){grid-template-columns:minmax(14rem,.85fr) minmax(24rem,1.4fr)}}

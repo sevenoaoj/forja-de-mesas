@@ -1,6 +1,6 @@
 import {activeSceneId,sceneLibrary} from './scene-model.mjs';
-import {accessFor,authorizeAction} from './access.mjs';
-import {normalizeTable,normalizeToken,tokenVisible} from './table-model.mjs';
+import {ownedCharacter,accessFor,authorizeAction} from './access.mjs';
+import {playerSight,normalizeTable,normalizeToken,tokenVisible} from './table-model.mjs';
 
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
 const encoder=new TextEncoder();
@@ -30,7 +30,8 @@ export function createTableRealtime({sceneView,now=Date.now,setTimer=setInterval
   for(const client of room.clients){
    const access=accessFor(room.row,client.key);if(!access){close(client);continue;}
    const viewing=access.master&&sceneLibrary(room.row.state).scenes.some(scene=>scene.id===client.sceneId)?client.sceneId:activeSceneId(room.row.state);
-   if(viewing===activeSceneId(room.row.state)&&(access.master||visible)){
+   const sees=access.master?null:playerSight(room.row.state,table,ownedCharacter(room.row.state,access)?.id);
+   if(viewing===activeSceneId(room.row.state)&&(access.master||visible&&sees(raw)&&sees(token))){
     client.seen.add(preview.id);sendBytes(client,bytes);
    }else if(client.seen.delete(preview.id))send(client,{type:'tokenPreview',id:preview.id,dragId:preview.dragId,seq:preview.seq,phase:'cancel',at:now()});
   }

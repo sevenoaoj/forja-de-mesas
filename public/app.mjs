@@ -5,24 +5,24 @@ import {createSheetHistoryController} from './sheet-history-controller.mjs';
 import {createAccessStorage,restoreCampaignIdentity} from './player-access.mjs';
 import {createInlineSheetEditor} from './sheet-inline.mjs';
 import {sheetTemplateLibrary,sheetTemplateSaveForm,sheetTemplateEditForm,sheetTemplateApplyForm,downloadSheetTemplate} from './sheet-templates.mjs';
-import {renderJournal,journalEditor,journalFormData} from './journal.mjs';
+import {noteReader,collectMarkdown,renderJournal,journalEditor,journalFormData} from './journal.mjs';
 import {renderSceneManager,renderSceneCards} from './scenes.mjs';
 import {renderTokenAppearance,updateTokenAppearance} from './token-editor.mjs';
 import {createSheetMosaic,renderSheetMosaic,renderSheetLayoutEditor,sheetThemeStyle,sheetFieldTone} from './sheet-mosaic.mjs';
-import {renderGmScreen,renderGmCards,gmCardEditor,gmCategories,visibleGmCards,gmPartyFieldsEditor} from './gm-screen.mjs';
+import {mountVaultCanvas,prepSession,prepList,renderGmScreen,renderGmCards,gmCardEditor,gmCategories,visibleGmCards,gmPartyFieldsEditor} from './gm-screen.mjs';
 import {createDiceDisplay,createNarrationDisplay} from './rolls.mjs';
 import {narrationComposer,narrationFormData,updateNarrationComposer} from './narration.mjs';
 import {dndCatalog,dndAbilities,dndClasses,dndBackgrounds,dndWeapons,dndModifier,dndDerived,dndBook,dndAttribution} from './dnd.mjs';
 import {dndCreation,dndFormData,updateDndCreation,dndCatalogShell,renderDndResults} from './dnd-ui.mjs';
-import {newCampaign, colors, characterColorNames, icons, rollFormulaLimit, sheetFields, sheetValue, skillValues, inviteOrigin,resolveSheetFormula,displaySheetFormula,sheetPresets,sheetPreset,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
+import {stressRegionsFor,bodyStressWithHead,newCampaign, colors, characterColorNames, icons, rollFormulaLimit, sheetFields, sheetValue, skillValues, inviteOrigin,resolveSheetFormula,displaySheetFormula,sheetPresets,sheetPreset,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
 import {emptyAudio,soundPresets} from './media.mjs';
 import {campaignAudio} from './audio.mjs';
 import {createSoundboardLibrary,createSoundboardDock} from './soundboard.mjs';
 import {normalizeSoundboard} from './soundboard-model.mjs';
 import {createMusicLibrary,createMusicDock,createAudioPopover} from './music.mjs';
-import {createTabletop} from './table.mjs';
+import {createTabletop,renderAtmosphere} from './table.mjs';
 import {createTableLive} from './table-live.mjs';
-import {normalizeTable,mapGrid,normalizeVision} from './table-model.mjs';
+import {normalizeTable,mapGrid,normalizeVision,weatherNames,sceneTones,weatherLevels} from './table-model.mjs';
 
 const $ = (selector,root=document) => root.querySelector(selector);
 const dialog = $('#dialog');
@@ -155,6 +155,7 @@ function syncTableConnection(){
   tabletop.setConnectionStatus?.(tableLive.status);
 }
 function syncSceneOrganizer(){
+  if(page==='shield'&&tableVisible()){syncPrepHeader();return;}
   if(page!=='table'||!current.master)return;
   const signature=JSON.stringify([current.state.sceneLibrary,current.state.sceneId,sceneUI]);if(signature===scenePanelSignature)return;
   if(document.activeElement?.matches?.('[data-scene-search],[data-scene-session]'))return;
@@ -162,7 +163,7 @@ function syncSceneOrganizer(){
   panel.outerHTML=renderSceneManager(currentView(),sceneUI);scenePanelSignature=signature;applyPortraits();
 }
 function syncCurrentTable(){
-  if(page!=='table'||current.needsCharacter||!tabletop.syncScene?.({...currentView(),rev:Math.max(current.rev,sceneRevision)}))return false;
+  if(!tableVisible()||current.needsCharacter||!tabletop.syncScene?.({...currentView(),rev:Math.max(current.rev,sceneRevision)}))return false;
   audioPlayer.sync(currentView());musicDock.sync(currentView());soundboardDock.sync(currentView());audioPopover.sync(currentView());observeRolls(currentView());syncSceneOrganizer();applyPortraits();return true;
 }
 function receiveTableEvent(event){
@@ -175,9 +176,9 @@ function receiveTableEvent(event){
     if(current.master&&event.state?.sceneId)gmSceneId=event.state.sceneId;
     const row={...currentView(),rev:event.rev,rollVersion:event.rollVersion};
     observeRolls(row);
-    if(page==='table'){if(!tabletop.syncScene?.(row)&&!tabletop.isInteracting()&&!dialog.open)render();else syncSceneOrganizer();}
+    if(tableVisible()){if(!tabletop.syncScene?.(row)&&!tabletop.isInteracting()&&!dialog.open)render();else syncSceneOrganizer();}
     if(event.needsCharacter!==undefined&&(event.needsCharacter!==current.needsCharacter||event.characterId!==current.characterId))refresh();
-  }else if(event.type==='tokenPreview'&&page==='table'&&(!event.sceneId||event.sceneId===current.state.sceneId))tabletop.receiveRealtime?.(event);
+  }else if(event.type==='tokenPreview'&&tableVisible()&&(!event.sceneId||event.sceneId===current.state.sceneId))tabletop.receiveRealtime?.(event);
   else if(event.type==='closed'){tableLive.disconnect();refresh();}
 }
 
@@ -209,9 +210,9 @@ async function openCampaign(access) {
   render();
 }
 
-async function createCampaign(name,withExample=false,resetPage=true,ruleset='free') {
+async function createCampaign(name,withExample=false,resetPage=true,ruleset='free',sheetModel='standard') {
   ++epoch;
-  const row = await post('',{name,example:false,ruleset},null);
+  const row = await post('',{name,example:false,ruleset,sheetModel},null);
   reconnectingAccess=null;
   credentials = {id:row.id,key:row.key};
   setCurrent(row);
@@ -235,6 +236,7 @@ async function action(name,data) {
   if(row.rev<current.rev)return name==='lootCollect'?row:undefined;
   if(current.master&&gmSceneId&&row.state.sceneId!==gmSceneId&&row.state.sceneLibrary?.scenes.some(scene=>scene.id===gmSceneId)){refresh();return row;}
   setCurrent(row);
+  if(name==='journalSave'&&data.canvasPoint){gmView.folder='';gmView.prepQuery='';gmView.selectedNotes=[row.state.journal.at(-1).id];}
   if(name==='roll'&&data?.masteryId&&sheetView) sheetView.mastery='';
   if (name === 'settings') remember(row,access);
   if(name.startsWith('scene')||name.startsWith('session')||!syncCurrentTable())render();
@@ -265,7 +267,7 @@ function characterCards(characters) {
 function chooseCharacter(state) {
   const available=state.characters.filter(character=>character.characterType!=='npc'&&character.available);
   return head('Escolha seu personagem','Selecione uma ficha disponível ou crie seu personagem. O vínculo fica salvo no servidor e seu acesso é lembrado neste navegador.',
-    button('Já tenho um personagem','campaignRecover','small')+button('Usar modelo salvo','sheetTemplates','small')+button('Criar meu personagem','character','primary','plus'))+
+    button('Já tenho um personagem','campaignRecover','small')+(state.sheetModelVersion?'':button('Usar modelo salvo','sheetTemplates','small'))+button('Criar meu personagem','character','primary','plus'))+
     '<div class="card-grid">'+available.map((character,i)=>
       '<button class="card character-card" data-act="characterClaim" data-id="'+esc(character.id)+'">'+avatar(character,i)+
       '<span><strong>'+esc(character.name)+'</strong><p class="muted">'+esc(character.concept||'Personagem disponível')+'</p></span></button>'
@@ -302,11 +304,42 @@ function table() {
   return renderSceneManager(currentView(),sceneUI)+tabletop.render(currentView());
 }
 
+function setSessionMaterial(key,attached){
+  if(!current.master)return;
+  const split=key.indexOf(':'),session=prepSession(current,gmView);
+  if(session)return action('sessionMaterial',{sessionId:session.id,kind:key.slice(0,split),id:key.slice(split+1),attached});
+}
 function gmUI(){return {esc,button,input,area,select,submit,head};}
 function gmCard(id){return current.state.gmScreen?.cards.find(card=>card.id===id);}
+function tableVisible(){return page==='table'||page==='shield'&&current.master&&gmView.map===current.state.sceneId&&Boolean(gmView.map);}
+function prepMapControls(){
+  const session=prepSession(current,gmView),refs=session?.materials||[];
+  const buttons=refs.flatMap(ref=>{
+    const entry=ref.kind==='character'?current.state.characters.find(c=>c.id===ref.id):ref.kind==='item'?current.state.inventory?.find(i=>i.id===ref.id):current.state.journal?.find(n=>n.id===ref.id);
+    return entry?[button(ref.kind==='character'?'Colocar '+entry.name:ref.kind==='item'?'Colocar '+entry.name:'Ler '+entry.title,{character:'prepToken',item:'lootPlace',note:'prepRead'}[ref.kind],'small','',entry.id)]:[];
+  });
+  const live=current.state.sceneId===current.state.activeSceneId;
+  return button('‹ Voltar ao roteiro','prepReturn','small')+'<h2>'+esc(current.state.sessionName)+' · '+esc(current.state.scene)+'</h2><p>'+(live?'Cena ao vivo. As alterações aparecem para os jogadores.':'Preparação privada. Os jogadores continuam na cena ao vivo.')+'</p>'+
+    (live?button('Preparar uma cópia privada','prepMapCopy','small','',current.state.sceneId):button('Mostrar esta cena aos jogadores','sceneActivate','small','',current.state.sceneId))+
+    '<details data-prep-tools><summary>Materiais do roteiro</summary><div class="actions">'+buttons.join('')+button('Criar NPC','prepNpc','small','plus')+button('Criar item','prepItem','small','plus')+'</div></details>';
+}
+function syncPrepHeader(){
+ const host=main.querySelector('[data-prep-header]');if(!host)return;
+ const html=prepMapControls();if(host.dataset.signature===html)return;
+ const open=host.querySelector('details')?.open;host.innerHTML=html;host.dataset.signature=html;
+ if(open)host.querySelector('details').open=true;
+}
+function prepNoteContent(note){
+ const id=note.id;
+    const linked=(note.characterIds||[]).map(key=>current.state.characters.find(c=>c.id===key)).filter(Boolean).map(c=>button(c.name,'prepOpenSheet','small','',c.id)).concat((current.state.inventory||[]).filter(i=>!i.characterId&&i.journalId===id).map(i=>button(i.name,'itemOpen','small','',i.id)));
+    return '<div data-open-note="'+esc(id)+'">'+(gmView.trail?.length?button('‹ Nota anterior','prepBack','small'):'')+'</div>'+noteReader(note,current.state.journal,gmUI())+(current.state.gmScreen?.cards?.some(card=>card.targetKind==='journal'&&card.targetId===id&&card.pinned)?'<small>Fixada no escudo</small>':button('Fixar no escudo','vaultPin','small','',id))+'<section><h3>Materiais da nota</h3><div class="actions">'+linked.join('')+button('Criar NPC desta nota','prepNpc','small','',id)+button('Criar item desta nota','prepItem','small','',id)+'</div></section>';
+}
 function shield() {
   if(gmIdentity!==current.id){gmIdentity=current.id;gmView={query:'',category:'all'};}
-  return renderGmScreen(currentView(),gmUI(),{...gmView,notes:gmNoteDrafts.get(current.id)});
+  if(tableVisible())return '<section class="panel prep-map-header" data-prep-header>'+prepMapControls()+'</section>'+tabletop.render(currentView());
+  const note=gmView.prepTab==='note'&&current.state.journal?.find(n=>n.id===gmView.openNote);
+  const vaultReader=note?'<section class="panel vault-reader" tabindex="-1" data-vault-reader><header><h2>'+esc(note.title)+'</h2>'+button('Fechar leitura','vaultClose','small')+'</header>'+prepNoteContent(note)+'</section>':'';
+  return renderGmScreen(currentView(),gmUI(),{...gmView,vaultReader,notes:gmNoteDrafts.get(current.id)});
 }
 
 function library(state) {
@@ -336,6 +369,7 @@ function openSheet(id) {
     sheetViewer=viewer;
     sheetView={editing:true,tab:'skills',query:'',favorites:false,dice:[],formula:'',bonus:'',layoutView:read('forja.sheet.reading.'+(current.master?'master':'player'))||(current.master?'standard':character.appearance?'custom':'standard')};
   }
+  gmView.sheetReturn=page==='shield'&&current.master?id:'';
   sheetId=id;
   page='sheets';
   render();
@@ -483,16 +517,84 @@ function sheetModuleContent(id,character,state){
   return '';
 }
 
+// The figure faces the viewer. Reflect the right limbs around x=140 for its left side.
+const stressShapes={
+  head:[
+    'M124 27 Q123 10 140 9 Q157 10 156 27 L154 39 L146 48 Q140 52 134 48 L126 39 Z',
+    'M134 52 Q140 55 146 52 L149 60 L140 65 L131 60 Z'
+  ],
+  torso:[
+    'M129 62 L139 68 L151 62 L163 68 Q169 79 161 98 L153 111 Q140 118 127 111 L119 98 Q111 79 117 68 Z',
+    'M126 115 Q140 121 154 115 L158 134 L153 145 L140 155 L127 145 L122 134 Z'
+  ],
+  arm:[
+    'M113 67 Q104 62 98 71 L92 84 L99 92 L113 83 Z',
+    'M91 86 L98 94 Q88 109 75 114 L68 107 Q74 93 91 86 Z',
+    'M65 110 L72 117 Q63 131 48 137 L41 131 Q50 116 65 110 Z'
+  ],
+  hand:[
+    'M38 133 L46 140 L39 150 L29 157 Q24 158 26 151 L31 143 L25 146 Q22 146 25 141 Z'
+  ],
+  leg:[
+    'M121 141 L137 157 L136 172 Q135 185 129 198 L117 197 Q110 176 115 154 Z',
+    'M117 201 L129 202 L128 211 L118 213 L114 208 Z',
+    'M116 217 L128 215 Q130 231 123 247 L114 247 Q110 229 116 217 Z'
+  ],
+  foot:[
+    'M114 251 L123 251 L124 260 L120 264 L102 264 Q99 261 105 257 Z'
+  ]
+};
+function stressLevel({value,limit}) {
+  if(!value)return ['clear','Sem estresse'];
+  return value===limit?['full','No limite']:['marked','Com estresse'];
+}
+function bodyStressPanel(character) {
+  const stress=bodyStressWithHead(character.bodyStress);
+  if(!stress?.enabled)return '';
+  const stressRegions=stressRegionsFor(stress.mode);
+  const selected=Object.hasOwn(stressRegions,sheetView.stressRegion)?sheetView.stressRegion:'torso';
+  const regions=Object.entries(stressRegions);
+  const figure=regions.map(([key,label])=>{
+    const shape=key.replace(/^(left|right)/,'').toLowerCase();
+    let segments=stressShapes[shape];
+    if(stress.mode!=='complex'&&shape==='arm')segments=segments.concat(stressShapes.hand);
+    if(stress.mode!=='complex'&&shape==='leg')segments=segments.concat(stressShapes.foot);
+    const paths=segments.map(d=>'<path d="'+d+'"/>').join('');
+    return '<g class="stress-part" data-act="bodyStressSelect" data-id="'+key+'" data-level="'+stressLevel(stress.regions[key])[0]+'" data-selected="'+(key===selected)+'"'+(key.startsWith('left')?' transform="translate(280 0) scale(-1 1)"':'')+'><title>'+label+'</title>'+paths+'</g>';
+  }).join('');
+  const rows=regions.map(([key,label])=>{
+    const part=stress.regions[key],[level,status]=stressLevel(part);
+    return '<button type="button" class="stress-region" data-act="bodyStressSelect" data-id="'+key+'" data-level="'+level+'" aria-pressed="'+(key===selected)+'"><span class="stress-dot"></span><span>'+label+'</span><b>'+part.value+' / '+part.limit+'</b><small>'+status+'</small></button>';
+  }).join('');
+  const active=stress.regions[selected],label=stressRegions[selected];
+  const step=(delta,title,disabled)=>sheetControl(title+' · '+label,'bodyStressStep',selected,'data-step="'+delta+'" '+(disabled?'disabled':''))+(delta>0?'+':'−')+'</button>';
+  return '<section class="panel stress-panel"><header><h2>Estresse corporal</h2>'+(stress.regions.torso.value===stress.regions.torso.limit?'<strong class="stress-alert">Fora de ação</strong>':'')+'</header><div class="stress-layout"><div class="stress-screen"><svg viewBox="0 0 280 275" aria-hidden="true"><defs><pattern id="stress-hatch" width="5" height="5" patternUnits="userSpaceOnUse"><rect width="5" height="5" fill="#863f48"/><path d="M0 5L5 0" stroke="#d78986"/></pattern></defs><g class="stress-axis"><path d="M140 2V273 M7 136H273"/><circle cx="140" cy="136" r="94"/></g>'+figure+'<g class="stress-orientation"><text x="23" y="100">D</text><text x="247" y="100">E</text></g></svg></div><div class="stress-list" data-mode="'+(stress.mode==='complex'?'complex':'simple')+'">'+rows+'</div></div><div class="stress-adjust"><strong>'+label+'</strong><div>'+step(-1,'Recuperar estresse',active.value===0)+'<output>'+active.value+' / '+active.limit+'</output>'+step(1,'Marcar estresse',active.value===active.limit)+'</div></div></section>';
+}
+
+function gmResourcePanel(state,character){
+  const resources=state.gmResources?.[character.id]||[];
+  const bars=resources.map(resource=>{
+    const field={id:resource.id,label:resource.name};
+    const editControl=button('Editar','gmResourceEdit','small','',resource.id);
+    return renderSheetResource(character,field,resource.current+'/'+resource.maximum,{
+      resourceStyle:{color:resource.color,critical:true,criticalAt:20},editControl,
+      inline:content=>content,
+      step:(delta,icon,disabled)=>sheetControl((delta>0?'Aumentar ':'Diminuir ')+esc(resource.name),'gmResourceStep',resource.id,'data-step="'+delta+'" '+(disabled?'disabled':''))+icon+'</button>'
+    });
+  }).join('');
+  return '<section class="sheet-panel"><div class="sheet-panel-header"><h2>Recursos privados do mestre</h2>'+button('Adicionar recurso privado','gmResourceEdit','small','plus')+'</div>'+ (bars?'<div class="sheet-body">'+bars+'</div>':'')+'</section>';
+}
+
 function sheets(state) {
   const character=currentSheet();
   if (!character) return head('Fichas universais','Crie um personagem ou abra sua ficha para jogar.',
-    button('Modelos salvos','sheetTemplates','small')+button('Criar personagem D&D','dndCreate','small')+(current.master?button('Editar modelo','schema')+(state.characters.some(c=>c.masteries?.length)?button('Nova sessão: renovar maestrias','sheetMasteryRefresh'):''):'')+button(current.master?'Nova ficha':'Minha ficha','character','primary','plus'))+characterCards(state.characters);
+    button('Modelos salvos','sheetTemplates','small')+(current.master||!state.sheetModelVersion||state.ruleset==='dnd-2024'?button('Criar personagem D&D','dndCreate','small'):'')+(current.master?button('Modelo da campanha','schema')+(state.characters.some(c=>c.masteries?.length)?button('Nova sessão: renovar maestrias','sheetMasteryRefresh'):''):'')+button(current.master?'Nova ficha':'Minha ficha','character','primary','plus'))+characterCards(state.characters);
   sheetMosaic.sync(state,character,current.id+'/'+character.id+'/'+Boolean(current.master));
   const custom=sheetMosaic.editing||sheetView.layoutView==='custom';
   const viewButton=(id,label)=>'<button type="button" class="btn small '+(custom===(id==='custom')?'primary':'')+'" data-act="sheetReadingView" data-id="'+id+'" aria-pressed="'+(custom===(id==='custom'))+'" '+(sheetMosaic.editing?'disabled':'')+'>'+label+'</button>';
-  const toolbar='<div class="sheet-toolbar"><div>'+button('‹ Todas as fichas','sheetBack','ghost small')+(!character.dnd?button('Salvar como modelo','sheetTemplateSave','small','',character.id):'')+button('Modelos salvos','sheetTemplates','small')+button('Histórico','sheetHistory','small','',character.id)+'<p class="muted sheet-campaign">'+esc(state.name)+'</p></div><div class="actions">'+viewButton('custom','Personalizada')+viewButton('standard','Padronizada')+(sheetMosaic.editing?'':button('Cores e recursos','sheetColors','small'))+(sheetMosaic.editing?'<button type="button" class="btn small" disabled>Organizando</button>':button('Organizar','sheetLayoutBegin','small'))+(current.master?button(character.characterType==='npc'?'Tipo: NPC':'Tipo: Jogador','characterType','small')+button(character.hidden?'Mostrar aos jogadores':'Ocultar dos jogadores','characterVisibility','small'):'')+'</div></div>';
+  const toolbar='<div class="sheet-toolbar"><div>'+button(gmView.sheetReturn===character.id?'‹ Voltar ao escudo':'‹ Todas as fichas','sheetBack','ghost small')+(current.master?(state.journal||[]).filter(n=>n.characterIds?.includes(character.id)).map(n=>button(n.title,'prepRead','small','',n.id)).join(''):'')+(!character.dnd?button('Salvar como modelo','sheetTemplateSave','small','',character.id):'')+button('Modelos salvos','sheetTemplates','small')+button('Histórico','sheetHistory','small','',character.id)+'<p class="muted sheet-campaign">'+esc(state.name)+'</p></div><div class="actions">'+viewButton('custom','Personalizada')+viewButton('standard','Padronizada')+(sheetMosaic.editing?'':button('Cores e recursos','sheetColors','small'))+(sheetMosaic.editing?'<button type="button" class="btn small" disabled>Organizando</button>':button('Organizar','sheetLayoutBegin','small'))+(current.master?button('Estresse corporal','bodyStressConfig','small')+button(character.characterType==='npc'?'Tipo: NPC':'Tipo: Jogador','characterType','small')+button(character.hidden?'Mostrar aos jogadores':'Ocultar dos jogadores','characterVisibility','small'):'')+'</div></div>';
   const editing=custom&&sheetView.editing?'<div class="actions mosaic-data-actions">'+button('Personalizar campos','sheetFields','small')+button('Adicionar atributo','sheetFields','small','plus','number')+button('Adicionar recurso','sheetFields','small','plus','counter')+button(character.portrait?'Trocar retrato':'Enviar retrato','sheetPortrait','small')+'</div>':'';
-  return toolbar+(custom?'<p class="sheet-view-note">Visualização personalizada · Clique nos valores para editar. Enter salva; Escape cancela. Para textos longos, use Ctrl+Enter ou saia do campo.</p>'+editing+(sheetMosaic.editing?renderSheetLayoutEditor(state,character,sheetMosaic.appearance,sheetMosaic.canUndo):'')+renderSheetMosaic(state,character,sheetMosaic.appearance,{editing:sheetMosaic.editing,renderModule:id=>sheetModuleContent(id,character,state)}):'<p class="sheet-view-note">Visualização padronizada · Clique em um valor para editar. Enter salva; Escape cancela. Recursos usam atual/máximo, como 8/10.</p><div class="sheet-stage theme-'+esc(character.color)+'" style="'+sheetThemeStyle(state,character)+'" aria-label="Ficha de '+esc(character.name)+'">'+sheetGeneral(character,state)+sheetCompetencies(character,state)+sheetDice(character,state)+'</div>')+(character.access==='full'||current.master?sheetInventory(character,currentView(),gmUI()):'');
+  return toolbar+(custom?'<p class="sheet-view-note">Visualização personalizada · Clique nos valores para editar. Enter salva; Escape cancela. Para textos longos, use Ctrl+Enter ou saia do campo.</p>'+editing+(sheetMosaic.editing?renderSheetLayoutEditor(state,character,sheetMosaic.appearance,sheetMosaic.canUndo):'')+renderSheetMosaic(state,character,sheetMosaic.appearance,{editing:sheetMosaic.editing,renderModule:id=>sheetModuleContent(id,character,state)}):'<p class="sheet-view-note">Visualização padronizada · Clique em um valor para editar. Enter salva; Escape cancela. Recursos usam atual/máximo, como 8/10.</p><div class="sheet-stage theme-'+esc(character.color)+'" style="'+sheetThemeStyle(state,character)+'" aria-label="Ficha de '+esc(character.name)+'">'+sheetGeneral(character,state)+sheetCompetencies(character,state)+sheetDice(character,state)+'</div>')+(current.master?gmResourcePanel(state,character):'')+(character.access==='full'||current.master?bodyStressPanel(character)+sheetInventory(character,currentView(),gmUI()):'');
 }
 
 const screens = {
@@ -539,13 +641,21 @@ function render() {
     '<button class="nav-btn" data-act="nav" data-id="'+key+'" '+(current.needsCharacter?'disabled ':'')+(key===page?'aria-current="page"':'')+'>'+svg(icon)+'<span class="nav-text">'+label+'</span><span class="nav-mobile-text">'+({home:'Início',sheets:'Fichas',table:'Mesa',shield:'Mestre',library:'Livros',inventory:'Itens',journal:'Diário',audio:'Áudio'}[key])+'</span></button>'
   ).join('');
   $('#header-actions').innerHTML = (current.master?button('Backup e acesso','campaignAccess','small')+button('Mensagem privada','narrationCompose','small')+button('Convidar jogadores','invite','','invite'):button('Meu acesso','campaignAccess','small'))+button('Nova campanha','create','primary','plus');
+  const inCanvas=page==='shield'&&gmView.prepTab==='note'&&gmView.vaultMode==='canvas';
+
+  const focusHandle=document.activeElement?.closest('[data-vault-move],[data-size]');
+  const focusNote=focusHandle?.parentElement.dataset.vaultCard;
   const previousResources=resourceAnimations.capture(main);
   tabletop.dispose();musicLibrary.dispose();soundboardLibrary.dispose();sheetMosaic.dispose();
   main.innerHTML = current.needsCharacter?chooseCharacter(state):screens[page](state);
+  if(inCanvas){
+    activateVaultCanvas();
+    if(focusNote)main.querySelector('[data-vault-card="'+CSS.escape(focusNote)+'"] '+(focusHandle.hasAttribute('data-size')?'[data-size]':'[data-vault-move]'))?.focus({preventScroll:true});
+  }
   resourceAnimations.restore(main,previousResources);
   scenePanelSignature=JSON.stringify([current.state.sceneLibrary,current.state.sceneId,sceneUI]);
   if(page==='sheets'&&currentSheet())sheetMosaic.mount(main);
-  if (page==='table'&&!current.needsCharacter) tabletop.mount(main,currentView());
+  if (tableVisible()&&!current.needsCharacter) tabletop.mount(main,currentView());
   if (page==='audio'&&!current.needsCharacter){musicLibrary.mount(main,currentView());soundboardLibrary.mount(main);}
   audioPlayer.setView(page==='audio'&&!current.needsCharacter);
   audioPlayer.sync(currentView());
@@ -626,7 +736,7 @@ function fieldInput(field,value) {
 }
 
 function openDndCreation(draft={}) {
-  modal('Criar personagem D&D 2024',(current.master?select('characterType','Tipo de ficha',{player:'Personagem de jogador',npc:'NPC · personagem do mestre'},draft.characterType||'player'):'')+dndCreation({input,select,esc,button},draft),'dndCreate');
+  modal('Criar personagem D&D 2024',preparationFields(draft)+(draft.prepSession?input('prepHidden','',draft.hidden?'yes':'','hidden'):'')+(current.master?select('characterType','Tipo de ficha',{player:'Personagem de jogador',npc:'NPC · personagem do mestre'},draft.characterType||'player'):'')+dndCreation({input,select,esc,button},draft),'dndCreate');
   const form=$('[data-form=dndCreate]',dialog);
   if(form){updateDndCreation(form,{esc},true,true);dndStep(0);}
 }
@@ -648,12 +758,16 @@ function dndStep(direction) {
   updateDndCreation(form,{esc});
 }
 
+function preparationFields(draft){
+  return draft.prepSession?input('prepSession','',draft.prepSession,'hidden')+input('prepNote','',draft.prepNote||'','hidden'):'';
+}
 function editCharacter(id,presetId='',draft={}) {
   const preset=!id?sheetPreset(presetId):null;
   const character = current.state.characters.find(item=>item.id===id) || {...draft,...(preset?{layout:preset.fields}:{})};
   const groups = Map.groupBy(sheetFields(current.state,character),field=>field.group);
-  modal(id?'Ficha de '+esc(character.name):'Nova ficha',
-    '<input type="hidden" name="id" value="'+esc(id)+'">'+(!id?select('preset','Modelo da ficha',{'':'Modelo da campanha',...Object.fromEntries(sheetPresets.map(p=>[p.id,p.name])),'dnd-2024':'D&D 2024 · criação guiada'},presetId).replace('<select ','<select data-character-preset ')+(preset?'<p class="muted">'+esc(preset.description)+'</p>':''):'')+'<div class="form-grid">'+input('name','Nome',character.name,'text','required maxlength="80"')+
+  modal(id?'Ficha de '+esc(character.name):draft.prepSession?'Criar NPC · '+esc(prepSession(current,gmView)?.name):'Nova ficha',
+    preparationFields(draft)+
+    '<input type="hidden" name="id" value="'+esc(id)+'">'+(!id&&(!current.state.sheetModelVersion||current.master)?select('preset','Modelo da ficha',{'':'Modelo da campanha',...Object.fromEntries(sheetPresets.map(p=>[p.id,p.name])),'dnd-2024':'D&D 2024 · criação guiada'},presetId).replace('<select ','<select data-character-preset ')+(preset?'<p class="muted">'+esc(preset.description)+'</p>':''):'')+'<div class="form-grid">'+input('name','Nome',character.name,'text','required maxlength="80"')+
     input('concept','Conceito ou classe',character.concept,'text','maxlength="80"')+'</div>'+(current.master?select('characterType','Tipo de ficha',{player:'Personagem de jogador',npc:'NPC · personagem do mestre'},character.characterType||'player'):'')+select('color','Cor da ficha e dos dados',colorNames,character.color)+'<p class="muted">24 cores disponíveis. Um destaque personalizado em Organizar → Cores e estilo tem prioridade na cor dos dados.</p>'+
     [...groups].map(([group,fields])=>'<fieldset><legend>'+esc(group)+'</legend>'+fields.map(field=>{const computed=character.dnd&&(['dd-class','dd-species','dd-background'].includes(field.id)||dndDerived(character,field.id)!==null);return fieldInput(field,String(sheetValue(character,field))).replace('<input ',computed?'<input readonly ':'<input ');}).join('')+'</fieldset>').join('')+
     (current.master?'<label class="check"><input type="checkbox" name="hidden" '+(character.hidden?'checked':'')+'> Ocultar completamente esta ficha dos jogadores</label>':'')+
@@ -709,7 +823,7 @@ function initiativeRow(entry={name:'',value:''}) {
 
 function createDialog() {
   modal('Nova campanha',input('name','Nome da campanha','','text','required maxlength="100"')+
-    select('ruleset','Sistema',{'free':'Sistema livre','dnd-2024':'D&D 2024 · SRD 5.2.1'},'free')+submit('Criar campanha'),'create');
+    select('sheetModel','Modelo de ficha da campanha',{standard:'Ficha universal · atributos e vitalidade',blank:'Em branco · criar meus campos',...Object.fromEntries(sheetPresets.map(p=>[p.id,p.name])),'dnd-2024':'D&D 2024 · criação guiada'},'standard')+'<p class="muted">Os jogadores começam com este modelo. Edite os campos em Fichas → Modelo da campanha.</p>'+submit('Criar campanha'),'create');
 }
 
 function editSheetEntry(category,id) {
@@ -755,7 +869,8 @@ function tableTokenForm(token={}) {
   const characters=Object.fromEntries(current.state.characters.map(character=>[character.id,character.name+' · '+(character.characterType==='npc'?'NPC':'Jogador')]));
   const hidden='<input type="hidden" name="id" value="'+esc(token.id)+'"><input type="hidden" name="sceneId" value="'+esc(current.state.sceneId)+'">';
   return hidden+select('characterId','Ficha vinculada',{'':'Token independente',...characters},token.characterId||'')+
-    input('name','Nome no mapa',token.name,'text','maxlength="80" placeholder="Usar nome da ficha vinculada"')+
+    input('name','Nome visível aos jogadores',token.name,'text','maxlength="80" placeholder="Usar nome da ficha vinculada"')+
+    '<div data-private-token-name '+(token.characterId||token.kind==='item'?'hidden':'')+'>'+input('realName','Nome verdadeiro (somente o mestre)',token.realName||'','text','maxlength="80" placeholder="Opcional"')+'</div>'+
     renderTokenAppearance(token,current.state.characters)+
     select('size','Tamanho em células',{1:'1 × 1',2:'2 × 2',3:'3 × 3',4:'4 × 4'},String(token.size||1))+
     '<fieldset class="token-vision-settings"><legend>Campo de visão</legend><label class="check"><input type="checkbox" name="visionEnabled" '+(normalizeVision(token.vision).enabled?'checked':'')+'> Este token enxerga na escuridão</label><div class="form-grid">'+input('visionRange','Alcance ('+normalizeTable(current.state).grid.unit+')',normalizeVision(token.vision).range,'number','required min="0" max="10000" step="any"')+input('visionAngle','Abertura do campo (graus)',normalizeVision(token.vision).angle,'number','required min="1" max="360" step="any"')+input('rotation','Direção (0° norte, 90° leste)',token.rotation||0,'number','required min="0" max="359" step="1"')+'</div><p class="muted">Use 360° para visão circular ou 120° para um cone. A direção pode ser alterada na mesa sem mudar o alcance.</p></fieldset>'+
@@ -767,9 +882,9 @@ function tableTokenForm(token={}) {
     (token.id?'<div>'+button('Remover token','tokenDelete','danger small','',token.id)+'</div>':'');
 }
 
-function sceneEditor(id=''){
+function sceneEditor(id='',preferredSession=''){
   const lib=current.state.sceneLibrary,scene=lib.scenes.find(item=>item.id===id),sessions=Object.fromEntries(lib.sessions.map(item=>[item.id,item.name]));
-  modal(scene?'Editar cena':'Nova cena',input('id','',id,'hidden')+input('expectedVersion','',lib.version,'hidden')+input('name','Nome da cena',scene?.name||'','text','required maxlength="100" placeholder="Ex. Vila · praça central"')+select('sessionId','Sessão',sessions,scene?.sessionId||(sceneUI.session!=='all'?sceneUI.session:lib.sessions[0].id))+area('notes','Anotações privadas do mestre',scene?.notes||'','maxlength="2000"')+'<p class="muted">Criar ou preparar uma cena não muda o mapa dos jogadores.</p>'+submit(scene?'Salvar cena':'Criar e preparar')+(scene?'<div class="actions">'+button('Apagar cena','sceneDelete','small danger','',scene.id)+'</div>':''),'sceneEditor');
+  modal(scene?'Editar cena':'Nova cena',input('id','',id,'hidden')+input('expectedVersion','',lib.version,'hidden')+input('name','Nome da cena',scene?.name||'','text','required maxlength="100" placeholder="Ex. Vila · praça central"')+select('sessionId','Sessão',sessions,scene?.sessionId||preferredSession||(sceneUI.session!=='all'?sceneUI.session:lib.sessions[0].id))+area('notes','Anotações privadas do mestre',scene?.notes||'','maxlength="2000"')+'<p class="muted">Criar ou preparar uma cena não muda o mapa dos jogadores.</p>'+submit(scene?'Salvar cena':'Criar e preparar')+(scene?'<div class="actions">'+button('Apagar cena','sceneDelete','small danger','',scene.id)+'</div>':''),'sceneEditor');
 }
 function sessionEditor(id=''){
   const lib=current.state.sceneLibrary,session=lib.sessions.find(item=>item.id===id);
@@ -804,7 +919,7 @@ function tokenData(data) {
   const character=current.state.characters.find(character=>character.id===data.characterId);
   return {
     id:data.id,sceneId:data.sceneId,name:data.name.trim()||character?.name||'Token',
-    color:data.color,icon:data.icon||'auto',size:Number(data.size),characterId:data.characterId,
+    color:data.color,icon:data.icon||'auto',size:Number(data.size),characterId:data.characterId,...(!data.characterId?{realName:data.realName||''}:{}),
     hidden:data.hidden==='on',locked:data.locked==='on',removePortrait:data.removePortrait==='on',rotation:Number(data.rotation??0),vision:{enabled:data.visionEnabled==='on',range:Number(data.visionRange??9),angle:Number(data.visionAngle??120)},
     statuses:data.statuses.split(',').map(status=>status.trim()).filter(Boolean)
   };
@@ -894,12 +1009,46 @@ const handlers = {
   gmCardCollapse(id){const card=gmCard(id);if(card)return action('gmCardCollapse',{id,collapsed:!card.collapsed});},
   gmCardMove(key){const [id,direction]=key.split('/'),card=gmCard(id);if(!card)return;const group=visibleGmCards(currentView(),gmView).filter(item=>Boolean(item.pinned)===Boolean(card.pinned)),step=direction==='up'?-1:1,target=group[group.indexOf(card)+step];if(target)return action('gmCardMove',{id,direction:step,targetId:target.id});},
   gmTableRoll(id){return action('gmTableRoll',{id});},
+  prepOpenSheet(id){dialog.close();openSheet(id);},
+  prepMap(id){if(current.master&&id===current.state.sceneId){gmView.map=id;render();}},
+  prepReturn(){gmView.map='';render();},
+  async prepMapCopy(id){await handlers.sceneDuplicate(id);gmView.map=current.state.sceneId;render();},
+  prepNpc(id){const note=current.state.journal?.find(e=>e.id===id);if(current.master)editCharacter('','',{characterType:'npc',hidden:true,name:note?.title||'',prepNote:note?.id,prepSession:prepSession(current,gmView)?.id});},
+  prepItem(id){
+    if(!current.master)return;
+    const note=current.state.journal?.find(e=>e.id===id),session=prepSession(current,gmView);
+    modal('Criar item · '+esc(session.name),input('prepSession','',session.id,'hidden')+itemEditor({name:note?.title||'',journalId:note?.id},currentView(),gmUI()),'itemSave');
+  },
+  async vaultPin(id){await action('gmNotePin',{id});toast('Nota fixada no escudo.');},
+  vaultOpen(){dialog.close();gmView.openNote='';gmView.prepTab='note';gmView.folder='';gmView.prepQuery='';gmView.map='';page='shield';render();},
+  vaultClose(){const id=gmView.openNote;gmView.openNote='';gmView.trail=[];render();main.querySelector('[data-vault-card="'+CSS.escape(id)+'"] [data-act=prepRead]')?.focus();},
+  vaultFolder(path){delete gmView.camera;gmView.openNote='';gmView.folder=path;render();},
+  vaultMode(id){gmView.vaultMode=id==='canvas'?'canvas':'grid';render();},
+  prepTab(id){if(!current.master||!['plan','note','item','character'].includes(id))return;gmView.prepTab=id;gmView.prepQuery='';render();},
+  prepNewScene(session){if(current.master)sceneEditor('',session);},
+  prepTag(tag){dialog.close();page='shield';gmView.map='';gmView.prepTab='note';gmView.folder='';gmView.prepQuery='#'+tag;render();},
+  prepBack(){const id=gmView.trail?.pop();if(id)handlers.prepRead(id,null,true);},
+  prepRead(id,node,back=false){const note=current.state.journal?.find(e=>e.id===id);if(note&&current.master){
+    const previous=dialog.open?dialog.querySelector('[data-open-note]')?.dataset.openNote:main.querySelector('[data-vault-reader] [data-open-note]')?.dataset.openNote;
+    if(!previous)gmView.trail=[];else if(!back&&id!==previous)gmView.trail=[...(gmView.trail||[]).slice(-39),previous];
+    let host=dialog;
+    if(page==='shield'&&gmView.prepTab==='note'&&!gmView.map){
+      gmView.openNote=id;render();host=main.querySelector('[data-vault-reader]');host?.focus();
+    }else modal(esc(note.title),prepNoteContent(note));
+    const heading=node?.dataset.jumpHeading;
+    if(heading&&host)[...host.querySelectorAll('[data-note-heading]')].find(el=>el.dataset.noteHeading===heading)?.focus();
+  }},
+  prepToken(id){const c=current.state.characters.find(c=>c.id===id);if(current.master&&c)modal('Colocar token em '+esc(current.state.scene),tableTokenForm({characterId:c.id,name:c.name,color:c.color,hidden:true}),'tableToken');},
+  prepAttach(key){return setSessionMaterial(key,true);},
+  prepDetach(key){return setSessionMaterial(key,false);},
+  prepImport(){if(current.master)modal('Importar do Obsidian','<p>Escolha a pasta do cofre para manter os caminhos e links entre notas, ou selecione arquivos Markdown avulsos.</p><label>Pasta do cofre<input type="file" name="vault" webkitdirectory multiple></label><label>Arquivos Markdown<input type="file" name="markdown" accept=".md" multiple></label><p class="muted">As notas entram privadas no diário. Notas novas entram por padrão. Anexos e configurações ficam no computador. Até 200 documentos e 512 KB no diário ao todo.</p><label class="check"><input type="checkbox" name="update"> Atualizar também as notas privadas já importadas que não editei na Forja</label>'+submit('Importar notas privadas'),'prepImport');},
   gmCategory(id){if(!(id in gmCategories))return;gmView.category=id;render();},
   gmCombatNext(direction){return action('combatNext',{direction:Number(direction)});},
   gmResource(key){const [id,field,step]=key.split('/');return action('sheetCounter',{id,field,step:Number(step)});},
   gmCharacterRoll(key){const [characterId,rollId]=key.split('/'),character=current.state.characters.find(c=>c.id===characterId);if(character)return action('roll',{characterId,rollId,actor:character.name});},
   async gmReference(id){
     const card=gmCard(id);if(!card)return;
+    if(card.targetKind==='journal'){handlers.vaultOpen();return handlers.prepRead(card.targetId);}
     if(card.targetKind==='character')return openSheet(card.targetId);
     if(card.targetKind==='book')return handlers.book(card.targetId,null,card.page);
     const entry=dndCatalog.find(entry=>entry.id===card.targetId);if(!entry)return toast('Referência indisponível.');
@@ -1025,16 +1174,16 @@ const handlers = {
   },
   characterRelease() {confirmDelete('characterRelease',sheetId,'Liberar este personagem para outro jogador?');},
   characterVisibility() {return action('characterVisibility',{id:sheetId,hidden:!currentSheet().hidden});},
-  sheetBack() {sheetId='';render();main.focus({preventScroll:true});},
+  sheetBack() {if(sheetId&&gmView.sheetReturn===sheetId&&current.master)page='shield';gmView.sheetReturn='';sheetId='';render();main.focus({preventScroll:true});},
   editSheet() {editCharacter(sheetId);},
   sheetTab(tab) {
     sheetView.tab=tab;render();
     $('[data-act=sheetTab][aria-pressed=true]',main)?.focus();
   },
   sheetFields(kind) {
-    const fields=sheetFields(current.state,currentSheet());
+    const fields=sheetFields(current.state,currentSheet()).filter(field=>!current.state.sheetModelVersion||!current.state.fields.some(common=>common.id===field.id));
     if(['number','counter'].includes(kind)) fields.push({...newField('local-'),type:kind,group:kind==='number'?'Atributos':'Recursos',label:kind==='number'?'Novo atributo':'Novo recurso',initial:kind==='number'?'0':'10/10'});
-    modal('Personalizar ficha','<p class="muted">Adicione, remova, renomeie e ordene os atributos, recursos e seções desta ficha. Ao salvar, sua estrutura passa a ser independente do modelo da campanha. As demais fichas continuam como estão.</p>'+
+    modal('Personalizar ficha','<p class="muted">Adicione, remova, renomeie e ordene os atributos, recursos e seções desta ficha. As alterações aqui valem apenas para este personagem. Edite os campos compartilhados em Modelo da campanha.</p>'+
       '<p class="muted">Número cria um atributo. Contador cria um recurso com valor atual/máximo, como 10/10. Campos numéricos podem ser usados nas rolagens salvas.</p>'+
       '<div class="stack" id="schema-rows">'+fields.map(schemaRow).join('')+'</div>'+
       '<div class="actions">'+button('Adicionar atributo','localFieldAdd','small','plus','number')+button('Adicionar recurso','localFieldAdd','small','plus','counter')+button('Outro campo','localFieldAdd','small','plus')+'</div>'+submit('Salvar estrutura da ficha'),'sheetFields');
@@ -1044,11 +1193,54 @@ const handlers = {
     if(['number','counter'].includes(kind)) Object.assign(field,{type:kind,group:kind==='number'?'Atributos':'Recursos',label:kind==='number'?'Novo atributo':'Novo recurso',initial:kind==='number'?'0':'10/10'});
     $('#schema-rows').insertAdjacentHTML('beforeend',schemaRow(field));
   },
+  bodyStressConfig() {
+    const character=currentSheet(),stress=bodyStressWithHead(character.bodyStress);
+    const modes={simple:'Simplificado · 6 regiões',complex:'Complexo · 10 regiões'};
+    const fields=Object.entries(stressRegionsFor('complex')).map(([key,label])=>input(key,label,stress?.regions[key]?.limit??3,'number','required min="1" max="99" step="1"')).join('');
+    modal('Estresse corporal','<input type="hidden" name="id" value="'+esc(character.id)+'"><label><input type="checkbox" name="enabled" '+(stress?.enabled?'checked':'')+'> Usar nesta ficha</label><p class="muted">Cada região começa sem estresse. Ao desativar, as marcações ficam guardadas.</p>'+select('mode','Segmentação do corpo',modes,stress?.mode||'simple')+'<p class="muted">No modo complexo, mãos e pés têm contadores próprios. Suas marcações ficam guardadas ao voltar ao simplificado.</p><fieldset><legend>Limite por região</legend><div class="form-grid">'+fields+'</div></fieldset>'+submit('Salvar configuração'),'bodyStressConfig');
+    const mode=dialog.querySelector('[name=mode]');
+    const updateFields=()=>{
+      const visible=stressRegionsFor(mode.value);
+      for(const field of dialog.querySelectorAll('fieldset input')){
+        field.disabled=!Object.hasOwn(visible,field.name);
+        field.closest('label').hidden=field.disabled;
+      }
+    };
+    mode.addEventListener('change',updateFields);
+    updateFields();
+  },
+  bodyStressSelect(region,node) {
+    sheetView.stressRegion=region;
+    const panel=node.closest('.stress-panel');
+    panel.outerHTML=bodyStressPanel(currentSheet());
+    main.querySelector('.stress-region[aria-pressed=true]')?.focus({preventScroll:true});
+  },
+  async bodyStressStep(region,node) {
+    const step=node.dataset.step;
+    await action('bodyStressStep',{id:sheetId,region,step:Number(step)});
+    const panel=main.querySelector('.stress-panel');
+    (panel?.querySelector('[data-step="'+step+'"]:not(:disabled)')||panel?.querySelector('[data-step]:not(:disabled)'))?.focus({preventScroll:true});
+  },
   sheetColors(fieldId) {
     const character=currentSheet();if(!character||sheetMosaic.editing)return;
     modal('Cores e recursos',sheetColorsForm(current.state,character),'sheetColors');
     if(fieldId)[...dialog.querySelectorAll('[data-resource-picker]')].find(node=>node.dataset.resourcePicker===fieldId)?.focus();
   },
+  gmResourceEdit(id){
+    const item=current.state.gmResources?.[sheetId]?.find(entry=>entry.id===id);
+    modal(item?'Editar recurso privado':'Adicionar recurso privado',
+      input('id','',sheetId,'hidden')+input('resourceId','',item?.id||'','hidden')+input('version','',item?.version||0,'hidden')+
+      input('name','Nome',item?.name||'','text','required maxlength="80" placeholder="Ex.: Vida oculta"')+
+      '<div class="form-grid">'+input('current','Atual',item?.current??10,'number','required min="0" max="1000000" step="1"')+
+      input('maximum','Máximo',item?.maximum??10,'number','required min="0" max="1000000" step="1"')+'</div>'+
+      input('color','Cor da barra',item?.color||'#bd94ff','color')+submit('Salvar recurso privado')+
+      (item?button('Excluir recurso','gmResourceRemove','small danger','',id):''),'gmResourceSave');
+  },
+  gmResourceRemove(id){
+    const item=current.state.gmResources?.[sheetId]?.find(entry=>entry.id===id);
+    if(item)modal('Excluir recurso privado','<p>Excluir '+esc(item.name)+' desta ficha?</p>'+input('id','',sheetId,'hidden')+input('resourceId','',id,'hidden')+input('version','',item.version,'hidden')+submit('Excluir recurso'),'gmResourceDelete');
+  },
+  gmResourceStep(resourceId,node){return action('gmResourceChange',{id:sheetId,resourceId,operation:'step',step:Number(node.dataset.step)});},
   sheetResource(id) {
     const field=sheetFields(current.state,currentSheet()).find(item=>item.id===id&&item.type==='counter');
     if(!field)return;
@@ -1115,11 +1307,21 @@ const handlers = {
     return action('roll',{skillId:id,characterId:sheetId,actor:character.name,...sheetActionOptions(formula,character)});
   },
   schema() {
-    modal('Modelo da ficha','<p class="muted">O modelo é compartilhado pelas fichas que ainda o seguem. Fichas com estrutura personalizada mantêm seus próprios campos. Ao remover um campo, ele deixa de aparecer nas fichas que seguem o modelo.</p>'+
-      '<div class="stack" id="schema-rows">'+current.state.fields.map(schemaRow).join('')+'</div>'+
-      '<div>'+button('Adicionar campo','fieldAdd','small','plus')+'</div>'+submit('Salvar modelo'),'schema');
+    const state=current.state;
+    const sources=[...sheetPresets,...(state.sheetTemplates?.items||[])];
+    modal('Modelo da campanha',input('expectedVersion','',state.sheetModelVersion||0,'hidden')+
+      '<p>Estes campos aparecem nas fichas atuais e futuras. Campos removidos do modelo ficam nas fichas existentes como campos individuais.</p>'+
+      (state.ruleset==='dnd-2024'?'':select('source','Começar com',{'':'Campos atuais',...Object.fromEntries(sources.map(item=>[item.id,item.name]))},''))+
+      '<div class="stack" id="schema-rows">'+state.fields.map(schemaRow).join('')+'</div>'+
+      '<div class="actions">'+button('Atributo numérico','fieldAdd','small','plus','number')+button('Recurso atual/máximo','fieldAdd','small','plus','counter')+button('Texto','fieldAdd','small','plus','text')+'</div>'+submit('Salvar modelo da campanha'),'schema');
   },
-  fieldAdd() {$('#schema-rows').insertAdjacentHTML('beforeend',schemaRow());},
+  fieldAdd(type) {
+    const field=newField();
+    Object.assign(field,{type:type||'text',group:type==='number'?'Atributos':type==='counter'?'Recursos':'Geral',initial:type==='number'?'0':type==='counter'?'10/10':''});
+    const rows=$('#schema-rows');
+    rows.insertAdjacentHTML('beforeend',schemaRow(field));
+    rows.lastElementChild.querySelector('[name=label]').focus();
+  },
   fieldDelete(id,node) {node.closest('[data-field]').remove();},
   fieldMove(direction,node) {
     const row=node.closest('[data-field]');
@@ -1149,6 +1351,14 @@ const handlers = {
     const token=current.state.tokens.find(token=>token.id===id);
     if (token) modal('Editar token',tableTokenForm(token),'tableToken');
   },
+  tableAtmosphere(){
+    const a=normalizeTable(current.state).atmosphere;
+    modal('Ambiente da cena',input('sceneId','',current.state.sceneId,'hidden')+
+      '<div class="atmosphere-preview" data-atmosphere-preview>'+renderAtmosphere(a)+'</div>'+
+      select('tone','Tonalidade do mapa',sceneTones,a.tone)+'<label>Opacidade da tonalidade <output data-tone-value>'+a.toneOpacity+'%</output><input name="toneOpacity" type="range" min="0" max="100" step="1" value="'+a.toneOpacity+'"></label><div class="form-grid">'+select('weather','Clima',weatherNames,a.weather)+select('level','Intensidade do clima',weatherLevels,a.level)+'</div>'+submit('Aplicar à cena'),'tableAtmosphere');
+    const background=main.querySelector('.vtt-map')?.style.backgroundImage;
+    if(background&&background!=='none')dialog.querySelector('[data-atmosphere-preview]').style.backgroundImage=background;
+  },
   tableSettings() {
     const {grid,fog,darkness}=normalizeTable(current.state);
     modal('Configurar mesa',input('sceneId','',current.state.sceneId,'hidden')+
@@ -1165,9 +1375,10 @@ const handlers = {
       },grid.distance||'euclidean')+
       '<label class="check"><input type="checkbox" name="visible" '+(grid.visible?'checked':'')+'> Exibir grade</label>'+
       '<label class="check"><input type="checkbox" name="snap" '+(grid.snap?'checked':'')+'> Encaixar tokens nas células</label>'+
-      '<label class="check"><input type="checkbox" name="fogEnabled" '+(fog.enabled?'checked':'')+'> Ativar névoa de exploração</label>'+
+      '<label class="check"><input type="checkbox" name="fogEnabled" '+(fog.enabled?'checked':'')+'> Ativar névoa nesta cena</label>'+
+      select('fogMode','Tipo de névoa',{manual:'Manual · pincel do mestre',war:'Guerra · lembrar áreas exploradas'},fog.mode||'manual')+
       '<p class="muted">A névoa cobre visualmente as áreas ainda desconhecidas. A imagem original do mapa continua acessível aos participantes.</p>'+
-      '<fieldset class="token-vision-settings"><legend>Escuridão e visão dos tokens</legend><label class="check"><input type="checkbox" name="darknessEnabled" '+(darkness.enabled?'checked':'')+'> Ativar escuridão nesta cena</label>'+select('visionMode','Quem compartilha a visão',{individual:'Cada jogador vê por seus próprios tokens',group:'Todos os personagens jogadores compartilham visão'},darkness.mode)+'<p class="muted">Configure o alcance e o ângulo ao editar cada token. A névoa manual continua cobrindo áreas. Paredes desenhadas na imagem não bloqueiam a visão automaticamente.</p></fieldset>'+
+      '<fieldset class="token-vision-settings"><legend>Escuridão e visão dos tokens</legend><label class="check"><input type="checkbox" name="darknessEnabled" '+(darkness.enabled?'checked':'')+'> Ativar escuridão nesta cena</label>'+select('visionMode','Quem compartilha a visão',{individual:'Cada jogador vê por seus próprios tokens',group:'Todos os personagens jogadores compartilham visão',teams:'Somente personagens do mesmo grupo'},darkness.mode)+'<details><summary>Grupos de visão</summary><p>Use o mesmo nome para reunir personagens. Sem grupo, cada um vê apenas pelos próprios tokens.</p>'+current.state.characters.filter(c=>!c.hidden).map(c=>input('team-'+esc(c.id),esc(c.name),darkness.teams?.[c.id]||'','text','maxlength="40"')).join('')+'</details><p class="muted">Configure o alcance e o ângulo ao editar cada token. A névoa manual continua cobrindo áreas. Paredes desenhadas na imagem não bloqueiam a visão automaticamente.</p></fieldset>'+
       submit('Salvar configuração'),'tableSettings');
   },
   tableCombat:editCombat,
@@ -1278,6 +1489,13 @@ function confirmDelete(actionName,id,message) {
 }
 
 const forms = {
+  async prepImport(data,form){
+    const access=credentials;
+    const {pending,skipped,conflicts=[]}=await collectMarkdown([...form.elements.vault.files,...form.elements.markdown.files],current.state.journal||[],data.update==='on');
+    if(access!==credentials)throw new Error('A campanha mudou. Abra a importação novamente.');
+    if(pending.length)await action('journalImport',{files:pending});
+    if(credentials===access&&dialog.contains(form))modal('Importação concluída','<p>'+pending.length+' nota(s) processada(s). '+skipped+' caminho(s) inalterado(s) ou repetido(s).</p>'+(conflicts.length?'<p>Preservadas por edição local ou compartilhamento:</p><ul>'+conflicts.map(path=>'<li>'+esc(path)+'</li>').join('')+'</ul>':'')+button('Ver cartões importados','vaultOpen','primary'));
+  },
   soundboardSession:data=>action('soundboardSessionSave',data),
   async soundPackImport(data,form){
     const file=form.elements.file.files[0];if(!file||file.size>32*1024*1024)throw new Error('Selecione um ZIP de até 32 MB.');
@@ -1313,7 +1531,8 @@ const forms = {
   itemGrant(data){return action('itemGrant',{...data,version:Number(data.version),quantity:Number(data.quantity)});},
   itemManage(data){return action('itemManage',{...data,version:Number(data.version),quantity:Number(data.quantity),equipped:data.equipped==='on'});},
   itemDelete(data){return action('itemDelete',{id:data.id,version:Number(data.version)});},
-  journal(data,form){return action('journalSave',journalFormData(new FormData(form)));},
+  journal(data,form){return action('journalSave',{...journalFormData(new FormData(form)),...(data.canvasX!==undefined?{canvasPoint:{x:Number(data.canvasX),y:Number(data.canvasY)}}:{})});},
+  vaultEdge(data,form){return action('gmCanvasEdge',{from:data.from,to:data.to,label:data.label,remove:form.dataset.remove==='true'});},
   journalDelete(data){return action('journalDelete',{id:data.id,version:Number(data.version)});},
   sheetTemplateSave(data){return action('sheetTemplateSave',{...data,shared:data.shared==='on',includeAbilities:data.includeAbilities==='on',includeAppearance:data.includeAppearance==='on'});},
   async sheetTemplateImport(data,form){const file=form.elements.file.files[0];if(!file||file.size>100*1024)throw new Error('Selecione um arquivo JSON de até 100 KB.');let bundle;try{bundle=JSON.parse(await file.text());}catch{throw new Error('O arquivo não contém JSON válido.');}return action('sheetTemplateImport',{bundle,shared:false});},
@@ -1321,7 +1540,7 @@ const forms = {
   sheetTemplateDelete(data){return action('sheetTemplateDelete',{id:data.id,expectedVersion:Number(data.expectedVersion)});},
   async sheetTemplateApply(data,form){const expectedHistoryVersion=Number(form.elements.characterId.selectedOptions[0].dataset.historyVersion);const row=await action('sheetTemplateApply',{templateId:data.templateId,characterId:data.characterId,expectedVersion:Number(data.expectedVersion),expectedHistoryVersion});if(row)openSheet(data.characterId);},
   async sheetTemplateCreate(data){const row=await action('character',data);if(row)openSheet(row.characterId||row.state.characters.at(-1).id);},
-  create:data=>createCampaign(data.name,false,true,data.ruleset||'free'),
+  create:data=>createCampaign(data.name,false,true,(data.sheetModel||data.ruleset)==='dnd-2024'?'dnd-2024':'free',data.sheetModel==='dnd-2024'?'standard':data.sheetModel||'standard'),
   async campaignDelete(data) {
     const access=read('forja.campaigns')?.[data.id];if(!access?.master)return;
     const result=await request('/'+access.id,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:data.name})},access).then(response=>response.json());
@@ -1334,9 +1553,9 @@ const forms = {
   dndRest:data=>action('dndRest',data),
   async dndCreate(data,form) {
     const config=dndFormData(form);
-    const row=await action('character',{name:data.name,color:data.color||'blue',concept:dndClasses.find(c=>c.id===config.classId)?.name||'',...(current.master?{characterType:data.characterType||'player'}:{}),dnd:config});
+    const row=await action('character',{name:data.name,...(data.prepSession?{prepSession:data.prepSession,prepNote:data.prepNote,hidden:data.prepHidden==='yes'}:{}),color:data.color||'blue',concept:dndClasses.find(c=>c.id===config.classId)?.name||'',...(current.master?{characterType:data.characterType||'player'}:{}),dnd:config});
     const character=row?.state.characters.find(c=>c.id===row.characterId)||row?.state.characters.at(-1);
-    if(character)openSheet(character.id);
+    if(character&&!data.prepSession)openSheet(character.id);
   },
   gmPartyFields(data,form){return action('gmPartyFields',{id:data.id,fields:[...form.querySelectorAll('[name=fields]:checked')].map(field=>field.value)});},
   gmCard(data){const [targetKind,targetId]=(data.target||'').split('/');return action('gmCardSave',{...data,version:Number(data.version),wide:data.wide==='on',targetKind,targetId,page:Number(data.page)});},
@@ -1356,10 +1575,13 @@ const forms = {
     return action('roll',data);
   },
   delete:data=>action(data.action,{id:data.id}),
-  schema(data,form) {return action('schema',{fields:readFields(form)});},
+  schema(data,form) {return action('schema',{fields:readFields(form),expectedVersion:Number(data.expectedVersion),source:data.source});},
   sheetFields(data,form) {return action('sheetFields',{id:sheetId,layout:true,fields:readFields(form)});},
   sheetMastery:data=>action('sheetMastery',{...data,id:sheetId}),
+  bodyStressConfig:data=>action('bodyStressConfig',{id:data.id,enabled:data.enabled==='on',mode:data.mode,limits:Object.fromEntries(Object.keys(stressRegionsFor(data.mode)).map(key=>[key,Number(data[key])]))}),
   sheetColors:data=>action('sheetAppearance',sheetColorsPayload(current.state,currentSheet(),data)),
+  gmResourceSave:data=>action('gmResourceChange',{...data,operation:'save',current:Number(data.current),maximum:Number(data.maximum)}),
+  gmResourceDelete:data=>action('gmResourceChange',{...data,operation:'delete'}),
   sheetResource:data=>action('sheetCounter',{id:sheetId,field:data.field,current:data.current,maximum:data.maximum}),
   savedRoll:data=>action('sheetEntry',{...data,id:sheetId,category:'rollButtons',operation:'save'}),
   sheetEntry(data) {return action('sheetEntry',{...data,id:sheetId,operation:'save',favorite:data.favorite==='true'});},
@@ -1386,19 +1608,25 @@ const forms = {
       return existing && value===before ? [] : [[field.id,value]];
     }));
     const row=await action('character',{...data,values,...(current.master?{hidden:data.hidden==='on'}:{})});
-    if (!data.id && row) openSheet(row.characterId||row.state.characters.at(-1).id);
+    if (!data.id && row && !data.prepSession) openSheet(row.characterId||row.state.characters.at(-1).id);
   },
+  tableAtmosphere(data){return action('tableAtmosphere',data);},
   tableSettings(data) {
     return action('tableSettings',{sceneId:data.sceneId,grid:{
       mode:data.gridMode,cellPixels:Number(data.cellPixels),columns:Number(data.columns),rows:Number(data.rows),size:Number(data.size),unit:data.unit,distance:data.distance,
       visible:data.visible==='on',snap:data.snap==='on'
-    },fogEnabled:data.fogEnabled==='on',darkness:{enabled:data.darknessEnabled==='on',mode:data.visionMode||'individual'}});
+    },fogMode:data.fogMode,fogEnabled:data.fogEnabled==='on',darkness:{enabled:data.darknessEnabled==='on',mode:data.visionMode||'individual',teams:Object.fromEntries(Object.entries(data).filter(([key,value])=>key.startsWith('team-')&&value.trim()).map(([key,value])=>[key.slice(5),value.trim()]))}});
   },
   async sceneEditor(data){
     const before=new Set(current.state.sceneLibrary.scenes.map(scene=>scene.id));const row=await action(data.id?'sceneUpdate':'sceneCreate',{...data,expectedVersion:Number(data.expectedVersion)});
     if(!data.id&&row){const created=row.state.sceneLibrary.scenes.find(scene=>!before.has(scene.id));if(created)await viewScene(created.id);}
   },
-  async sessionEditor(data){await action(data.id?'sessionUpdate':'sessionCreate',{...data,expectedVersion:Number(data.expectedVersion)});sceneUI.open=true;render();},
+  async sessionEditor(data){
+    const known=new Set(current.state.sceneLibrary.sessions.map(session=>session.id));
+    const row=await action(data.id?'sessionUpdate':'sessionCreate',{...data,expectedVersion:Number(data.expectedVersion)});
+    if(page==='shield'&&!data.id&&row){gmView.session=row.state.sceneLibrary.sessions.find(session=>!known.has(session.id))?.id;gmView.prepTab='plan';gmView.prepQuery='';}
+    sceneUI.open=true;render();
+  },
   async tableToken(data) {
     const file=data.tokenPortrait;
     if(!file?.size)return action(data.id?'tokenUpdate':'tokenAdd',tokenData(data));
@@ -1471,8 +1699,13 @@ dialog.addEventListener('change',event=>{
   if(event.target.name==='kind'&&event.target.closest('[data-form=gmCard]')){const reference=$('[data-gm-reference]',dialog);if(reference)reference.hidden=event.target.value!=='reference';}
   if(event.target.matches('[name=dndCategory],[name=dndTarget],[name=dndAllSpells]'))updateDndReference();
   const dndForm=event.target.closest('[data-form=dndCreate]');if(dndForm)updateDndCreation(dndForm,{esc},event.target.name==='backgroundId',event.target.name==='classId');
+  if(event.target.name==='source'&&event.target.closest('[data-form=schema]')){
+    const source=sheetPreset(event.target.value)||current.state.sheetTemplates?.items.find(item=>item.id===event.target.value);
+    $('#schema-rows',dialog).innerHTML=(source?.fields||current.state.fields).map(schemaRow).join('');
+  }
   if(event.target.matches('[data-character-preset]')) {
-    const draft=Object.fromEntries(['name','concept','color','characterType'].map(key=>[key,$('[name='+key+']',dialog)?.value]));
+    const draft=Object.fromEntries(['name','concept','color','characterType','prepSession','prepNote'].map(key=>[key,$('[name='+key+']',dialog)?.value]));
+    draft.hidden=Boolean($('[name=hidden]',dialog)?.checked);
     if(event.target.value==='dnd-2024')openDndCreation(draft);else editCharacter('',event.target.value,draft);
   }
   if(event.target.matches('[name=file],[name=cellPixels]')) updateMapImport();
@@ -1486,6 +1719,21 @@ document.addEventListener('click',async event=>{
 });
 
 main.addEventListener('change',event=>{if(event.target.matches('[data-sheet-mastery]'))sheetView.mastery=event.target.value;if(event.target.matches('[data-sheet-roll-mode]'))sheetView.rollMode=event.target.value;});
+
+function activateVaultCanvas(){
+ const shell=page==='shield'&&gmView.vaultMode==='canvas'&&gmView.prepTab==='note'&&main.querySelector('.canvas-shell');
+ if(!shell)return;
+ mountVaultCanvas(shell,gmView,{
+  save:changes=>action('gmCanvasLayout',{changes}),report:toast,
+  editNote:id=>handlers.journalEdit(id),
+  newNote(pos){modal('Nova nota no Canvas',input('canvasX','',pos.x,'hidden')+input('canvasY','',pos.y,'hidden')+journalEditor(null,currentView(),gmUI()),'journal');},
+  editEdge(from,to){
+   const edge=current.state.gmScreen?.noteEdges?.find(e=>e.from===from&&e.to===to);
+   const title=id=>current.state.journal.find(n=>n.id===id)?.title||'Nota';
+   modal(edge?'Editar conexão':'Conectar notas','<p>'+esc(title(from))+' → '+esc(title(to))+'</p>'+input('from','',from,'hidden')+input('to','',to,'hidden')+input('label','Rótulo (opcional)',edge?.label||'','text','maxlength="80"')+submit('Salvar conexão')+(edge?'<button type="submit" class="btn danger" value="remove">Remover conexão</button>':''),'vaultEdge');
+  }
+ });
+}
 
 main.addEventListener('input',event=>{
   const field=event.target;
@@ -1529,6 +1777,7 @@ document.addEventListener('submit',async event=>{
   if (!forms[form.dataset.form]) return;
   event.preventDefault();
   const submitter = event.submitter || $('[type=submit]',form);
+  if(form.dataset.form==='vaultEdge')form.dataset.remove=String(submitter?.value==='remove');
   if (submitter) submitter.disabled=true;
   try {
     await forms[form.dataset.form](Object.fromEntries(new FormData(form)),form);
@@ -1540,9 +1789,11 @@ document.addEventListener('submit',async event=>{
         $('[name=formula]',dialog).value=formula;
         $('[name=actor]',dialog).value=actor;
         $('[type=submit]',dialog)?.focus();
+      } else if(form.dataset.form==='create'&&form.elements?.sheetModel?.value==='blank'){
+        page='sheets';render();handlers.schema();
       } else dialog.close();
     }
-    if (!['roll','sheetRoll','create','campaignDelete','lootCollect'].includes(form.dataset.form)) toast('Alterações salvas.');
+    if (!['roll','sheetRoll','create','campaignDelete','lootCollect','prepImport'].includes(form.dataset.form)) toast('Alterações salvas.');
   } catch(error) {toast(error.message);}
   finally {if (submitter) submitter.disabled=false;}
 });
@@ -1567,8 +1818,8 @@ async function refresh(force=false) {
     audioPlayer.sync(row);
     musicDock.sync(row);soundboardDock.sync(row);audioPopover.sync(row);
     observeRolls(row);
-    if(page==='table'&&!current.needsCharacter){setCurrent(row);if(!syncCurrentTable()&&!tabletop.isInteracting()&&!dialog.open)render();return;}
-    const editing = main.contains(document.activeElement) && document.activeElement.matches('input,textarea,select,[data-table-token],iframe');
+    if(tableVisible()&&!current.needsCharacter){setCurrent(row);if(!syncCurrentTable()&&!tabletop.isInteracting()&&!dialog.open)render();return;}
+    const editing = Boolean(main.querySelector('.canvas-shell[data-gesture]')?.dataset.gesture)||main.contains(document.activeElement) && document.activeElement.matches('input,textarea,select,[data-vault-move],[data-table-token],iframe');
     if (row.rev>current.rev && !inlineSheet.editing && !editing && !tabletop.isInteracting() && !(page==='sheets'&&currentSheet()&&sheetMosaic.editing) && !sheetMosaic.isInteracting() && !dialog.open) {setCurrent(row);render();}
   } catch(error) {if([403,404].includes(error.status)&&credentials===access){reconnectingAccess=access;credentials=null;dialog.close();setCurrent(lobby);render();toast('Campanha temporariamente indisponível. Seu acesso foi preservado; a reconexão será automática quando o servidor voltar.');}}
   finally {clearTimeout(timeout);if(campaignRefresh===task)campaignRefresh=null;}
@@ -1582,22 +1833,46 @@ async function refreshAudio() {
   const timeout=setTimeout(()=>controller.abort(),4000);
   const started=performance.now();
   try {
-    const row=await request('/'+access.id+'/sync?rollVersion='+encodeURIComponent(latestRollVersion)+(page==='table'&&!tableLive.connected?'&table=1':''),{signal:controller.signal},access).then(response=>response.json());
+    const patrol=tableVisible()&&tableLive.connected&&current.state.table?.hasPatrols;
+    const tableQuery=patrol?'&table=1&patrolRev='+sceneRevision:tableVisible()&&!tableLive.connected?'&table=1':'';
+    const row=await request('/'+access.id+'/sync?rollVersion='+encodeURIComponent(latestRollVersion)+tableQuery,{signal:controller.signal},access).then(response=>response.json());
     if (access!==credentials) return;
     row.serverTime+=(performance.now()-started)/2;
     audioPlayer.sync(row);
     musicDock.sync(row);soundboardDock.sync(row);audioPopover.sync(row);
     observeRolls(row);
-    if(page==='table'&&row.state?.table)receiveTableEvent({type:'scene',...row});
+    const frame=row.state?.patrolFrame;
+    if(tableVisible()&&frame&&frame.sceneId===current.state.sceneId&&row.rev===sceneRevision){
+      const moving=new Map(frame.tokens.map(t=>[t.id,t])),tokens=[];
+      for(const old of current.state.tokens){
+        if(!old.motion){tokens.push(old);continue;}
+        if(moving.has(old.id)){tokens.push(moving.get(old.id));moving.delete(old.id);}
+      }
+      row.state={sceneId:frame.sceneId,tokens:[...tokens,...moving.values()],table:{...current.state.table,combat:frame.combat}};
+    }
+    if(tableVisible()&&row.state?.table)receiveTableEvent({type:'scene',...row});
   } catch { /* Retry the shared timeline on the next audio poll. */ }
   finally {clearTimeout(timeout);audioSyncing=false;}
 }
+
+dialog.addEventListener('input',event=>{
+  if(!event.target.matches('input[name="toneOpacity"]'))return;
+  const form=event.target.form;
+  form.querySelector('[data-tone-value]').textContent=event.target.value+'%';
+  form.querySelector('.vtt-atmosphere').style.setProperty('--tone-opacity',Number(event.target.value)/100);
+});
+dialog.addEventListener('change',event=>{
+  if(event.target.name==='toneOpacity')return;
+  const form=event.target.closest('[data-form="tableAtmosphere"]');
+  if(form)form.querySelector('[data-atmosphere-preview]').innerHTML=renderAtmosphere(Object.fromEntries(new FormData(form)));
+});
 
 document.addEventListener('input',event=>{
   if(event.target.matches('[data-inventory-search]')){inventoryView.query=event.target.value;const shell=document.createElement('div');shell.innerHTML=renderInventory(currentView(),gmUI(),inventoryView);const results=$('[data-inventory-results]',main);if(results)results.innerHTML=$('[data-inventory-results]',shell).innerHTML;}
   if(event.target.matches('[data-journal-search]')){journalView.query=event.target.value;const grid=$('.journal-grid',main);if(grid){const shell=document.createElement('div');shell.innerHTML=renderJournal(currentView(),gmUI(),journalView);grid.innerHTML=$('.journal-grid',shell).innerHTML;}}
   if(event.target.matches('[data-scene-search]')){sceneUI.query=event.target.value;const cards=$('[data-scene-cards]',main);if(cards){cards.innerHTML=renderSceneCards(currentView(),sceneUI);applyPortraits();}}
   if(current.master&&page==='shield'&&event.target.matches('[data-gm-notes]')){gmNoteDrafts.set(current.id,event.target.value);const status=$('[data-gm-notes-status]',main);if(status)status.textContent='Rascunho não salvo · preservado ao navegar nesta aba.';}
+  if(page==='shield'&&event.target.matches('[data-prep-search]')){gmView.prepQuery=event.target.value;$('[data-prep-list]',main).innerHTML=prepList(current,gmUI(),gmView);activateVaultCanvas();}
   if(page==='shield'&&event.target.matches('[data-gm-search]')){gmView.query=event.target.value;const cards=$('[data-gm-cards]',main);if(cards)cards.innerHTML=renderGmCards(currentView(),gmUI(),gmView);}
   if (event.target.matches('[data-overlay-effect-volume]')) audioPlayer.setVolume(event.target.value/100);
   if (event.target.matches('[data-music-volume]')) audioPlayer.setMusicVolume(event.target.value);
@@ -1608,6 +1883,13 @@ document.addEventListener('change',async event=>{
   if(event.target.matches('[data-dice-effects]'))diceDisplay.setEnabled(event.target.checked);
   try {
     if (!current.master) return;
+    if(event.target.matches('[data-vault-sort]')){gmView.vaultSort=event.target.value;render();}
+    if(event.target.matches('[data-prep-session]')){
+      gmView.session=event.target.value;gmView.prepQuery='';
+      const target=current.state.sceneLibrary.scenes.find(c=>c.sessionId===gmView.session);
+      if(target)await viewScene(target.id);else{sceneSelectionVersion++;render();}
+    }
+    if(event.target.matches('[data-prep-scene]')&&event.target.value)await viewScene(event.target.value);
     if(event.target.matches('[data-soundboard-session]'))await action('soundboardSessionSelect',{id:event.target.value});
     if(event.target.matches('[data-soundboard-pack]'))await action('soundboardPackToggle',{packId:event.target.dataset.soundboardPack,enabled:event.target.checked});
     if(event.target.matches('[data-soundboard-pick]'))await action('soundboardPick',{id:event.target.dataset.soundboardPick,enabled:event.target.checked});

@@ -299,10 +299,6 @@
 .token-vision-settings legend{color:#d2b8ff;padding:0 6px}
 @media(max-width:680px){.vtt-rotation-controls .btn{min-height:44px;min-width:44px}.vtt-rotation-controls input{min-height:44px}.token-vision-settings .form-grid{grid-template-columns:1fr}}
 @media(prefers-reduced-motion:reduce){.vtt-token-facing{transition:none}}
-.vtt-facing-handle{position:absolute;top:-5px;left:calc(50% - 12px);width:24px;height:22px;pointer-events:none;touch-action:none}
-.vtt-token.is-selected .vtt-facing-handle{pointer-events:auto;cursor:crosshair}
-.vtt-token.is-selected .vtt-facing-handle:hover{border:1px solid #e2ceff;border-radius:50%;background:#b297e433}
-@media(pointer:coarse){.vtt-facing-handle{top:-10px;left:calc(50% - 16px);width:32px;height:30px}}
 /* Map-sized SVGs must never inherit the world-unit strokes used by icons. */
 .vtt .vtt-darkness{stroke:none;stroke-width:0}
 .vtt .vtt-darkness mask,.vtt .vtt-darkness-cover{stroke:none;stroke-width:0}
@@ -328,3 +324,73 @@ dialog[data-loot-reward=true]{border-color:#dfbb73;box-shadow:0 0 55px #d2a65630
 @keyframes loot-reward-enter{from{opacity:.3;transform:translateY(14px) scale(.96)}to{opacity:1;transform:none}}
 @media(prefers-reduced-motion:reduce){.vtt-loot-flight,.vtt-loot-flight>span,dialog[data-loot-reward=true]{animation:none}}
 .vtt-token.is-item .vtt-token-face{border-radius:24%}
+
+.vtt .vtt-walls{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none;z-index:7}
+[data-tool="walls"] .vtt-world:not(.is-player-preview) .vtt-walls{display:block}
+[data-tool="walls"]{cursor:crosshair}
+.vtt-wall-options:not([hidden]){display:flex;align-items:center;gap:.8rem;flex-wrap:wrap}
+
+.vtt .vtt-light-markers{position:absolute;inset:0;width:100%;height:100%;display:none;pointer-events:none;z-index:8}
+[data-tool="lights"] .vtt-world:not(.is-player-preview) .vtt-light-markers{display:block}
+[data-tool="lights"]{cursor:crosshair}
+.vtt-light-options:not([hidden]){display:flex;align-items:center;gap:.8rem;flex-wrap:wrap}
+.vtt-light-options label{display:inline-flex;align-items:center;gap:.4rem;flex-wrap:wrap}
+.vtt-light-options input[type=checkbox]{width:auto}
+@media(pointer:fine){.vtt-rotation-controls button{display:none}}
+
+.vtt-token.is-active-turn .vtt-token-face{outline:2px dashed #ffe49a;outline-offset:2px}
+
+.vtt-route-controls{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap}.vtt-route-controls label{display:flex;align-items:center;gap:.3rem}.vtt-route-controls select{width:auto}
+
+.atmosphere-preview{position:relative;overflow:hidden;height:clamp(110px,20vh,190px);border-radius:8px;background:#33303c url('/cover.webp') center/cover}
+.vtt-atmosphere{position:absolute;inset:0;overflow:hidden;pointer-events:none;contain:strict;container-type:size}
+.vtt-atmosphere[data-tone=dawn] .vtt-tone{background:radial-gradient(ellipse at 0% 16%,#ffdf9987,transparent 63%),linear-gradient(112deg,#f6b16b38,#e7a3ae20 52%,#777bad43)}
+.vtt-atmosphere[data-tone=dusk] .vtt-tone{background:radial-gradient(ellipse at 92% 66%,#ff986453,transparent 56%),linear-gradient(105deg,#31224682,#633a645b 47%,#be60512b)}
+.vtt-atmosphere[data-tone=moon] .vtt-tone{background:radial-gradient(ellipse at 24% 5%,#b4d8f13b,transparent 57%),linear-gradient(150deg,#28457168,#16223a93)}
+.vtt-atmosphere::before{content:"";position:absolute;inset:0;opacity:.6}
+.vtt-atmosphere[data-level=light]::before{opacity:.35}
+.vtt-atmosphere[data-level=heavy]::before{opacity:.85}
+.vtt-atmosphere:is([data-weather=rain],[data-weather=storm])::before{background:linear-gradient(158deg,#2b435f3d,#7fa7af0d 54%,#36576c30)}
+.vtt-atmosphere[data-weather=snow]::before{background:radial-gradient(ellipse at 80% 14%,#e6f2fd33,transparent 72%),linear-gradient(145deg,#c1d3df19,transparent)}
+.vtt-atmosphere[data-weather=embers]::before{background:radial-gradient(ellipse at 45% 115%,#fb792638,transparent 70%)}
+.vtt-atmosphere i{position:absolute;top:0;width:1px;height:100%;opacity:var(--alpha);animation:var(--flight) var(--period) linear var(--delay) infinite}
+.vtt-atmosphere i::after{content:"";position:absolute;top:0;transform-origin:center;transform:scale(var(--scale))}
+.vtt-atmosphere:is([data-weather=rain],[data-weather=storm]){--flight:rain-streak}
+.vtt-atmosphere:is([data-weather=rain],[data-weather=storm]) i::after{width:1.5px;height:clamp(10px,3cqh,24px);border-radius:50%;background:linear-gradient(transparent,#c2dbee85 58%,#e0f5ffc4);transform:rotate(10deg) scale(var(--scale))}
+@keyframes rain-streak{from{transform:translate(8cqh,-5%)}to{transform:translate(-11cqh,105%)}}
+.vtt-atmosphere b{position:absolute;width:13px;height:5px;border:1px solid #d1edff99;border-radius:50%;animation:rain-impact var(--period) ease-out var(--delay) infinite}
+@keyframes rain-impact{0%{opacity:.75;transform:scale(.18)}28%,100%{opacity:0;transform:scale(1.3)}}
+.vtt-atmosphere[data-weather=snow]{--flight:snow-drift}
+.vtt-atmosphere[data-weather=snow] i::after{width:4px;height:4px;border-radius:50%;background:radial-gradient(circle at 40% 36%,#fff 15%,#ebf5ffe6 47%,#c7e6fa22 80%);box-shadow:0 0 3px #f1f9ff55}
+@keyframes snow-drift{0%{transform:translate(0,-4%)}25%{transform:translate(var(--sway),23%)}55%{transform:translate(3px,54%)}82%{transform:translate(var(--sway),82%)}100%{transform:translate(14px,104%)}}
+.vtt-atmosphere[data-weather=embers]{--flight:ember-rise}
+.vtt-atmosphere[data-weather=embers] i::after{width:3px;height:5px;border-radius:70% 20% 65% 35%;background:linear-gradient(#ffe9a9,#ff9639 65%,#db5123);box-shadow:0 0 4px #ff9224bf,0 0 9px #fb581e66;animation:ember-turn 2.6s ease-in-out var(--delay) infinite alternate}
+@keyframes ember-rise{0%{opacity:0;transform:translate(0,104%)}12%{opacity:var(--alpha)}42%{transform:translate(var(--sway),61%)}70%{opacity:var(--alpha);transform:translate(4px,33%)}100%{opacity:0;transform:translate(var(--sway),-4%)}}
+@keyframes ember-turn{from{transform:rotate(-24deg) scale(var(--scale))}to{transform:rotate(54deg) scale(var(--scale),.65)}}
+@media(prefers-reduced-motion:reduce){.vtt-atmosphere i,.vtt-atmosphere i::after,.vtt-atmosphere b{animation:none!important}.vtt-atmosphere i{top:var(--phase)}.vtt-atmosphere b{display:none}}
+.vtt-ping-options{padding:7px 12px;background:#211e2d}.vtt-ping-options label{display:inline-flex;align-items:center;gap:8px;font-size:12px}.vtt-ping-options select{width:auto;min-height:32px}
+.vtt-ping[data-signal=danger]{--signal:#ff9a91}.vtt-ping[data-signal=gather]{--signal:#8ce6cc}.vtt-ping[data-signal=clue]{--signal:#c2b3ff}
+.vtt-ping[data-signal] .vtt-ping-ring{border-color:var(--signal,#ffe1a6)}.vtt-ping[data-signal] .vtt-ping-dot{background:var(--signal,#fff0ce)}.vtt-ping[data-signal] .vtt-ping-name{color:var(--signal,#ffe9c1)}
+
+.vtt-measure-options{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:7px 12px;background:#211e2d}.vtt-measure-options label{display:inline-flex;align-items:center;gap:8px;font-size:12px}.vtt-measure-options select{width:auto;min-height:32px}
+
+.vtt-atmosphere .vtt-tone{position:absolute;inset:0;opacity:var(--tone-opacity,1)}
+.vtt-atmosphere[data-tone=sun] .vtt-tone{background:linear-gradient(148deg,#fff2b475,#eab64722 64%,#bb883030)}
+.vtt-atmosphere[data-tone=forest] .vtt-tone{background:radial-gradient(ellipse at 20% 5%,#cfe99455,transparent 60%),linear-gradient(125deg,#38663f40,#203f428a)}
+.vtt-atmosphere[data-tone=ice] .vtt-tone{background:linear-gradient(145deg,#d7fcff65,#8ec4d84d 55%,#32568d66)}
+.vtt-atmosphere[data-tone=sepia] .vtt-tone{background:linear-gradient(135deg,#dcb87865,#7f503868)}
+.vtt-atmosphere::before{z-index:1;pointer-events:none}
+.vtt-atmosphere i,.vtt-atmosphere b,.vtt-atmosphere .vtt-lightning{z-index:2}
+.vtt-atmosphere[data-weather=storm]::before{background:linear-gradient(145deg,#18283b88,#46567544 55%,#243b5655)}
+.vtt-atmosphere .vtt-lightning{position:absolute;inset:0;width:100%;height:100%;stroke:none;opacity:0;filter:drop-shadow(0 0 3px #c0cfff);animation:scene-lightning 13s linear -3s infinite}
+.vtt-atmosphere[data-level=heavy] .vtt-lightning{animation-duration:9s}
+.vtt-atmosphere[data-level=light] .vtt-lightning{animation-duration:18s}
+@keyframes scene-lightning{0%,67%,72%,100%{opacity:0}68%{opacity:.85}}
+.vtt-atmosphere[data-weather=mist]::before{inset:-18%;background:radial-gradient(ellipse 48% 17% at 20% 31%,#c9dce566,transparent),radial-gradient(ellipse 42% 13% at 74% 56%,#d4e1e766,transparent),radial-gradient(ellipse 51% 22% at 35% 84%,#b4cbd755,transparent),linear-gradient(165deg,#b2c4d117,#64768109);animation:scene-mist 19s ease-in-out infinite alternate}
+@keyframes scene-mist{from{transform:translateX(-7%)}to{transform:translateX(8%)}}
+.vtt-atmosphere[data-weather=dust]{--flight:dust-drift}
+.vtt-atmosphere[data-weather=dust]::before{background:linear-gradient(25deg,#ba805254,transparent 74%)}
+.vtt-atmosphere[data-weather=dust] i{top:var(--phase);inset-inline-start:0!important;width:100%;height:1px}
+.vtt-atmosphere[data-weather=dust] i::after{width:3px;height:2px;background:#e0c39b;border-radius:50%}
+@keyframes dust-drift{from{transform:translate(-2%,8px)}to{transform:translate(103%,-14px)}}
+@media(prefers-reduced-motion:reduce){.vtt-atmosphere .vtt-lightning{display:none}.vtt-atmosphere[data-weather=mist]::before{animation:none}.vtt-atmosphere[data-weather=dust] i{inset-inline-start:var(--dust-x)!important}}

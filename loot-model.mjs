@@ -32,9 +32,9 @@ export function mutateLoot(state,action,data,access){
    if(!access.master){
     if(token.hidden)fail(403,'O mestre ainda não revelou este item.');
     if(!nearby)fail(400,'Aproxime um token do seu personagem até uma célula do item para coletar.');
-    if(!pointRevealed(table.fog,{x,y}))fail(403,'Este item está encoberto pela névoa.');
+    if(table.fog.mode!=='war'&&!pointRevealed(table.fog,{x,y}))fail(403,'Este item está encoberto pela névoa.');
     const tokens=world.tokens.map(t=>({...t,visionSource:playerVisionSource(draft,t)}));
-    if(table.darkness.enabled&&!tokenInVision(token,visionSources({master:false,characterId:character.id,state:{...world,table}},tokens),table.grid))fail(403,'Este item está fora do campo de visão.');
+    if((table.darkness.enabled||table.fog.enabled&&table.fog.mode==='war')&&!tokenInVision(token,visionSources({master:false,characterId:character.id,state:{...world,table}},tokens),table.grid,table.walls))fail(403,'Este item está fora do campo de visão.');
    }
    const copy={...structuredClone(token.loot.item),id:crypto.randomUUID(),sourceId:token.loot.item.id,version:1,characterId:character.id,quantity:token.loot.quantity,equipped:false,notes:''};
    commitInventory(draft,[...(draft.inventory||[]),copy]);

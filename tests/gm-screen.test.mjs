@@ -110,3 +110,102 @@ test('mestre escolhe atributos do resumo e preferências ficam privadas',async()
  assert.equal((await r.action('gmPartyFields',{id:'lyra',fields:['f3','f3']})).status,400);
  assert.equal((await r.action('gmPartyFields',{id:'sumiu',fields:[]})).status,404);
 });
+
+test('roteiros reutilizam materiais sem publicar cenas ou notas importadas',async()=>{
+ const r=await room(),files=[{path:'Cofre/Pistas/Carta.md',body:'[[Porto]]'},{path:'Cofre/Porto.md',body:'Mapa privado'}];
+ let response=await r.action('journalImport',{files});assert.equal(response.status,200);
+ const {journal,sceneLibrary}= (await response.json()).state;
+ const note=journal.find(n=>n.sourcePath===files[0].path);
+ assert.equal(note.body,files[0].body);assert.equal(note.audience,'private');
+ await r.action('journalSave',{...note,body:'Alterada na Forja'});
+ await r.action('journalImport',{files});let state=(await r.view()).state;
+ assert.equal(state.journal.length,journal.length);assert.equal(state.journal.find(e=>e.id===note.id).body,'Alterada na Forja');
+ assert.equal((await r.action('journalImport',{files:[{path:'nova.md',body:'ok'},{path:'invalida.md',body:null}]})).status,400);
+ assert.equal((await r.view()).state.journal.length,journal.length);
+ await r.action('sessionCreate',{name:'A emboscada'});state=(await r.view()).state;
+ const session=state.sceneLibrary.sessions.at(-1),ref={sessionId:session.id,id:note.id,kind:'note',attached:true};
+ assert.equal((await r.action('sessionMaterial',ref)).status,200);await r.action('sessionMaterial',ref);
+ state=(await r.view()).state;assert.deepEqual(state.sceneLibrary.sessions.at(-1).materials,[{id:note.id,kind:'note'}]);
+ assert.equal(state.activeSceneId,sceneLibrary.activeId);
+ const guest=(await r.view(r.created.invite)).state;
+ assert.equal(guest.sceneLibrary,undefined);assert.ok(!JSON.stringify(guest).includes('Cofre/Pistas'));
+ assert.equal((await r.action('sessionMaterial',ref,r.created.invite)).status,403);
+ assert.equal((await r.action('journalImport',{files},r.created.invite)).status,403);
+ await r.action('sessionMaterial',{...ref,attached:false});assert.deepEqual((await r.view()).state.sceneLibrary.sessions.at(-1).materials,[]);
+});
+
+test('criação pelo escudo salva material, origem e roteiro na mesma operação',async()=>{
+ const r=await room(),created=await (await r.action('journalImport',{files:[{path:'Mundo/Cais.md',body:'Um segredo'}]})).json();
+ const note=created.state.journal.at(-1),prepSession=created.state.sceneLibrary.sessions[0].id;
+ const npc={name:'Guarda',characterType:'npc',hidden:true,prepSession,prepNote:note.id};
+ const row=await (await r.action('character',npc)).json(),c=row.state.characters.at(-1);
+ assert.equal(c.hidden,true);assert.deepEqual(row.state.journal.at(-1).characterIds,[c.id]);
+ const response=await r.action('itemSave',{name:'Chave',journalId:note.id,prepSession});
+ assert.equal(response.status,200);
+ const state=(await response.json()).state;
+ assert.deepEqual(state.sceneLibrary.sessions[0].materials,[{id:c.id,kind:'character'},{id:state.inventory.at(-1).id,kind:'item'}]);
+ assert.equal((await r.action('character',{...npc,prepSession:'missing'})).status,400);
+ assert.equal((await r.view()).state.characters.length,state.characters.length);
+});
+
+test('atualização do cofre preserva identidade, edição local, revisão e compartilhamento',async()=>{
+ const r=await room(),path='Cofre/Porto.md',save=(body,version)=>r.action('journalImport',{files:[{path,body,version}]});
+ const old=(await (await save('primeira')).json()).state.journal.at(-1);
+ const updated=(await (await save('segunda',old.version)).json()).state.journal.at(-1);
+ assert.equal(updated.id,old.id);assert.equal(updated.body,'segunda');
+ assert.equal((await save('atrasada',old.version)).status,409);
+ await r.action('journalSave',{...updated,body:'Alteração na mesa'});
+ const local=(await r.view()).state.journal.at(-1);
+ assert.equal((await save('terceira',local.version)).status,409);assert.equal((await r.view()).state.journal.at(-1).body,'Alteração na mesa');
+ const otherPath='Cofre/Pista.md';
+ const other=(await (await r.action('journalImport',{files:[{path:otherPath,body:'pista'}]})).json()).state.journal.at(-1);
+ await r.action('journalPublish',{id:other.id,version:other.version,audience:'all'});
+ assert.equal((await r.action('journalImport',{files:[{path:otherPath,body:'segredo',version:other.version+1}]})).status,409);
+});
+
+test('cartões do cofre conservam posição, acesso privado e referência única após reimportação',async()=>{
+ const r=await room(),path='Campanha/Locais/Cais.md';
+ const result=await r.action('journalImport',{files:[{path,body:'Primeira versão'}]});
+ const note=(await result.json()).state.journal.at(-1),position={id:note.id,x:400,y:150};
+ assert.equal((await r.action('gmNotePosition',position,r.created.invite)).status,403);
+ assert.equal((await r.action('gmNotePosition',{...position,x:-1})).status,400);
+ await r.action('gmNotePosition',position);await r.action('gmNotePin',{id:note.id});await r.action('gmNotePin',{id:note.id});
+ await r.action('journalImport',{files:[{path,version:note.version,body:'Segunda versão'}]});
+ const state=(await r.view()).state;
+ assert.deepEqual(state.gmScreen.notePositions[note.id],{x:400,y:150});
+ assert.equal(state.gmScreen.cards.filter(c=>c.targetId===note.id&&c.pinned).length,1);
+ assert.equal(state.journal.find(n=>n.id===note.id).body,'Segunda versão');
+ assert.equal((await r.view(r.created.invite)).state.gmScreen,undefined);
+});
+
+test('canvas salva movimentos em conjunto, tamanho e cor sem perder campos anteriores',async()=>{
+ const r=await room();
+ const imported=await r.action('journalImport',{files:[{path:'Cais.md',body:'Local'},{path:'Pista.md',body:'Pista'}]});
+ const [a,b]=(await imported.json()).state.journal.slice(-2);
+ const layout=changes=>r.action('gmCanvasLayout',{changes});
+ assert.equal((await layout([{id:a.id,x:-240,y:-90},{id:b.id,x:550,y:100}])).status,200);
+ assert.equal((await layout([{id:a.id,width:340,height:220,color:'#ea8044'}])).status,200);
+ assert.equal((await layout([{id:a.id,x:987},{id:b.id,width:0}])).status,400);
+ assert.deepEqual((await r.view()).state.gmScreen.notePositions[a.id],{x:-240,y:-90,width:340,height:220,color:'#ea8044'});
+ const edge={from:a.id,to:b.id,label:'Leva até'};
+ assert.equal((await r.action('gmCanvasEdge',edge,r.created.invite)).status,403);
+ assert.equal((await r.action('gmCanvasEdge',edge)).status,200);
+ await r.action('gmCanvasEdge',{...edge,label:'Próxima pista'});
+ assert.deepEqual((await r.view()).state.gmScreen.noteEdges,[{...edge,label:'Próxima pista'}]);
+ await r.action('gmCanvasEdge',{...edge,remove:true});
+ assert.deepEqual((await r.view()).state.gmScreen.noteEdges,[]);
+});
+
+test('apagar material remove o vínculo de todas as sessões e mantém as outras referências',async()=>{
+ const r=await room(),sessionId='session-initial';
+ const second=(await(await r.action('sessionCreate',{name:'Outra sessão'})).json()).state.sceneLibrary.sessions.at(-1).id;
+ for(const session of [sessionId,second]){
+  for(const id of ['lyra','dorian']){
+   assert.equal((await r.action('sessionMaterial',{sessionId:session,kind:'character',id,attached:true})).status,200);
+  }
+ }
+ const before=(await r.view()).state.sceneLibrary.version;
+ const deleted=await(await r.action('characterDelete',{id:'lyra'})).json();
+ assert.equal(deleted.state.sceneLibrary.version,before+1);
+ for(const session of deleted.state.sceneLibrary.sessions)assert.deepEqual(session.materials,[{kind:'character',id:'dorian'}]);
+});

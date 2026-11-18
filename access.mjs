@@ -35,7 +35,7 @@ export function authorizeAction(state,access,action,data) {
   }
   const own=ownedCharacter(state,access);
   if (!own) fail(403,'Escolha ou crie seu personagem para entrar na mesa.');
-  if (['character','sheetValue','sheetAppearance','sheetCounter','sheetFields','sheetPortraitDelete','sheetHistoryRestore','sheetEntry','sheetMastery','dndAdd','dndRest','dndCast'].includes(action)) {
+  if (['character','sheetValue','sheetAppearance','bodyStressStep','sheetCounter','sheetFields','sheetPortraitDelete','sheetHistoryRestore','sheetEntry','sheetMastery','dndAdd','dndRest','dndCast'].includes(action)) {
     requireOwnCharacter(state,access,data.id);
   }
   if (action==='tokenMove'||action==='tokenRotate') {
@@ -63,9 +63,9 @@ export function rollVersion(rolls) {
 }
 
 export function publicState(state,access) {
-  const {members,notes,initiative,gmScreen,sceneLibrary,inventory,journal,sheetTemplates,narrations,...base}=state;
+  const {gmResources,sheetStarter,members,notes,initiative,gmScreen,sceneLibrary,inventory,journal,sheetTemplates,narrations,...base}=state;
   const shared={...base,tokens:(base.tokens||[]).filter(t=>access.master||!t.hidden).map(t=>publicItemToken(t,access.master)),...(base.table?{table:{...base.table,lootEvents:(base.table.lootEvents||[]).filter(e=>access.master||e.public!==false)}}:{}),inventory:inventoryView(state,access),narrations:narrationView(state,access),journal:journalView(state,access),sheetTemplates:sheetTemplatesView(state,access)};
-  if (access.master) return {...shared,characters:state.characters.map(fullCharacter),notes,initiative,gmScreen};
+  if (access.master) return {...shared,gmResources:gmResources||{},characters:state.characters.map(fullCharacter),notes,initiative,gmScreen};
   return {
     ...shared,
     characters:state.characters.filter(character=>!character.hidden).map(character=>

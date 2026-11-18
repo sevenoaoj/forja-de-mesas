@@ -9,10 +9,10 @@ export function resourceStatus(value,style){
  return {ratio,critical:Boolean(valid&&style.critical&&ratio*100<=style.criticalAt)};
 }
 
-export function renderSheetResource(character,field,value,{inline,step}){
- const style=sheetResourceStyle(character,field),status=resourceStatus(value,style);
+export function renderSheetResource(character,field,value,{inline,step,editControl,resourceStyle}){
+ const style=resourceStyle||sheetResourceStyle(character,field),status=resourceStatus(value,style);
  const [amount,limit]=String(value).split('/'),bounded=Boolean(limit)&&Number.isFinite(Number(limit))&&Number(limit)>=0;
- return '<div data-sheet-tone="resources" class="sheet-resource" data-sheet-resource="'+esc(character.id+'/'+field.id)+'" style="--resource-color:'+esc(style.color)+'"><div class="sheet-resource-heading"><strong>'+esc(field.label)+'</strong><span class="resource-critical-label" '+(status.critical?'':'hidden')+'>Crítico</span><button type="button" class="resource-color-button" data-act="sheetColors" data-id="'+esc(field.id)+'" aria-label="Personalizar '+esc(field.label)+'" title="Cor e alerta de '+esc(field.label)+'"><span aria-hidden="true"></span></button></div><div class="resource-meter '+(status.critical?'is-critical':'')+'" style="--resource-ratio:'+status.ratio+'"><span class="resource-fill" aria-hidden="true"></span>'+step(-1,'−',!bounded||Number(amount)<=0)+inline('<span>'+esc(amount||'0')+' / '+esc(limit||'—')+'</span>')+step(1,'+',!bounded||Number(amount)>=Number(limit))+'</div></div>';
+ return '<div data-sheet-tone="resources" class="sheet-resource" data-sheet-resource="'+esc(character.id+'/'+field.id)+'" style="--resource-color:'+esc(style.color)+'"><div class="sheet-resource-heading"><strong>'+esc(field.label)+'</strong><span class="resource-critical-label" '+(status.critical?'':'hidden')+'>Crítico</span>'+(editControl??'<button type="button" class="resource-color-button" data-act="sheetColors" data-id="'+esc(field.id)+'" aria-label="Personalizar '+esc(field.label)+'" title="Cor e alerta de '+esc(field.label)+'"><span aria-hidden="true"></span></button>')+'</div><div class="resource-meter '+(status.critical?'is-critical':'')+'" style="--resource-ratio:'+status.ratio+'"><span class="resource-fill" aria-hidden="true"></span>'+step(-1,'−',!bounded||Number(amount)<=0)+inline('<span>'+esc(amount||'0')+' / '+esc(limit||'—')+'</span>')+step(1,'+',!bounded||Number(amount)>=Number(limit))+'</div></div>';
 }
 
 export function sheetColorsForm(state,character){

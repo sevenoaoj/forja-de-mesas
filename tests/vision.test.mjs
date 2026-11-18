@@ -19,7 +19,7 @@ test('visão circular e cone respeitam alcance, rotação, escala e fronteiras s
  assert.equal(pointInVision({x:4.7,y:.5},narrow),false);
 });
 test('desativar visão mantém somente a área do token; dados antigos não ativam escuridão',()=>{
- assert.deepEqual(normalizeDarkness(),{enabled:false,mode:'individual'});assert.equal(normalizeVision().angle,120);assert.equal(normalizeRotation(-15),345);assert.equal(normalizeRotation(720),0);
+ assert.deepEqual(normalizeDarkness(),{level:100,enabled:false,mode:'individual'});assert.equal(normalizeVision().angle,120);assert.equal(normalizeRotation(-15),345);assert.equal(normalizeRotation(720),0);
  const s=visionSector({...hero,vision:{enabled:false,range:20,angle:360}},grid);assert.equal(pointInVision({x:4.5,y:4.5},s),true);assert.equal(pointInVision({x:4.5,y:1},s),false);assert.equal(sectorPath(s),'');
  assert.equal(normalizeVision({range:Infinity,angle:NaN}).range,9);assert.equal(normalizeVision({angle:600}).angle,360);
 });
@@ -28,6 +28,7 @@ test('fontes individuais nunca usam o token selecionado de outro jogador; grupo 
  const row={master:false,characterId:'hero-sheet',state:{table:{darkness:{mode:'individual'}},tokens:[hero,ally,npc,hidden]}};
  assert.deepEqual(visionSources(row,row.state.tokens,{selected:'ally'}).map(t=>t.id),['hero']);row.state.table.darkness.mode='group';assert.deepEqual(visionSources(row).map(t=>t.id),['hero','ally']);
  assert.deepEqual(visionSources({...row,master:true},row.state.tokens,{selected:'npc',preview:true}).map(t=>t.id),['hero','ally']);assert.deepEqual(visionSources({...row,master:true},row.state.tokens,{selected:'npc'}).map(t=>t.id),['npc']);
+ assert.deepEqual(visionSources({...row,characterId:null}),[]);
  assert.deepEqual(visionSources({...row,characterId:null,state:{...row.state,table:{}}}),[]);
  assert.equal(tokenInVision({...ally,x:4,y:1},[hero],grid),true);assert.equal(tokenInVision({...ally,x:4,y:15},[hero],grid),false);
 });
@@ -69,7 +70,7 @@ test('configurações inválidas não gravam e cenas preparadas não alteram vis
  assert.equal(r.rows.get(r.created.id).rev,rev);
  await ok(await r.action('sceneCreate',{name:'Sala escura',sessionId:'session-initial'}));const scene=r.rows.get(r.created.id).state.sceneLibrary.scenes.at(-1);
  await ok(await r.action('tableSettings',{sceneId:scene.id,darkness:{enabled:true,mode:'group'}}));
- const raw=r.rows.get(r.created.id);assert.equal(normalizeTable(raw.state).darkness.enabled,false);assert.deepEqual(normalizeTable(sceneProjection(raw.state,scene.id)).darkness,{enabled:true,mode:'group'});
+ const raw=r.rows.get(r.created.id);assert.equal(normalizeTable(raw.state).darkness.enabled,false);assert.deepEqual(normalizeTable(sceneProjection(raw.state,scene.id)).darkness,{level:100,enabled:true,mode:'group'});
 });
 
 test('recorte nasce no centro e isola os traços dos ícones que criavam borda branca e afastavam o cone',()=>{
@@ -117,4 +118,91 @@ test('mestre libera e recolhe visão compartilhada para os dois jogadores, com m
  assert.equal((await r.action('tableSettings',{darkness:{mode:'individual'}},r.member)).status,403);
  await ok(await r.action('tableSettings',{darkness:{mode:'individual'}}));
  for(const [key,id] of [[r.member,'lyra'],[r.other,'dorian']])assert.deepEqual(visionSources(await r.view(key)).map(t=>t.id),[id]);
+});
+
+test('paredes recortam cada fonte separadamente, inclusive junto ao token',()=>{
+ const wall={x:4,y:3,toX:5,toY:3,kind:'wall'};
+ const target={...hero,y:1},ally={...hero,y:2.5};
+ assert.equal(tokenInVision(target,[hero],grid,[wall]),false);
+ assert.equal(tokenInVision(target,[hero,ally],grid,[wall]),true);
+ assert.equal(tokenInVision(target,[hero],grid,[{...wall,open:true}]),true);
+ assert.equal(pointInVision({x:4.5,y:4.1},visionSector(hero,grid),[{...wall,y:4.3,toY:4.3}]),false);
+ assert.equal(pointInVision({x:6,y:2.5},visionSector(hero,grid),[wall]),true);
+});
+
+test('barreiras pertencem à cena e apenas o mestre desenha, opera e exclui portas',async()=>{
+ const r=await room(),segment={kind:'door',x:1.5,y:2,toX:3,toY:3.25};
+ assert.equal((await r.action('tableWallAdd',segment,r.member)).status,403);
+ const added=await ok(await r.action('tableWallAdd',segment)),door=added.state.table.walls[0];
+ assert.equal(door.open,false);
+ assert.equal((await r.action('tableDoorSet',{id:door.id,open:true},r.member)).status,403);
+ await ok(await r.action('tableDoorSet',{id:door.id,open:true}));
+ assert.equal((await r.view(r.member)).state.table.walls[0].open,true);
+ assert.equal((await r.action('tableWallDelete',{id:door.id},r.member)).status,403);
+ await ok(await r.action('tableWallDelete',{id:door.id}));
+ assert.deepEqual((await r.view(r.member)).state.table.walls,[]);
+ assert.equal((await r.action('tableWallAdd',{...segment,toX:Infinity})).status,400);
+});
+
+test('iluminação ambiente e emissores persistem na cena com permissões de mestre',async()=>{
+ const r=await room(),lamp={x:2,y:3,radius:2.5,color:'#bb4400'};
+ for(const [name,data] of [['tableLightSet',lamp],['tableSettings',{darkness:{level:25}}],['tableLightDelete',{id:'lamp'}]])
+  assert.equal((await r.action(name,data,r.member)).status,403);
+ await ok(await r.action('tableSettings',{darkness:{enabled:true,level:25}}));
+ const created=await ok(await r.action('tableLightSet',lamp)),id=created.state.table.lights[0].id;
+ await ok(await r.action('tableLightSet',{...lamp,id,color:'#7755ff',radius:5}));
+ const table=(await r.view(r.member)).state.table;
+ assert.equal(table.darkness.level,25);assert.deepEqual(table.lights,[{...lamp,id,radius:5,color:'#7755ff'}]);
+ assert.equal((await r.action('tableLightSet',{...lamp,radius:-1})).status,400);
+ assert.equal((await r.action('tableSettings',{darkness:{level:101}})).status,400);
+ await ok(await r.action('tableLightDelete',{id}));assert.deepEqual((await r.view(r.member)).state.table.lights,[]);
+});
+
+test('névoa de guerra preserva exploração por ficha e pintura manual ao reagrupar a mesa',async()=>{
+ const r=await room();
+ await ok(await r.action('tableFog',{enabled:true,operation:'reveal',x:1,y:1,width:2,height:2}));
+ const manual=(await r.view()).state.table.fog.revealed;
+ const config=teams=>({fogEnabled:true,fogMode:'war',darkness:{mode:'teams',teams}});
+ await ok(await r.action('tableSettings',config({lyra:'Norte',dorian:'Sul'})));
+ await ok(await r.action('tokenMove',{id:'dorian',x:15,y:9},r.other));
+ let row=await r.view(r.member);
+ assert.deepEqual(Object.keys(row.state.table.fog.memory),['lyra']);
+ assert.ok(!row.state.tokens.some(t=>t.id==='dorian'));
+ const before=(await r.view(r.other)).state.table.fog.memory.dorian;
+ await ok(await r.action('tokenMove',{id:'dorian',x:1,y:1},r.other));
+ const after=(await r.view(r.other)).state.table.fog.memory.dorian;
+ before.forEach((bits,y)=>{if(bits)assert.equal(BigInt('0x'+bits)&BigInt('0x'+after[y]),BigInt('0x'+bits));});
+ await ok(await r.action('tableSettings',config({lyra:'Norte',dorian:'Norte'})));
+ row=await r.view(r.member);
+ assert.deepEqual(new Set(visionSources(row).map(t=>t.characterId)),new Set(['lyra','dorian']));
+ assert.ok(row.state.table.fog.memory.dorian);
+ await ok(await r.action('tableSettings',{fogMode:'manual'}));
+ assert.deepEqual((await r.view()).state.table.fog.revealed,manual);
+ assert.equal((await r.action('tableSettings',config({}),r.other)).status,403);
+});
+
+test('facho mantém sua direção ao editar a cor e aceita voltar à emissão circular',async()=>{
+ const r=await room(),lamp={x:4,y:4,radius:6,color:'#dda055'};
+ const created=await ok(await r.action('tableLightSet',{...lamp,angle:35,rotation:270}));
+ const id=created.state.table.lights[0].id;
+ await ok(await r.action('tableLightSet',{...lamp,id,color:'#aaffee'}));
+ const light=(await r.view(r.member)).state.table.lights[0];
+ assert.equal(light.angle,35);assert.equal(light.rotation,270);
+ assert.equal((await r.action('tableLightSet',{...lamp,id,angle:500})).status,400);
+ await ok(await r.action('tableLightSet',{...lamp,id,angle:360}));
+ assert.equal((await r.view(r.member)).state.table.lights[0].angle,undefined);
+});
+
+test('visibilidade é independente por emissor, preservada na edição e exclusiva do mestre',async()=>{
+ const r=await room(),lamp={x:4,y:4,radius:3,color:'#ffeedd',scope:'local'};
+ const created=await ok(await r.action('tableLightSet',lamp)),id=created.state.table.lights[0].id;
+ await ok(await r.action('tableLightSet',{x:1,y:1,radius:2,color:'#33ff44'}));
+ const {scope,...props}=lamp;
+ await ok(await r.action('tableLightSet',{...props,id,radius:5}));
+ const lights=(await r.view(r.member)).state.table.lights;
+ assert.equal(lights[0].scope,'local');assert.equal(lights[1].scope,undefined);
+ assert.equal((await r.action('tableLightSet',{...props,id,scope:'global'},r.member)).status,403);
+ assert.equal((await r.action('tableLightSet',{...props,id,scope:'inválido'})).status,400);
+ await ok(await r.action('tableLightSet',{...props,id,scope:'global'}));
+ assert.equal((await r.view(r.member)).state.table.lights[0].scope,undefined);
 });

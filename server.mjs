@@ -75,6 +75,7 @@ const staticFiles = new Map([
   ['/dnd-ui.mjs',['dnd-ui.mjs','text/javascript; charset=utf-8']],
   ['/dnd.css',['dnd.css','text/css; charset=utf-8']],
   ['/gm-screen.mjs',['gm-screen.mjs','text/javascript; charset=utf-8']],
+  ['/vault-canvas.mjs',['vault-canvas.mjs','text/javascript; charset=utf-8']],
   ['/gm-screen.css',['gm-screen.css','text/css; charset=utf-8']],
   ['/sheet-layout.mjs',['../sheet-layout.mjs','text/javascript; charset=utf-8']],
   ['/sheet-mosaic.mjs',['sheet-mosaic.mjs','text/javascript; charset=utf-8']],

@@ -68,8 +68,6 @@
 .sheet-accent-swatches{display:flex;flex-wrap:wrap;gap:9px;margin-top:14px}.sheet-accent-swatches button{width:30px;height:30px;border:2px solid #fff7;border-radius:50%;box-shadow:0 2px 7px #0004}.sheet-accent-swatches button:hover,.sheet-accent-swatches button:focus-visible{outline:2px solid #f4e5ff;outline-offset:3px}
 @media(max-width:730px){.sheet-accent-swatches button{width:36px;height:36px}}
 
-:is(.sheet-stage,.sheet-mosaic) .resource-meter{border-color:color-mix(in srgb,var(--resource-color,var(--section-accent,var(--tone-resources))) 50%,#20362e);background:color-mix(in srgb,var(--resource-color,var(--section-accent,var(--tone-resources))) 12%,#17231e)}
-:is(.sheet-stage,.sheet-mosaic) .resource-meter .resource-fill{background:linear-gradient(90deg,color-mix(in srgb,var(--resource-color,var(--section-accent,var(--tone-resources))) 38%,#10251e),color-mix(in srgb,var(--resource-color,var(--section-accent,var(--tone-resources))) 38%,#18271f))}
 
 .sheet-resource-heading{display:flex;align-items:center;gap:8px;min-width:0}
 .sheet-resource-heading>strong{font-size:12px;overflow-wrap:anywhere}

@@ -1,3 +1,4 @@
+import {stressRegionsFor} from './model.mjs';
 import {itemPortraits} from './item-assets.mjs';
 import {sceneMaps,sceneTokenPortraits} from './scene-model.mjs';
 const encoder=new TextEncoder(),decoder=new TextDecoder('utf-8',{fatal:true});
@@ -17,6 +18,19 @@ function validateState(state){
   const ids=new Set();for(const item of state[key]){if(!object(item)||typeof item.id!=='string'||!item.id||ids.has(item.id))fail(400,'Itens inválidos ou duplicados no backup.');ids.add(item.id);}
  }
  for(const c of state.characters){if(typeof c.name!=='string'||!object(c.values))fail(400,'Ficha inválida no backup.');for(const key of ['layout','skills','abilities','rollButtons','masteries'])if(c[key]!==undefined&&!Array.isArray(c[key]))fail(400,'Estrutura de ficha inválida.');}
+ for(const {bodyStress} of state.characters){
+  if(bodyStress===undefined)continue;
+  if(typeof bodyStress?.enabled!=='boolean'||!object(bodyStress.regions))fail(400,'Estresse corporal inválido no backup.');
+  if(bodyStress.mode!==undefined&&!['simple','complex'].includes(bodyStress.mode))fail(400,'Modo de segmentação inválido no backup.');
+  for(const key of Object.keys(stressRegionsFor('complex'))){
+   if(!Object.hasOwn(bodyStress.regions,key)){
+    if(!Object.hasOwn(stressRegionsFor(bodyStress.mode),key))continue;
+    if(bodyStress.mode===undefined&&key==='head')continue;
+   }
+   const part=bodyStress.regions[key];
+   if(!Number.isInteger(part?.limit)||part.limit<1||part.limit>99||!Number.isInteger(part.value)||part.value<0||part.value>part.limit)fail(400,'Região corporal inválida no backup.');
+  }
+ }
  if(state.audio!==undefined&&(!object(state.audio)||!Array.isArray(state.audio.clips)||!Array.isArray(state.audio.cues)))fail(400,'Estrutura de áudio inválida.');
  if(state.inventory!==undefined&&!Array.isArray(state.inventory))fail(400,'Inventário inválido.');
  if(state.journal!==undefined&&!Array.isArray(state.journal))fail(400,'Diário inválido.');

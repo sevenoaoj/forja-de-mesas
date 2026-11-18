@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {api} from '../api.mjs';
 import {backupAssets,exportCampaignBackup,importCampaignBackup} from '../campaign-backup.mjs';
-import {normalizeTable,tokenVisible,mapGrid,mutateTable} from '../table-model.mjs';
+import {normalizeTable,tokenVisible,mapGrid,mutateTable,patrolSample} from '../table-model.mjs';
 
 async function mesa() {
   const rows=new Map();
@@ -30,6 +30,7 @@ async function mesa() {
   await call('/'+created.id+'/action','POST',memberKey,{action:'characterClaim',data:{id:'lyra'}});
   return {
     id:created.id,rows,assets,store,
+    sync:async rev=>(await call('/'+created.id+'/sync?table=1&patrolRev='+rev,'GET',memberKey)).json(),
     asset:(id,master=true)=>call('/'+created.id+'/asset/'+id,'GET',master?created.key:memberKey),
     uploadToken:(data,options={})=>api(new Request('http://local/api/campaigns/'+created.id+'/token-portrait',{method:'POST',headers:{Authorization:'Bearer '+(options.master===false?memberKey:created.key),'Content-Type':options.type||'image/png','X-File-Name':encodeURIComponent('Retrato da criatura.png'),'X-Token-Data':encodeURIComponent(JSON.stringify(data)),...(data.sceneId?{'X-Scene-Id':data.sceneId}:{})},body:options.body||new Uint8Array([137,80,78,71])}),store),
     upload:(headers,master=true)=>api(new Request('http://local/api/campaigns/'+created.id+'/map',{method:'POST',headers:{Authorization:'Bearer '+(master?created.key:memberKey),'Content-Type':'image/png',...headers},body:new Uint8Array([137,80,78,71])}),store),
@@ -286,4 +287,106 @@ test('retratos de cenas preparadas e duplicadas acompanham backup e só são apa
  await room.act('tokenDelete',{sceneId:scene.id,id:token.id});assert.ok(room.assets.has(room.id+'/'+portrait.id));
  const copy=(await room.view()).state.sceneLibrary.scenes.find(s=>s.name==='Cópia');
  await room.act('sceneDelete',{id:copy.id});assert.equal(room.assets.has(room.id+'/'+portrait.id),false);
+});
+
+test('jogador encerra o próprio turno uma vez, respeitando vínculos e tokens ocultos',async()=>{
+ const room=await mesa();
+ const entry={id:'turno',name:'Lyra',tokenId:'lyra',value:15};
+ await room.act('combatSet',{entries:[entry]});
+ const end=(extra={})=>room.act('combatEndOwn',{entryId:entry.id,round:1,...extra},false);
+ const results=await Promise.all([end(),end()]);
+ assert.deepEqual(results.map(r=>r.status).sort(),[200,409]);
+ assert.equal((await room.view(false)).state.table.combat.round,2);
+ await room.act('tokenUpdate',{id:'lyra',hidden:true});
+ assert.equal((await end({round:2})).status,403);
+ await room.act('combatSet',{entries:[{...entry,tokenId:''}]});
+ assert.equal((await end({characterId:'lyra'})).status,403);
+});
+
+test('patrulha é privada, persistente e restrita ao mestre e a NPCs',async()=>{
+ const room=await mesa();
+ const created=await (await room.act('tokenAdd',{name:'Guarda',x:1,y:1})).json();
+ const id=created.state.tokens.at(-1).id;
+ const start={id,operation:'start',points:[{x:1,y:1},{x:6,y:1}],mode:'return',speed:1};
+ assert.equal((await room.act('tokenPatrol',start,false)).status,403);
+ assert.equal((await room.act('tokenPatrol',{...start,id:'lyra'})).status,400);
+ assert.equal((await room.act('tokenPatrol',start)).status,200);
+ const player=(await room.view(false)).state.tokens.find(t=>t.id===id);
+ assert.ok(player.motion);assert.equal(player.patrol,undefined);
+ const frame=(await room.sync((await room.view(false)).rev)).state.patrolFrame;
+ assert.equal(frame.tokens.find(t=>t.id===id).patrol,undefined);
+ assert.deepEqual(frame.tokens.map(t=>t.id),[id]);
+ await room.act('tokenPatrol',{id,operation:'pause'});
+ const paused=(await room.view()).state.tokens.at(-1);
+ assert.equal(paused.motion,undefined);assert.equal(paused.patrol.started,0);
+ await room.act('tokenPatrol',{id,operation:'resume'});
+ assert.ok((await room.view()).state.tokens.at(-1).motion);
+ await room.act('tokenMove',{id,x:2,y:2});
+ assert.equal((await room.view()).state.tokens.at(-1).patrol,undefined);
+});
+
+test('patrulhas usam distância e tempo para percorrer esquinas, voltar e fechar circuitos',()=>{
+ const route={points:[{x:0,y:0},{x:3,y:0},{x:3,y:4}],speed:1,started:1000,offset:0,mode:'return'};
+ const xy=(mode,t)=>{const {x,y}=patrolSample({...route,mode},1000+t);return [x,y];};
+ assert.deepEqual(xy('return',5000),[3,2]);
+ assert.deepEqual(xy('return',9000),[3,2]);
+ assert.deepEqual(xy('return',14000),[0,0]);
+ assert.deepEqual(xy('loop',12000),[0,0]);
+});
+
+test('ambiente da cena é compartilhado, persiste e só o mestre pode alterá-lo',async()=>{
+ const room=await mesa(),config={weather:'rain',tone:'dusk',level:'heavy'};
+ assert.equal((await room.view()).state.table.atmosphere.weather,'clear');
+ assert.equal((await room.act('tableAtmosphere',config,false)).status,403);
+ assert.equal((await room.act('tableAtmosphere',config)).status,200);
+ assert.equal((await room.act('tableAtmosphere',{...config,weather:'toString'})).status,400);
+ assert.deepEqual((await room.view(false)).state.table.atmosphere,{...config,toneOpacity:100});
+ assert.equal((await room.act('tablePing',{x:2,y:3,signal:'danger'},false)).status,200);
+ assert.equal((await room.view()).state.table.pings.at(-1).signal,'danger');
+});
+
+test('tempestade e opacidade zero persistem independentemente da intensidade do clima',async()=>{
+ const r=await mesa(),a={weather:'storm',tone:'ice',level:'heavy',toneOpacity:0};
+ assert.equal((await r.act('tableAtmosphere',a)).status,200);
+ assert.deepEqual((await r.view(false)).state.table.atmosphere,a);
+ assert.equal((await r.act('tableAtmosphere',{...a,toneOpacity:101})).status,400);
+});
+
+test('paredes, porta aberta e luz acompanham os pixels da imagem ao recalibrar a grade',async()=>{
+ const r=await mesa();
+ await r.upload({'X-Map-Width':'1333','X-Map-Height':'777','X-Grid-Cell-Size':'100'});
+ for(const segment of [{kind:'wall',x:.25,y:.5,toX:9.5,toY:4},{kind:'door',x:9.5,y:4,toX:12.75,toY:4}]){
+  assert.equal((await r.act('tableWallAdd',segment)).status,200);
+ }
+ const door=(await r.view()).state.table.walls[1];
+ await r.act('tableDoorSet',{id:door.id,open:true});
+ await r.act('tableLightSet',{x:9,y:4,radius:2,angle:35,rotation:90,color:'#ff8800'});
+ const original=(await r.view()).state.table;
+ for(const pixels of [50,200,100]){
+  assert.equal((await r.act('tableSettings',{grid:{cellPixels:pixels}})).status,200);
+  const {walls,lights}= (await r.view(false)).state.table;
+  assert.deepEqual(walls,original.walls.map(w=>({...w,x:w.x*100/pixels,y:w.y*100/pixels,toX:w.toX*100/pixels,toY:w.toY*100/pixels})));
+  assert.equal(lights[0].x*pixels,900);assert.equal(lights[0].radius*pixels,200);
+ }
+ await r.act('tableSettings',{grid:{mode:'manual',columns:10,rows:10}});
+ const cell=1333/10,changed=(await r.view()).state.table.walls[1];
+ assert.ok(Math.abs(changed.x*cell-950)<1e-8);
+ assert.equal((await r.act('tableDoorSet',{id:door.id,open:false})).status,200);
+});
+
+test('nome verdadeiro de token independente fica privado no mapa, retrato e iniciativa',async()=>{
+ const r=await mesa(),secret='Duque do Eclipse',alias='Mercador de sal';
+ const created=await r.uploadToken({name:secret},{});
+ assert.equal(created.status,201);
+ const token=(await created.json()).state.tokens.at(-1);
+ await r.act('combatSet',{entries:[{id:'merchant',tokenId:token.id,name:secret,value:10}]});
+ await r.act('tokenUpdate',{id:token.id,name:alias,realName:secret});
+ const master=(await r.view()).state.tokens.at(-1),player=(await r.view(false)).state;
+ assert.equal(master.realName,secret);assert.equal(master.name,alias);
+ assert.ok(!JSON.stringify(player).includes(secret));assert.equal(player.table.combat.entries[0].name,alias);
+ assert.equal(player.tokens.at(-1).name,alias);assert.equal(player.tokens.at(-1).portrait.name,'Retrato do token');
+ assert.equal((await r.act('tokenUpdate',{id:token.id,realName:'Alterado'},false)).status,403);
+ await r.act('tokenUpdate',{id:token.id,characterId:'lyra'});
+ assert.equal((await r.view()).state.tokens.at(-1).realName,undefined);
+ assert.equal((await r.view(false)).state.table.combat.entries[0].name,alias);
 });

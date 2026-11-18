@@ -50,3 +50,45 @@ test('formulário mantém versão numérica e múltiplos destinatários',()=>{
 test('orçamento agregado do diário rejeita excesso em UTF-8 sem perder documentos',()=>{
  const s=seed();let reached=false;for(let i=0;i<100;i++){const before=JSON.stringify(s);try{save(s,{title:'Documento '+i,body:'世'.repeat(16000),gmNotes:'x'.repeat(8000)});}catch(error){assert.equal(error.status,413);assert.equal(JSON.stringify(s),before);reached=true;break;}}assert.equal(reached,true);
 });
+
+test('leitor de cofre resolve caminhos, aliases e Markdown sem executar conteúdo',async()=>{
+ const {noteReader,collectMarkdown}=await import('../public/journal.mjs');
+ const notes=[{id:'a',sourcePath:'Cofre/Norte/Roteiro.md',body:'[[Porto|ao cais]]\n[Fortaleza](../Sul/Forte%20Azul.md)\n[[Duplicada]]\n<img onerror=teste>'},
+  {id:'b',sourcePath:'Cofre/Norte/Porto.md'},{id:'c',sourcePath:'Cofre/Sul/Forte Azul.md'},
+  {id:'d',sourcePath:'Cofre/A/Duplicada.md'},{id:'e',sourcePath:'Cofre/B/Duplicada.md'}];
+ const html=noteReader(notes[0],notes,{esc:s=>String(s).replaceAll('<','&lt;').replaceAll('>','&gt;'),button:()=>''});
+ assert.match(html,/data-id="b">ao cais/);assert.match(html,/data-id="c">Fortaleza/);
+ assert.match(html,/\[\[Duplicada\]\]/);assert.doesNotMatch(html,/<img/);
+ const fake=(path,body)=>({webkitRelativePath:path,size:body.length,text:async()=>body});
+ const result=await collectMarkdown([fake(notes[0].sourcePath,'já existe'),fake('Cofre/.obsidian/temp.md','oculta'),fake('Cofre/A.md','nova'),fake('Cofre/foto.png','imagem')],notes);
+ assert.deepEqual(result,{pending:[{path:'Cofre/A.md',body:'nova'}],skipped:1});
+});
+
+test('aliases do cofre resolvem backlinks e links de cabeçalho, tags preservam o texto',async()=>{
+ const {noteProperties,noteReader}=await import('../public/journal.mjs');
+ const a={id:'a',title:'Cidade',sourcePath:'Cofre/Cidade.md',body:'---\ntags: [local, costa]\naliases:\n  - Porto\n---\n# Docas\nMercado'};
+ const b={id:'b',title:'Pista',sourcePath:'Cofre/Pista.md',body:'[[Porto#Docas|Destino]]'};
+ const ui={esc:String,button:(label,act)=>act+' '+label};
+ assert.deepEqual(noteProperties(a.body).aliases,['Porto']);
+ assert.match(noteReader(a,[a,b],ui),/Notas que mencionam esta.*prepRead Pista/s);
+ assert.match(noteReader(a,[a,b],ui),/prepTag #costa/);
+ assert.match(noteReader(b,[a,b],ui),/data-id="a" data-jump-heading="Docas">Destino/);
+});
+
+test('nota longa mantém o Markdown completo ao importar, reimportar e editar',async()=>{
+ const {collectMarkdown}=await import('../public/journal.mjs');
+ const s=seed(),path='Herdeiros do Destino/Sistemas e Regras/Sistema.md';
+ const text='    Regra da sessão 🌙\n'.repeat(3000);
+ async function load(body,update){
+  const file={webkitRelativePath:path,size:new Blob([body]).size,text:async()=>body};
+  const {pending}=await collectMarkdown([file],s.journal,update);
+  mutateJournal(s,'journalImport',{files:pending},master);
+  assert.equal(s.journal[0].body,body);
+ }
+ await load(text,false);
+ await load(text+'\nSegunda edição\n',true);
+ const note=s.journal[0],edited=note.body+'\nÚltimo parágrafo\n';
+ mutateJournal(s,'journalSave',{...note,body:edited},master);
+ assert.equal(s.journal[0].body,edited);
+ assert.equal(s.journal[0].sourceEdited,true);
+});
