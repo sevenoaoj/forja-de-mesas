@@ -1,4 +1,4 @@
-import {tokenCharacterId,characterType,isPlayerCharacter} from './model.mjs';
+import {campaignParties,outsideParty,tokenCharacterId,characterType,isPlayerCharacter} from './model.mjs';
 import {inventoryView,publicItemToken} from './inventory-model.mjs';
 import {journalView} from './journal-model.mjs';
 import {sheetTemplatesView} from './sheet-template-model.mjs';
@@ -49,9 +49,9 @@ function fullCharacter(character) {
   return {...data,characterType:characterType(character),access:'full',claimed:Boolean(ownerId)};
 }
 
-export function rollView(state,master) {
+export function rollView(state,master,viewer) {
   if(master)return state.rolls||[];
-  const hidden=state.characters.filter(character=>character.hidden);
+  const hidden=state.characters.filter(character=>character.hidden||outsideParty(character,viewer));
   const ids=new Set(hidden.map(c=>c.id)),names=new Set(hidden.map(c=>c.name));
   return (state.rolls||[]).filter(roll=>roll.rolledBy==='player'&&roll.visibility==='public'&&(roll.characterId?!ids.has(roll.characterId):!names.has(roll.actor)));
 }
@@ -63,16 +63,17 @@ export function rollVersion(rolls) {
 }
 
 export function publicState(state,access) {
-  const {gmResources,sheetStarter,members,notes,initiative,gmScreen,sceneLibrary,inventory,journal,sheetTemplates,narrations,...base}=state;
+  const {parties,gmResources,sheetStarter,members,notes,initiative,gmScreen,sceneLibrary,inventory,journal,sheetTemplates,narrations,...base}=state;
   const shared={...base,tokens:(base.tokens||[]).filter(t=>access.master||!t.hidden).map(t=>publicItemToken(t,access.master)),...(base.table?{table:{...base.table,lootEvents:(base.table.lootEvents||[]).filter(e=>access.master||e.public!==false)}}:{}),inventory:inventoryView(state,access),narrations:narrationView(state,access),journal:journalView(state,access),sheetTemplates:sheetTemplatesView(state,access)};
-  if (access.master) return {...shared,gmResources:gmResources||{},characters:state.characters.map(fullCharacter),notes,initiative,gmScreen};
+  if (access.master) return {...shared,parties:campaignParties(state),gmResources:gmResources||{},characters:state.characters.map(fullCharacter),notes,initiative,gmScreen};
+  const own=ownedCharacter(state,access);
   return {
     ...shared,
-    characters:state.characters.filter(character=>!character.hidden).map(character=>
+    characters:state.characters.filter(character=>!character.hidden&&!outsideParty(character,own)).map(character=>
       isPlayerCharacter(character)&&character.ownerId===access.memberId&&access.memberId ? fullCharacter(character) : {
         id:character.id,name:character.name,concept:character.concept,color:character.color,
         portrait:character.portrait,characterType:characterType(character),access:'summary',available:isPlayerCharacter(character)&&!character.ownerId
       }),
-    rolls:rollView(state,false)
+    rolls:rollView(state,false,own)
   };
 }

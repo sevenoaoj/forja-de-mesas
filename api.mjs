@@ -14,7 +14,7 @@ import {removeSessionMaterial,sceneProjection,sceneSummary,sceneMaps,sceneTokenP
 import {validateSheetAppearance,sheetAppearance} from './sheet-layout.mjs';
 import {mutateGmScreen,gmScreenActions,gmBoard} from './gm-screen-model.mjs';
 import {dndCharacter,dndFields,dndAdd,dndDerived,dndCatalog,dndSpellFormula,dndBook} from './dnd.mjs';
-import {stressRegionsFor,bodyStressWithHead,newCampaign,characterType,isPlayerCharacter,playerVisionSource, colors, characterColorHex, rollFormulaLimit, sheetFields, sheetValue,parseDiceFormula,resolveSheetFormula,displaySheetFormula,sheetPreset,sheetAttributeTest,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
+import {campaignParties,tokenCharacterId,outsideParty,stressRegionsFor,bodyStressWithHead,newCampaign,characterType,isPlayerCharacter,playerVisionSource, colors, characterColorHex, rollFormulaLimit, sheetFields, sheetValue,parseDiceFormula,resolveSheetFormula,displaySheetFormula,sheetPreset,sheetAttributeTest,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
 import {emptyAudio,soundPresets,audioDelay} from './media.mjs';
 import {musicActions,changeMusic,musicCommand,audioView} from './music-model.mjs';
 import {playerSight,mutateTable,tableView,tableSceneActions} from './table-model.mjs';
@@ -27,7 +27,7 @@ const uid = () => crypto.randomUUID();
 const key = () => uid().replaceAll('-', '') + uid().slice(0,8);
 const int = (value, max) => Math.max(0,Math.min(max,Math.round(Number(value)||0)));
 const color = value => colors.includes(value) ? value : colors[0];
-const privateActions = new Set(['gmResourceChange','bodyStressConfig','settings','schema','notes','initiative','tokenAdd','tokenDelete','bookDelete','track','soundPlay','soundDelete','characterType','characterVisibility','characterRelease','sheetMasteryRefresh',...musicActions,...soundboardActions,...gmScreenActions]);
+const privateActions = new Set(['partySave','partyDelete','characterParty','gmResourceChange','bodyStressConfig','settings','schema','notes','initiative','tokenAdd','tokenDelete','bookDelete','track','soundPlay','soundDelete','characterType','characterVisibility','characterRelease','sheetMasteryRefresh',...musicActions,...soundboardActions,...gmScreenActions]);
 const updateList = (list, entry) => list.some(item => item.id === entry.id)
   ? list.map(item => item.id === entry.id ? entry : item) : [...list, entry];
 const validTypes = new Set(['text','number','counter','long','check']);
@@ -349,11 +349,39 @@ function mutate(state, action, data, access) {
     case 'characterClaim': {
       if (master) fail(400,'O mestre já tem acesso às fichas.');
       const character=findCharacter(state,data.id);
-      if (character.hidden||!isPlayerCharacter(character)) fail(404,'Personagem indisponível.');
+      if (character.hidden||!isPlayerCharacter(character)||outsideParty(character,ownedCharacter(state,access))) fail(404,'Personagem indisponível.');
       const own=ownedCharacter(state,access);
       if (own&&own.id!==character.id) fail(409,'Você já escolheu um personagem.');
       if (character.ownerId&&character.ownerId!==access.memberId) fail(409,'Este personagem já foi escolhido por outro jogador.');
       character.ownerId=access.memberId;
+      break;
+    }
+    case 'partySave': {
+      const parties=campaignParties(state);
+      const current=data.id?parties.find(p=>p.id===data.id):null;
+      if(data.id&&!current)fail(404,'Grupo indisponível.');
+      const name=typeof data.name==='string'?data.name.trim():'';
+      if(!name||name.length>80)fail(400,'Informe um nome de até 80 caracteres.');
+      if(parties.some(p=>p.id!==current?.id&&p.name.toLocaleLowerCase('pt-BR')===name.toLocaleLowerCase('pt-BR')))fail(409,'Já existe um grupo com esse nome.');
+      state.parties=updateList(parties,{id:current?.id||uid(),name});
+      break;
+    }
+    case 'partyDelete': {
+      const parties=campaignParties(state);
+      if(!parties.some(p=>p.id===data.id))fail(404,'Grupo indisponível.');
+      state.parties=parties.filter(p=>p.id!==data.id);
+      for(const character of state.characters){
+        if(character.party===data.id){delete character.party;delete character.partyRevealed;}
+      }
+      break;
+    }
+    case 'characterParty': {
+      const character=findCharacter(state,data.id);
+      const parties=campaignParties(state);
+      if(!isPlayerCharacter(character)||(data.party!==''&&!parties.some(p=>p.id===data.party))||typeof data.revealed!=='boolean')fail(400,'Configuração de grupo inválida.');
+      state.parties=parties;
+      if(data.party){character.party=data.party;character.partyRevealed=data.revealed;}
+      else {delete character.party;delete character.partyRevealed;}
       break;
     }
     case 'characterVisibility': {
@@ -593,12 +621,27 @@ function projectedTable(scoped,access,own){
       combat.active=combat.entries.indexOf(active);
       table.table.lootEvents=table.table.lootEvents.filter(e=>!unseen.has(e.tokenId));
     }
-    const allowed=id=>!!own&&(own.id===id||darkness.mode==='group'||darkness.mode==='teams'&&team&&teams[id]===team);
+    const partyById=new Map(scoped.characters.map(c=>[c.id,c]));
+    const allowed=id=>!!own&&!outsideParty(partyById.get(id),own)&&(own.id===id||darkness.mode==='group'||darkness.mode==='teams'&&team&&teams[id]===team);
     if(darkness.teams)darkness.teams=Object.fromEntries(Object.entries(teams).filter(([id])=>allowed(id)));
     if(table.table.fog.memory)table.table.fog.memory=Object.fromEntries(Object.entries(table.table.fog.memory).filter(([id])=>allowed(id)));
-    const visibleCharacters=new Set(scoped.characters.filter(c=>!c.hidden).map(c=>c.id));
+    const rivals=new Map(scoped.characters.filter(c=>outsideParty(c,own)).map(c=>[c.id,c]));
+    const concealedNames=new Set([...rivals.values()].filter(c=>!own?.party||!c.partyRevealed).map(c=>c.name));
+    const visibleCharacters=new Set(scoped.characters.filter(c=>!c.hidden&&!rivals.has(c.id)).map(c=>c.id));
+    const rivalTokens=new Map(table.tokens.filter(t=>rivals.has(t.characterId)).map(t=>[t.id,rivals.get(t.characterId)]));
+    for(const entry of table.table.combat.entries){
+      const rival=rivalTokens.get(entry.tokenId);
+      if(rival)entry.name=own?.party&&rival.partyRevealed?rival.name:'???';
+      else if(concealedNames.has(entry.name))entry.name='???';
+    }
+    for(const ping of table.table.pings){
+      const rival=rivals.get(ping.characterId);
+      if(rival){ping.name=own?.party&&rival.partyRevealed?rival.name:'???';delete ping.characterId;}
+      else if(!ping.characterId&&concealedNames.has(ping.name))ping.name='???';
+    }
     table.tokens=table.tokens.map(token=>({
       ...token,
+      ...(rivalTokens.has(token.id)?{name:own?.party&&rivalTokens.get(token.id).partyRevealed?rivalTokens.get(token.id).name:'???',visionSource:false,portrait:undefined}:{}),
       characterId:visibleCharacters.has(token.characterId)?token.characterId:'',
       canMove:Boolean(own&&token.characterId===own.id&&!token.locked&&!token.hidden)
     }));
@@ -791,7 +834,20 @@ export async function api(request,store) {
     if(route==='player-access'&&method==='POST'){
       if(!master)fail(403,'Somente o mestre pode recuperar o acesso de outro jogador.');
       const data=await requestJson(request),character=row.state.characters.find(c=>c.id===data.characterId);
-      const member=character?.ownerId&&row.state.members?.find(m=>m.id===character.ownerId);
+      let member=character?.ownerId&&row.state.members?.find(m=>m.id===character.ownerId);
+      if(!member&&character?.party&&data.reserve===true){
+        const updated=await update(store,row,state=>{
+          const target=findCharacter(state,data.characterId);
+          if(!target.party||target.hidden||!isPlayerCharacter(target))fail(409,'Ficha indisponível para convite privado.');
+          if(target.ownerId)return;
+          state.members??=[];
+          if(state.members.length>=200)fail(409,'Limite de participantes atingido.');
+          const player={id:uid(),key:(uid()+uid()).replaceAll('-','')};
+          state.members.push(player);target.ownerId=player.id;
+        });
+        const owner=updated.state.characters.find(c=>c.id===data.characterId).ownerId;
+        member=updated.state.members.find(m=>m.id===owner);
+      }
       if(!member)fail(409,'Esta ficha não possui um jogador vinculado. Escolha-a pelo convite da campanha.');
       return json({characterId:character.id,name:character.name,code:row.id+'.'+member.key});
     }
@@ -860,7 +916,7 @@ export async function api(request,store) {
     }
     if (method === 'GET' && !route) return json(view(row,access,requestedScene));
     if (method==='GET'&&route==='sync') {
-      const rolls=rollView(row.state,master),version=rollVersion(rolls);
+      const rolls=rollView(row.state,master,ownedCharacter(row.state,access)),version=rollVersion(rolls);
       const params=new URL(request.url).searchParams,changed=params.get('rollVersion')!==version;
       let scene={};
       if(params.get('table')==='1'){
@@ -874,8 +930,10 @@ export async function api(request,store) {
       return json({id:row.id,rev:row.rev,master,characterId:ownedCharacter(row.state,access)?.id||null,needsCharacter:!master&&!ownedCharacter(row.state,access),rollVersion:version,serverTime:Date.now(),state:{...(!master?{narrations:narrationView(row.state,access)}:{}),audio:audioView(row.state.audio,master,{includeLibrary:false}),...(changed?{rolls}:{}),...scene}});
     }
     if (method === 'GET' && route === 'asset') {
-      const visibleCharacters=master?row.state.characters:row.state.characters.filter(character=>!character.hidden);
-      const tokenPortraits=master?sceneTokenPortraits(row.state):(row.state.tokens||[]).filter(token=>!token.hidden).map(token=>token.portrait);
+      const viewer=ownedCharacter(row.state,access);
+      const rivals=new Set(row.state.characters.filter(c=>outsideParty(c,viewer)).map(c=>c.id));
+      const visibleCharacters=master?row.state.characters:row.state.characters.filter(character=>!character.hidden&&!rivals.has(character.id));
+      const tokenPortraits=master?sceneTokenPortraits(row.state):(row.state.tokens||[]).filter(token=>!token.hidden&&!rivals.has(tokenCharacterId(row.state,token))).map(token=>token.portrait);
       const itemImages=master?itemPortraits(row.state):itemPortraits({inventory:inventoryView(row.state,access),tokens:(row.state.tokens||[]).filter(t=>!t.hidden)});
       const asset = [...itemImages,...tokenPortraits,...row.state.books,...(row.state.audio?.clips||[]),...visibleCharacters.map(character=>character.portrait),...(master?sceneMaps(row.state):[row.state.map])].find(item=>item?.id===assetId);
       if (!asset) fail(404,'Arquivo indisponível.');

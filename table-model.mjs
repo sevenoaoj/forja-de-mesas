@@ -3,7 +3,7 @@ import {visionSources,tokenInVision,recordExploration,normalizeVision,normalizeD
 export {normalizeVision,normalizeDarkness,normalizeRotation} from './vision-model.mjs';
 import {tokenIconIds} from './token-icons.mjs';
 import {normalizeFogStrokes} from './fog-geometry.mjs';
-import {playerVisionSource,tokenCharacterId,isPlayerCharacter,colors} from './model.mjs';
+import {outsideParty,playerVisionSource,tokenCharacterId,isPlayerCharacter,colors} from './model.mjs';
 
 const palette = new Set(colors);
 const drawingKinds = new Set(['line','rectangle','circle','freehand']);
@@ -119,7 +119,7 @@ export function normalizeTable(state) {
     ...(item.kind==='freehand'?{points:(Array.isArray(item.points)?item.points:[]).slice(0,600).filter(point=>point&&Number.isFinite(Number(point.x))&&Number.isFinite(Number(point.y))).map(point=>({x:bounded(point.x,0,grid.columns,0),y:bounded(point.y,0,grid.rows,0)}))}:{})
   }));
   const pings=(Array.isArray(value.pings)?value.pings:[]).filter(item=>item && Number.isFinite(item.at)&&Date.now()-item.at<1500&&item.at<=Date.now()+1000).slice(-12).map(item=>({
-    id:clean(item.id,80),...(Object.hasOwn(pingNames,item.signal)?{signal:item.signal}:{}),x:bounded(item.x,0,grid.columns,0),y:bounded(item.y,0,grid.rows,0),at:item.at,name:clean(item.name,80)||'Participante'
+    id:clean(item.id,80),...(item.characterId?{characterId:clean(item.characterId,80)}:{}),...(Object.hasOwn(pingNames,item.signal)?{signal:item.signal}:{}),x:bounded(item.x,0,grid.columns,0),y:bounded(item.y,0,grid.rows,0),at:item.at,name:clean(item.name,80)||'Participante'
   }));
   const combatValue=value.combat||{};
   const entries=(Array.isArray(combatValue.entries)?combatValue.entries:[]).slice(0,100).map(entry=>({
@@ -153,7 +153,9 @@ export function playerSight(state,table,characterId){
   const restricted=table.darkness.enabled&&table.darkness.mode==='teams'||table.fog.enabled&&table.fog.mode==='war';
   if(!restricted)return ()=>true;
   const tokens=state.tokens.map(raw=>({...normalizeToken(raw,table.grid),characterId:tokenCharacterId(state,raw),visionSource:playerVisionSource(state,raw)}));
-  const sources=visionSources({characterId,state:{table}},tokens);
+  const viewer=state.characters.find(c=>c.id===characterId);
+  const rivals=new Set(state.characters.filter(c=>outsideParty(c,viewer)).map(c=>c.id));
+  const sources=visionSources({characterId,state:{table}},tokens).filter(t=>!rivals.has(t.characterId));
   return token=>sources.some(source=>source.id===token.id)||tokenInVision(token,sources,table.grid,table.walls);
 }
 
@@ -514,7 +516,7 @@ export function mutateTable(state,action,data,master,actorName=master?'Mestre':'
     const now=Date.now();
     if(data.signal!==undefined&&(typeof data.signal!=='string'||!Object.hasOwn(pingNames,data.signal)))fail(400,'Sinal desconhecido.');
     table.pings=[...table.pings.filter(ping=>now-ping.at<1500),{
-      id:uid(),...(data.signal?{signal:data.signal}:{}),x:requireRange(data.x,0,table.grid.columns,'Posição X'),y:requireRange(data.y,0,table.grid.rows,'Posição Y'),at:now,name:clean(actorName,80)||'Participante'
+      id:uid(),...(actorCharacterId?{characterId:actorCharacterId}:{}),...(data.signal?{signal:data.signal}:{}),x:requireRange(data.x,0,table.grid.columns,'Posição X'),y:requireRange(data.y,0,table.grid.rows,'Posição Y'),at:now,name:clean(actorName,80)||'Participante'
     }].slice(-12);
   } else if (action==='tableDrawingAdd') {
     if (table.drawings.length>=150) fail(409,'Limite de 150 desenhos atingido.');

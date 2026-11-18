@@ -1,4 +1,4 @@
-import {stressRegionsFor} from './model.mjs';
+import {campaignParties,stressRegionsFor} from './model.mjs';
 import {itemPortraits} from './item-assets.mjs';
 import {sceneMaps,sceneTokenPortraits} from './scene-model.mjs';
 const encoder=new TextEncoder(),decoder=new TextDecoder('utf-8',{fatal:true});
@@ -18,7 +18,14 @@ function validateState(state){
   const ids=new Set();for(const item of state[key]){if(!object(item)||typeof item.id!=='string'||!item.id||ids.has(item.id))fail(400,'Itens inválidos ou duplicados no backup.');ids.add(item.id);}
  }
  for(const c of state.characters){if(typeof c.name!=='string'||!object(c.values))fail(400,'Ficha inválida no backup.');for(const key of ['layout','skills','abilities','rollButtons','masteries'])if(c[key]!==undefined&&!Array.isArray(c[key]))fail(400,'Estrutura de ficha inválida.');}
- for(const {bodyStress} of state.characters){
+ if(state.parties!==undefined&&!Array.isArray(state.parties))fail(400,'Lista de grupos inválida no backup.');
+ const partyIds=new Set();
+ for(const group of campaignParties(state)){
+  if(!group||!(['a','b'].includes(group.id)||uuid(group.id))||partyIds.has(group.id)||typeof group.name!=='string'||!group.name.trim()||group.name.length>80)fail(400,'Grupo inválido no backup.');
+  partyIds.add(group.id);
+ }
+ for(const {party,partyRevealed,bodyStress} of state.characters){
+  if(party!==undefined&&!partyIds.has(party)||partyRevealed!==undefined&&typeof partyRevealed!=='boolean')fail(400,'Grupo de personagem inválido no backup.');
   if(bodyStress===undefined)continue;
   if(typeof bodyStress?.enabled!=='boolean'||!object(bodyStress.regions))fail(400,'Estresse corporal inválido no backup.');
   if(bodyStress.mode!==undefined&&!['simple','complex'].includes(bodyStress.mode))fail(400,'Modo de segmentação inválido no backup.');

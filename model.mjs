@@ -45,6 +45,14 @@ export const characterColorHex=color=>characterColors[color]?.hex||characterColo
 // Legacy sheets remain player characters until the GM explicitly classifies them.
 export const characterType=character=>character?.characterType==='npc'?'npc':'player';
 export const isPlayerCharacter=character=>characterType(character)==='player';
+export function campaignParties(state){
+  if(state.parties)return state.parties;
+  // Campaigns saved before the roster had names only stored membership on each sheet.
+  return ['a','b'].filter(id=>state.characters?.some(c=>c.party===id)).map(id=>({id,name:'Grupo '+id.toUpperCase()}));
+}
+export function outsideParty(character,viewer){
+ return Boolean(character?.party && isPlayerCharacter(character) && character.party!==viewer?.party);
+}
 export function playerVisionSource(state,token){return token.kind!=='item'&&!token.hidden&&(state.characters||[]).some(c=>c.id===tokenCharacterId(state,token)&&!c.hidden&&isPlayerCharacter(c));}
 
 export function newCampaign(name, example = false) {

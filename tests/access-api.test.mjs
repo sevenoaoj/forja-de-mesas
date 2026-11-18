@@ -235,3 +235,60 @@ test('paleta ampliada e destaque personalizado determinam a cor confiável da ro
  const own=(await button.json()).state.characters.find(c=>c.id==='lyra');const initiative=own.rollButtons.find(b=>b.name==='Iniciativa');
  const rolled=await(await r.action(a,'roll',{rollId:initiative.id})).json();assert.equal(rolled.state.rolls[0].kind,'initiative');
 });
+
+test('grupos rivais separam fichas e rolagens; revelar nome não concede acesso à ficha',async()=>{
+ const r=await room(),master=r.created.key,a=await r.join('a'),b=await r.join('b');
+ assert.deepEqual((await r.view(master)).state.parties,[]);
+ assert.equal((await r.action(a,'partySave',{name:'Ilhas'})).status,403);
+ const create=async name=>(await(await r.action(master,'partySave',{name})).json()).state.parties.at(-1).id;
+ const north=await create('Norte'),south=await create('Sul'),west=await create('Oeste');
+ assert.equal((await r.view(a)).state.parties,undefined);
+ const assign=(id,party,revealed=false,key=master)=>r.action(key,'characterParty',{id,party,revealed});
+ await r.action(a,'characterClaim',{id:'lyra'});await r.action(b,'characterClaim',{id:'dorian'});
+ assert.equal((await assign('lyra',north)).status,200);
+ assert.equal((await assign('dorian',south)).status,200);
+ assert.equal((await assign('dorian',north,true,b)).status,403);
+ await r.action(b,'roll',{formula:'1d6'});
+ await r.action(b,'tablePing',{x:1,y:1});
+ for(const key of [a,r.created.invite]){
+  const {state}=await r.view(key);
+  assert.ok(!state.characters.some(c=>c.id==='dorian'));
+  const marker=state.tokens.find(t=>t.id==='dorian');
+  assert.equal(marker.name,'???');assert.equal(marker.characterId,'');assert.equal(marker.canMove,false);
+  assert.equal(state.table.pings.at(-1).name,'???');
+  assert.ok(!state.rolls.some(roll=>roll.characterId==='dorian'));
+ }
+ assert.equal((await r.view(b)).state.characters.find(c=>c.id==='dorian').access,'full');
+ const d=(await r.view(master)).state.characters.find(c=>c.id==='dorian');
+ await assign('dorian',south,true);
+ const sync=await(await r.request(r.base+'/sync?table=1','GET',a)).json();
+ assert.equal(sync.state.tokens.find(t=>t.id==='dorian').name,d.name);
+ assert.ok(!sync.state.rolls.some(roll=>roll.characterId==='dorian'));
+ assert.ok(!(await r.view(a)).state.characters.some(c=>c.id==='dorian'));
+ await assign('dorian',north);
+ assert.equal((await r.view(a)).state.characters.find(c=>c.id==='dorian').access,'summary');
+ await assign('mira',west);
+ const newcomer=await r.join('c');
+ assert.equal((await r.action(newcomer,'characterClaim',{id:'mira'})).status,404);
+ const privateCode=async()=>(await(await r.request(r.base+'/player-access','POST',master,{characterId:'mira',reserve:true})).json()).code;
+ const code=await privateCode();assert.equal(await privateCode(),code);
+ assert.equal((await r.view(code.split('.')[1])).characterId,'mira');
+ await r.action(master,'partySave',{id:west,name:'Ilhas'});
+ assert.equal((await r.view(master)).state.characters.find(c=>c.id==='mira').party,west);
+ await r.action(master,'partyDelete',{id:west});
+ assert.equal((await r.view(master)).state.characters.find(c=>c.id==='mira').party,undefined);
+ assert.ok((await r.view(a)).state.characters.some(c=>c.id==='mira'));
+ assert.equal((await assign('mira',west)).status,400);
+});
+
+
+test('grupos antigos só aparecem quando usados e preservam os nomes já revelados',async()=>{
+ const r=await room(),key=r.created.key;
+ const legacy=r.rows.get(r.created.id).state.characters[0];
+ legacy.party='a';legacy.partyRevealed=true;
+ assert.deepEqual((await r.view(key)).state.parties,[{id:'a',name:'Grupo A'}]);
+ await r.action(key,'partySave',{id:'a',name:'Vigias'});
+ const updated=(await r.view(key)).state;
+ assert.deepEqual(updated.parties,[{id:'a',name:'Vigias'}]);
+ assert.equal(updated.characters[0].partyRevealed,true);
+});

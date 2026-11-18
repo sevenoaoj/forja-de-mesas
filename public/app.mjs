@@ -588,11 +588,11 @@ function gmResourcePanel(state,character){
 function sheets(state) {
   const character=currentSheet();
   if (!character) return head('Fichas universais','Crie um personagem ou abra sua ficha para jogar.',
-    button('Modelos salvos','sheetTemplates','small')+(current.master||!state.sheetModelVersion||state.ruleset==='dnd-2024'?button('Criar personagem D&D','dndCreate','small'):'')+(current.master?button('Modelo da campanha','schema')+(state.characters.some(c=>c.masteries?.length)?button('Nova sessão: renovar maestrias','sheetMasteryRefresh'):''):'')+button(current.master?'Nova ficha':'Minha ficha','character','primary','plus'))+characterCards(state.characters);
+    button('Modelos salvos','sheetTemplates','small')+(current.master||!state.sheetModelVersion||state.ruleset==='dnd-2024'?button('Criar personagem D&D','dndCreate','small'):'')+(current.master?button('Grupos rivais','partyRoster','small')+button('Modelo da campanha','schema')+(state.characters.some(c=>c.masteries?.length)?button('Nova sessão: renovar maestrias','sheetMasteryRefresh'):''):'')+button(current.master?'Nova ficha':'Minha ficha','character','primary','plus'))+characterCards(state.characters);
   sheetMosaic.sync(state,character,current.id+'/'+character.id+'/'+Boolean(current.master));
   const custom=sheetMosaic.editing||sheetView.layoutView==='custom';
   const viewButton=(id,label)=>'<button type="button" class="btn small '+(custom===(id==='custom')?'primary':'')+'" data-act="sheetReadingView" data-id="'+id+'" aria-pressed="'+(custom===(id==='custom'))+'" '+(sheetMosaic.editing?'disabled':'')+'>'+label+'</button>';
-  const toolbar='<div class="sheet-toolbar"><div>'+button(gmView.sheetReturn===character.id?'‹ Voltar ao escudo':'‹ Todas as fichas','sheetBack','ghost small')+(current.master?(state.journal||[]).filter(n=>n.characterIds?.includes(character.id)).map(n=>button(n.title,'prepRead','small','',n.id)).join(''):'')+(!character.dnd?button('Salvar como modelo','sheetTemplateSave','small','',character.id):'')+button('Modelos salvos','sheetTemplates','small')+button('Histórico','sheetHistory','small','',character.id)+'<p class="muted sheet-campaign">'+esc(state.name)+'</p></div><div class="actions">'+viewButton('custom','Personalizada')+viewButton('standard','Padronizada')+(sheetMosaic.editing?'':button('Cores e recursos','sheetColors','small'))+(sheetMosaic.editing?'<button type="button" class="btn small" disabled>Organizando</button>':button('Organizar','sheetLayoutBegin','small'))+(current.master?button('Estresse corporal','bodyStressConfig','small')+button(character.characterType==='npc'?'Tipo: NPC':'Tipo: Jogador','characterType','small')+button(character.hidden?'Mostrar aos jogadores':'Ocultar dos jogadores','characterVisibility','small'):'')+'</div></div>';
+  const toolbar='<div class="sheet-toolbar"><div>'+button(gmView.sheetReturn===character.id?'‹ Voltar ao escudo':'‹ Todas as fichas','sheetBack','ghost small')+(current.master?(state.journal||[]).filter(n=>n.characterIds?.includes(character.id)).map(n=>button(n.title,'prepRead','small','',n.id)).join(''):'')+(!character.dnd?button('Salvar como modelo','sheetTemplateSave','small','',character.id):'')+button('Modelos salvos','sheetTemplates','small')+button('Histórico','sheetHistory','small','',character.id)+'<p class="muted sheet-campaign">'+esc(state.name)+'</p></div><div class="actions">'+viewButton('custom','Personalizada')+viewButton('standard','Padronizada')+(sheetMosaic.editing?'':button('Cores e recursos','sheetColors','small'))+(sheetMosaic.editing?'<button type="button" class="btn small" disabled>Organizando</button>':button('Organizar','sheetLayoutBegin','small'))+(current.master?(character.characterType!=='npc'&&state.parties?.length?button(state.parties.find(g=>g.id===character.party)?.name||'Definir grupo','characterParty','small','',character.id):'')+button('Estresse corporal','bodyStressConfig','small')+button(character.characterType==='npc'?'Tipo: NPC':'Tipo: Jogador','characterType','small')+button(character.hidden?'Mostrar aos jogadores':'Ocultar dos jogadores','characterVisibility','small'):'')+'</div></div>';
   const editing=custom&&sheetView.editing?'<div class="actions mosaic-data-actions">'+button('Personalizar campos','sheetFields','small')+button('Adicionar atributo','sheetFields','small','plus','number')+button('Adicionar recurso','sheetFields','small','plus','counter')+button(character.portrait?'Trocar retrato':'Enviar retrato','sheetPortrait','small')+'</div>':'';
   return toolbar+(custom?'<p class="sheet-view-note">Visualização personalizada · Clique nos valores para editar. Enter salva; Escape cancela. Para textos longos, use Ctrl+Enter ou saia do campo.</p>'+editing+(sheetMosaic.editing?renderSheetLayoutEditor(state,character,sheetMosaic.appearance,sheetMosaic.canUndo):'')+renderSheetMosaic(state,character,sheetMosaic.appearance,{editing:sheetMosaic.editing,renderModule:id=>sheetModuleContent(id,character,state)}):'<p class="sheet-view-note">Visualização padronizada · Clique em um valor para editar. Enter salva; Escape cancela. Recursos usam atual/máximo, como 8/10.</p><div class="sheet-stage theme-'+esc(character.color)+'" style="'+sheetThemeStyle(state,character)+'" aria-label="Ficha de '+esc(character.name)+'">'+sheetGeneral(character,state)+sheetCompetencies(character,state)+sheetDice(character,state)+'</div>')+(current.master?gmResourcePanel(state,character):'')+(character.access==='full'||current.master?bodyStressPanel(character)+sheetInventory(character,currentView(),gmUI()):'');
 }
@@ -1081,9 +1081,10 @@ const handlers = {
     const url=URL.createObjectURL(new Blob([credentials.id+'.'+credentials.key+'\n'],{type:'text/plain'}));
     const link=document.createElement('a');link.href=url;link.download='acesso-campanha.forja.txt';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
   },
-  async characterAccess(){
-    if(!current.master||!sheetId)return;
-    const result=await post(campaignPath()+'/player-access',{characterId:sheetId});
+  async characterAccess(id){
+    const characterId=id||sheetId;
+    if(!current.master||!characterId)return;
+    const result=await post(campaignPath()+'/player-access',{characterId,reserve:Boolean(id)});
     modal('Recuperar acesso de '+esc(result.name),input('playerCode','Código privado do jogador',result.code,'text','readonly autocomplete="off"')+'<p class="muted">Entregue somente ao jogador de '+esc(result.name)+'. Ele deve abrir “Recuperar acesso” e colar o código. Isso mantém a ficha, o diário e as mensagens vinculados à identificação original.</p>'+button('Baixar código do jogador','characterAccessDownload','primary'));
   },
   characterAccessDownload(){
@@ -1173,6 +1174,28 @@ const handlers = {
     if (row?.characterId) openSheet(row.characterId);
   },
   characterRelease() {confirmDelete('characterRelease',sheetId,'Liberar este personagem para outro jogador?');},
+  partyRoster(){
+    const characters=current.state.characters.filter(c=>c.characterType!=='npc');
+    const parties=current.state.parties||[];
+    const sections=[...parties,{id:'',name:'Sem grupo'}].map(group=>{
+      const members=characters.filter(c=>(c.party||'')===group.id);
+      return '<section><h3>'+esc(group.name)+'</h3><div class="actions">'+members.map(c=>button(c.name,'characterParty','small','',c.id)).join('')+(members.length?'':'<span class="muted">Nenhum personagem</span>')+'</div>'+(group.id?button('Editar grupo','partyEdit','small','',group.id):'')+'</section>';
+    });
+    modal('Grupos rivais',button('Criar grupo','partyEdit','primary','plus')+(parties.length?sections.join(''):'<p class="muted">A campanha está sem grupos. Crie o primeiro para separar as fichas e identidades dos personagens.</p>'));
+  },
+  partyEdit(id){
+    const group=current.state.parties?.find(g=>g.id===id);
+    modal(group?'Editar grupo':'Criar grupo',input('id','',id||'','hidden')+input('name','Nome do grupo',group?.name||'','text','required maxlength="80"')+submit(group?'Salvar nome':'Criar grupo')+(group?button('Excluir grupo','partyDeleteConfirm','small danger','',id):''),'partySave');
+  },
+  partyDeleteConfirm(id){
+    const group=current.state.parties.find(g=>g.id===id);
+    if(group)modal('Excluir '+esc(group.name)+'?',input('id','',id,'hidden')+'<p>Os personagens passarão a ficar sem grupo. Suas fichas voltarão a aparecer na lista comum da campanha.</p>'+submit('Excluir grupo'),'partyDelete');
+  },
+  characterParty(id){
+    const c=current.state.characters.find(item=>item.id===id);
+    if(!current.master||!c)return;
+    modal('Grupo de '+esc(c.name),input('id','',c.id,'hidden')+select('party','Grupo do personagem',Object.fromEntries([['','Sem grupo'],...current.state.parties.map(g=>[g.id,g.name])]),c.party||'')+'<p class="muted">Os adversários veem ??? nos tokens. A ficha fica visível apenas para o próprio grupo e o mestre.</p><label class="check"><input type="checkbox" name="revealed" '+(c.partyRevealed?'checked':'')+'> Revelar o nome nos tokens para os outros grupos</label>'+submit('Salvar grupo')+(c.party&&!c.claimed&&!c.hidden?button('Gerar acesso privado para este jogador','characterAccess','small','',c.id):''),'characterParty');
+  },
   characterVisibility() {return action('characterVisibility',{id:sheetId,hidden:!currentSheet().hidden});},
   sheetBack() {if(sheetId&&gmView.sheetReturn===sheetId&&current.master)page='shield';gmView.sheetReturn='';sheetId='';render();main.focus({preventScroll:true});},
   editSheet() {editCharacter(sheetId);},
@@ -1595,6 +1618,9 @@ const forms = {
     const entries = [...form.querySelectorAll('[data-entry]')].map(row=>({name:$('[name=name]',row).value,value:$('[name=value]',row).value}));
     return action('initiative',{entries});
   },
+  partySave:async data=>{await action('partySave',data);handlers.partyRoster();},
+  partyDelete:async data=>{await action('partyDelete',data);handlers.partyRoster();},
+  characterParty:data=>action('characterParty',{id:data.id,party:data.party,revealed:!!data.party&&data.revealed==='on'}),
   characterType:data=>action('characterType',{id:data.id,characterType:data.characterType}),
   async character(data) {
     const existing=current.state.characters.find(item=>item.id===data.id);

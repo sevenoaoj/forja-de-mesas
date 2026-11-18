@@ -1,3 +1,4 @@
+import {outsideParty} from './model.mjs';
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
 const clean=(value,max)=>typeof value==='string'?value.trim().slice(0,max):'';
 export const journalKinds={note:'Anotação',item:'Inventário',clue:'Pista',character:'Personagem',place:'Local',quest:'Missão'};
@@ -9,7 +10,9 @@ export function journalView(state,access){
  if(access.master)return structuredClone(entries);
  if(!access.memberId||access.guest)return [];
  const own=new Set((state.characters||[]).filter(c=>!c.hidden&&c.ownerId===access.memberId).map(c=>c.id));
- return entries.filter(e=>e.authorId===access.memberId||e.audience==='all'||e.audience==='selected'&&e.recipientIds?.some(id=>own.has(id))).map(e=>({id:e.id,version:e.version,title:e.title,kind:e.kind,body:e.body,status:e.status,updatedAt:e.updatedAt,authorName:e.authorName||'Mestre',canEdit:e.authorId===access.memberId,...(e.authorId===access.memberId?{audience:e.audience,recipientIds:e.recipientIds}:{} )}));
+ const viewer=(state.characters||[]).find(c=>own.has(c.id));
+ const unknownAuthors=new Set((state.characters||[]).filter(c=>outsideParty(c,viewer)&&(!viewer?.party||!c.partyRevealed)&&c.ownerId).map(c=>c.ownerId));
+ return entries.filter(e=>e.authorId===access.memberId||e.audience==='all'||e.audience==='selected'&&e.recipientIds?.some(id=>own.has(id))).map(e=>({id:e.id,version:e.version,title:e.title,kind:e.kind,body:e.body,status:e.status,updatedAt:e.updatedAt,authorName:unknownAuthors.has(e.authorId)?'???':e.authorName||'Mestre',canEdit:e.authorId===access.memberId,...(e.authorId===access.memberId?{audience:e.audience,recipientIds:e.recipientIds}:{} )}));
 }
 function sharing(state,data){
  const audience=data.audience??'private';
