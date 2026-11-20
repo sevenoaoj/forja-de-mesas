@@ -89,3 +89,15 @@ test('álbum do celular acompanha a entrega, aparece na conversa e permanece pri
  assert.deepEqual(inventoryView(state,bob),[]);
  assert.throws(()=>prepare(state,{kind:'phone',photos:[{...photo,src:'https://invalid.example/photo.jpg'}]}),/Álbum/);
 });
+
+test('consumível antigo volta à mochila e pode ser usado pelo cartão da ficha',()=>{
+ const state=seed(),item=grant(state,prepare(state,{kind:'consumable',usesPerUnit:2}));
+ item.equipped=true;
+ assert.throws(()=>mutateInventory(state,'itemManage',{id:item.id,version:item.version,quantity:3,equipped:true},alice),{status:400});
+ const row={master:false,characterId:'a',state:publicState(state,alice)};
+ assert.equal(row.state.inventory[0].equipped,false);
+ const card=sheetInventory(state.characters[0],row,ui);
+ assert.match(card,/Consumir 1 uso/);assert.doesNotMatch(card,/data-act="itemEquip"/);
+ mutateInventory(state,'itemUse',{id:item.id,version:item.version,delta:-1},alice);
+ assert.equal(inventoryView(state,alice)[0].uses,5);
+});

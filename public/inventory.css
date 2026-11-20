@@ -110,3 +110,12 @@ dialog[data-loot-reward=true] .item-art:after{background:linear-gradient(115deg,
 .phone-thumb img{display:block;width:100%;aspect-ratio:1;object-fit:cover}
 .phone-bubble .phone-thumb{width:min(170px,100%)}
 [data-phone-viewer]>img{display:block;width:100%;max-height:55vh;object-fit:contain;margin-top:10px}
+.worn-section{border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:1rem;margin-bottom:1.25rem}
+.worn-section h3,.pack-heading{margin:0 0 .75rem;color:var(--text)}
+.worn-section h3 small,.pack-heading small{margin-inline-start:.4rem;color:var(--muted);font-size:.85rem}
+.worn-section ul{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr));gap:.6rem}
+.worn-section li{display:flex;align-items:center;gap:.4rem;padding:.45rem .65rem;border-inline-start:3px solid var(--item-accent);background:var(--bg);border-radius:6px;min-width:0}
+.worn-item{flex:1;display:flex;align-items:center;min-width:0;gap:.65rem;border:0;background:transparent;text-align:start;padding:0;color:var(--text)}
+.worn-item .item-portrait{width:44px;height:44px}
+.worn-item strong,.worn-item small{display:block;overflow-wrap:anywhere}
+.worn-item small{margin-top:.2rem;color:var(--muted)}

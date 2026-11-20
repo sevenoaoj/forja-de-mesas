@@ -44,6 +44,7 @@ const pages = {
   settings:['Configurações','settings','Personalize as cores da interface.','violet'],
 };
 const paths = {
+  menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',
   settings:'<path d="M3 7h6m5 0h7M3 17h11m5 0h2"/><circle cx="11" cy="7" r="2.5"/><circle cx="16" cy="17" r="2.5"/>',
   home:'<path d="m3 10 9-7 9 7v10H3z"/><path d="M9 20v-6h6v6"/>',
   backpack:'<path d="M9 6V5a3 3 0 0 1 6 0v1"/><rect x="4.5" y="6" width="15" height="16" rx="4"/><path d="M7 11h10m-1-1v3"/><rect x="8" y="15" width="8" height="4" rx="1.5"/>',
@@ -115,7 +116,7 @@ async function mediaCheckSync(check,access){
 }
 const cinematicStage=createCinematicStage($('#cinematic-stage'),{
   load:(id,signal)=>cachedMedia(id)?Promise.resolve(cachedMedia(id)):request(campaignPath()+'/asset/'+id,{signal}).then(r=>r.blob()),
-  trackPreferences:()=>({enabled:audioPlayer.enabled,volume:audioPlayer.musicVolume/100}),
+  trackVolume:()=>audioPlayer.musicVolume/100,
   stop:id=>action('cinematicStop',{id}),report:toast
 });
 const narrationDisplay=createNarrationDisplay($('#narration-display'),{report:toast,acknowledge:async id=>{
@@ -363,7 +364,7 @@ function head(title,desc,actions='') {
 function home(state) {
   return '<section class="hero"><div class="hero-copy"><span class="hero-tag">✧ '+esc(state.system||'Sistema livre')+'</span><h1>'+esc(state.name)+'</h1>'+
     (state.description?'<p>'+esc(state.description)+'</p>':'<p>Cena atual · '+esc(state.scene)+'</p>')+
-    '<div class="actions">'+button('Abrir mesa virtual','nav','primary','arrow','table')+(current.master?button('Backup da campanha','campaignAccess')+button('Editar campanha','settings'):'')+'</div></div></section>'+
+    '<div class="actions">'+button('Abrir mesa virtual','nav','primary','arrow','table')+(current.master?button('Editar campanha','settings'):'')+'</div></div></section>'+
     recapPanel(current,gmUI())+
     '<section class="block"><div class="section-head"><h2>Ferramentas da campanha</h2></div><div class="feature-grid">'+Object.keys(pages).filter(key=>key!=='home'&&(key!=='shield'||current.master)).map(feature).join('')+'</div></section>'+
     '<section class="block"><div class="section-head"><h2>Personagens</h2>'+button('Ver fichas','nav','ghost small','arrow','sheets')+'</div>'+characterCards([...state.characters].sort((a,b)=>Number(b.id===current.characterId)-Number(a.id===current.characterId)).slice(0,3))+'</section>';
@@ -394,6 +395,22 @@ function setSessionMaterial(key,attached){
 }
 function gmUI(){return {esc,button,input,area,select,submit,head};}
 function gmCard(id){return current.state.gmScreen?.cards.find(card=>card.id===id);}
+let expandedTable=false;
+function setExpandedTable(value){
+  expandedTable=value;
+  document.documentElement.classList.toggle('table-expanded',value);
+}
+function leaveExpandedTable(){
+  if(!expandedTable)return;
+  setExpandedTable(false);
+  if(document.fullscreenElement===document.documentElement)document.exitFullscreen().catch(()=>{});
+}
+document.addEventListener('fullscreenchange',()=>{
+  if(expandedTable&&!document.fullscreenElement)setExpandedTable(false);
+});
+document.addEventListener('keydown',event=>{
+  if(expandedTable&&event.key==='Escape'&&!event.defaultPrevented&&!document.querySelector('dialog[open], :popover-open, #dice-display:not([hidden])'))leaveExpandedTable();
+});
 function tableVisible(){return page==='table'||page==='shield'&&current.master&&gmView.map===current.state.sceneId&&Boolean(gmView.map);}
 function prepMapControls(){
   const session=prepSession(current,gmView),refs=session?.materials||[];
@@ -792,6 +809,32 @@ function campaignList() {
   return list.length?'<div class="stack">'+list.map(item=>'<div class="campaign-list-row">'+button(item.name+' · '+(item.master?'Mestre':'Jogador'),'switch','','',item.id)+button(item.master?'Apagar':'Remover da lista',item.master?'campaignDelete':'campaignForget','small danger','',item.id)+'</div>').join('')+'</div>':'<p class="empty">Você ainda não tem campanhas salvas neste navegador.</p>';
 }
 
+const campaignDropdown=$('#campaign-dropdown');
+function positionCampaignDropdown(){
+  const anchor=$('.campaign-picker').getBoundingClientRect();
+  const width=Math.min(380,innerWidth-16);
+  const below=innerHeight-anchor.bottom-14,above=anchor.top-14;
+  const upwards=below<180&&above>below;
+  Object.assign(campaignDropdown.style,{
+    width:width+'px',left:Math.max(8,Math.min(anchor.left,innerWidth-width-8))+'px',
+    top:upwards?'auto':(anchor.bottom+6)+'px',bottom:upwards?(innerHeight-anchor.top+6)+'px':'auto',
+    maxHeight:Math.max(0,upwards?above:below)+'px'
+  });
+}
+campaignDropdown.addEventListener('beforetoggle',event=>{
+  if(event.newState!=='open')return;
+  campaignDropdown.innerHTML=campaignList()+'<div class="campaign-menu-actions">'+button('Nova campanha','create','primary small','plus')+button('Importar backup','campaignImport','small')+button('Recuperar acesso','campaignRecover','small')+'</div>';
+  positionCampaignDropdown();
+});
+campaignDropdown.addEventListener('click',event=>{
+  if(event.target.closest('[data-act]'))campaignDropdown.hidePopover();
+});
+function followCampaignPicker(){
+  if(campaignDropdown.matches(':popover-open'))positionCampaignDropdown();
+}
+globalThis.addEventListener?.('resize',followCampaignPicker);
+document.addEventListener('scroll',followCampaignPicker,true);
+
 function forgetCampaign(id) {
   const list=read('forja.campaigns')||{};delete list[id];accessStorage.write('forja.campaigns',list);
   const members=read('forja.memberKeys')||{};delete members[id];accessStorage.write('forja.memberKeys',members);
@@ -806,12 +849,26 @@ function renderLobby() {
   sheetMosaic.dispose();
   tabletop.dispose();musicLibrary.dispose();soundboardLibrary.dispose();sheetId='';
   $('#campaign-name').textContent='Escolher campanha';$('#breadcrumb').textContent='Campanhas';$('#profile').textContent='Sua mesa de RPG';
-  $('#navigation').innerHTML='';$('#header-actions').innerHTML=button('Nova campanha','create','primary','plus');
+  $('#navigation').innerHTML='';$('#header-actions').innerHTML='';
   main.innerHTML=head('Suas campanhas','Crie uma campanha ou abra uma das suas mesas.',button('Importar backup','campaignImport')+button('Recuperar acesso','campaignRecover')+button('Nova campanha','create','primary','plus'))+campaignList();
   audioPlayer.sync(lobby);musicDock.sync(lobby);soundboardDock.sync(lobby);audioPopover.sync(lobby);diceDisplay.sync(lobby);narrationDisplay.sync(lobby);rollIdentity='';latestRollRevision=-1;latestRollVersion='';applyPortraits();
 }
 
+function navigationGroups(){
+  const groups=[
+    [current.master?'Personagens':'Meu personagem',['sheets','inventory']],
+    [current.master?'Mesa do mestre':'Minha mesa',['table',...(current.master?['shield']:[]),'home','journal','library','audio']],
+    ['Preferências',['settings','campaignAccess']]
+  ];
+  return groups.map(([title,items])=>'<div class="nav-group" role="group" aria-label="'+title+'"><h3>'+title+'</h3>'+items.map(key=>{
+    if(key==='campaignAccess')return button(current.master?'Backup e acesso':'Meu acesso','campaignAccess','nav-btn','shield');
+    const [label,icon]=pages[key];
+    return '<button type="button" class="nav-btn" data-act="nav" data-id="'+key+'" '+(current.needsCharacter?'disabled ':'')+(key===page?'aria-current="page"':'')+'>'+svg(icon)+'<span>'+label+'</span></button>';
+  }).join('')+'</div>').join('');
+}
+
 function render() {
+  if(expandedTable&&(!tableVisible()||!credentials||current.needsCharacter))leaveExpandedTable();
   if(mic.session&&(!tableVisible()||!credentials))mic.stop();
   if(inlineSheet.editing)return;
   if(!credentials) {renderLobby();return;}
@@ -822,10 +879,8 @@ function render() {
   $('#campaign-name').textContent = state.name;
   $('#profile').innerHTML = current.master ? 'Mestre da mesa<small>'+'Campanha ativa'+'</small>' : esc(state.characters.find(character=>character.id===current.characterId)?.name||'Jogador')+'<small>'+(current.needsCharacter?'Escolha seu personagem':'Personagem vinculado')+'</small>';
   $('#breadcrumb').textContent = pages[page][0];
-  $('#navigation').innerHTML = Object.entries(pages).filter(([key])=>key!=='shield'||current.master).map(([key,[label,icon]])=>
-    '<button class="nav-btn" data-act="nav" data-id="'+key+'" '+(current.needsCharacter?'disabled ':'')+(key===page?'aria-current="page"':'')+'>'+svg(icon)+'<span class="nav-text">'+label+'</span><span class="nav-mobile-text">'+({home:'Início',sheets:'Fichas',table:'Mesa',shield:'Mestre',library:'Livros',inventory:'Itens',journal:'Diário',audio:'Áudio',settings:'Ajustes'}[key])+'</span></button>'
-  ).join('');
-  $('#header-actions').innerHTML = (current.master?button('Cinemáticas','cinematicDesk','small')+button('Backup e acesso','campaignAccess','small')+button('Mensagem privada','narrationCompose','small')+button('Convidar jogadores','invite','','invite'):button('Meu acesso','campaignAccess','small'))+button('Nova campanha','create','primary','plus');
+  $('#navigation').innerHTML=navigationGroups()+'<button type="button" class="nav-btn nav-more" data-act="navigationMenu" aria-haspopup="dialog">'+svg('menu')+'<span class="nav-mobile-text">Menu</span></button>';
+  $('#header-actions').innerHTML = current.master?button('Cinemáticas','cinematicDesk','small')+button('Mensagem privada','narrationCompose','small')+button('Convidar jogadores','invite','','invite'):'';
   const inCanvas=page==='shield'&&gmView.prepTab==='note'&&gmView.vaultMode==='canvas';
 
   const focusHandle=document.activeElement?.closest('[data-vault-move],[data-size]');
@@ -1294,6 +1349,14 @@ function openPointPlacement(kind,point,sceneId){
     input('radius','Alcance em células',sound?6:2,'number','min=".25" max="80" step=".25" required')+submit('Colocar no mapa'),'explorePlace');
 }
 const handlers = {
+  tableFullscreen(){
+    if(expandedTable){leaveExpandedTable();return;}
+    if(!tableVisible())return;
+    setExpandedTable(true);
+    main.querySelector('.vtt-heading')?.scrollIntoView({block:'start'});
+    // The expanded layout also works on mobile browsers without native fullscreen.
+    if(document.fullscreenEnabled&&!document.fullscreenElement)document.documentElement.requestFullscreen().catch(()=>{});
+  },
   tokenMicrophone(){
     if(mic.session){mic.stop();return;}
     if(!credentials)return;
@@ -1533,13 +1596,29 @@ const handlers = {
     const message=current.master?'Excluir o original do catálogo e todas as cópias nos inventários dos personagens?':'Descartar as '+item.quantity+' unidade(s) deste item do seu inventário?';
     modal(title,input('id','',id,'hidden')+input('version','',item.version,'hidden')+'<p><strong>'+esc(item.name)+'</strong></p><p>'+esc(message)+'</p>'+submit(title),'itemDelete');
   },
+  async itemEquip(id,node){
+    const item=current.state.inventory?.find(e=>e.id===id);
+    if(node.disabled||!item)return;
+    const access=credentials;
+    node.disabled=true;
+    try{
+      await action('itemManage',{id,version:Number(node.dataset.version),equipped:node.dataset.equip==='true',quantity:item.quantity,notes:item.notes||''});
+      if(credentials!==access)return;
+      if(dialog.open&&dialog.dataset.inventoryId===id)handlers.itemOpen(id);
+      const root=dialog.open?dialog:main;
+      [...root.querySelectorAll('[data-act=itemEquip]')].find(b=>b.dataset.id===id)?.focus({preventScroll:true});
+    }finally{node.disabled=false;}
+  },
   async itemUse(id,node){
     if(node.disabled)return;
-    const ownership=credentials,version=Number(dialog.dataset.inventoryVersion);
+    const ownership=credentials,version=Number(node.dataset.version);
     node.disabled=true;
     try{
       await action('itemUse',{id,version,delta:Number(node.dataset.delta)});
-      if(credentials===ownership&&dialog.open&&dialog.dataset.inventoryId===id)handlers.itemOpen(id);
+      if(credentials!==ownership)return;
+      if(dialog.open&&dialog.dataset.inventoryId===id)handlers.itemOpen(id);
+      const remaining=current.state.inventory?.find(e=>e.id===id)?.uses;
+      if(Number(node.dataset.delta)<0)toast(remaining===0?'Último uso consumido.':('Uso consumido. Restam '+remaining+'.'));
     }finally{node.disabled=false;}
   },
   journalEdit(id){const entry=current.state.journal?.find(e=>e.id===id);if(id&&(!entry||!current.master&&!entry.canEdit))return;modal(entry?'Editar documento':'Novo documento',journalEditor(entry,currentView(),gmUI()),'journal');},
@@ -1640,10 +1719,10 @@ const handlers = {
     if(ability.effectShape){handlers.nav('table');tabletop.aim(ability.effectShape,ability.name,ability.effectLength);return;}
     modal('Área de '+esc(ability.name),select('shape','Formato',{cone:'Cone de 60°',burst:'Círculo',beam:'Linha de uma célula'},'cone')+input('ability','',ability.name,'hidden')+submit('Posicionar na mesa'),'abilityArea');
   },
-  nav(key) {if(current.needsCharacter)return;page=key;if(key==='sheets') {if(!current.master&&current.characterId)return openSheet(current.characterId);sheetId='';}render();main.focus({preventScroll:true});window.scrollTo({top:0});},
+  navigationMenu(){modal('Navegação','<div class="mobile-navigation">'+navigationGroups()+'</div>');},
+  nav(key) {if(current.needsCharacter)return;if(dialog.open&&dialog.querySelector('.mobile-navigation'))dialog.close();page=key;if(key==='sheets') {if(!current.master&&current.characterId)return openSheet(current.characterId);sheetId='';}render();main.focus({preventScroll:true});window.scrollTo({top:0});},
   close() {flyRewardToInventory(dialog);dialog.close();},
   create:createDialog,
-  campaigns() {modal('Suas campanhas',campaignList()+button('Importar backup','campaignImport')+button('Recuperar acesso','campaignRecover')+button('Nova campanha','create','primary','plus'));},
   campaignImport(){modal('Importar backup da campanha','<p>Selecione o arquivo <strong>.forja</strong> salvo no seu computador. A importação cria uma nova campanha, sem substituir nenhuma existente.</p><label>Backup da campanha<input type="file" name="file" accept=".forja,application/octet-stream" required></label><p class="muted">Inclui fichas, cenas, mapas, biblioteca e efeitos enviados. Limite: 100 MB por arquivo. Após restaurar, envie o novo convite e peça aos jogadores que escolham suas fichas novamente. A música começa parada.</p>'+submit('Restaurar como nova campanha'),'campaignImport');},
   async campaignBackup(){
     if(!current.master||!credentials)return;
@@ -1659,7 +1738,7 @@ const handlers = {
   campaignRecover(){modal('Recuperar acesso à campanha',area('code','Código de recuperação ou link de acesso','','required rows="3" autocomplete="off"')+'<p class="muted">Cole o código de “Meu acesso”, “Backup e acesso” ou o código do seu personagem fornecido pelo mestre. Isso reabre a campanha existente.</p>'+submit('Reabrir campanha'),'campaignRecover');},
   campaignAccess(){
     if(!credentials)return;
-    modal('Backup e acesso à campanha',(current.master?'<h3>Backup completo</h3><p>Salve a campanha, fichas, cenas e arquivos no seu computador. O arquivo inclui as notas privadas do mestre.</p>'+button('Baixar backup completo','campaignBackup','primary')+button('Importar backup','campaignImport')+'<hr>':'')+'<h3>Código de acesso</h3>'+input('accessCode','Código privado de acesso',credentials.id+'.'+credentials.key,'text','readonly autocomplete="off"')+'<p class="muted">Guarde este código em um lugar privado. Ele permite recuperar seu acesso após trocar de endereço ou navegador. Quem possuir um código de mestre terá controle da campanha.</p>'+button('Baixar código','campaignAccessDownload','primary')+'<p class="muted">Este arquivo recupera o acesso; as campanhas e arquivos continuam no servidor e em seus backups.</p>');
+    modal(current.master?'Backup e acesso à campanha':'Meu acesso',(current.master?'<h3>Backup completo</h3><p>Salve a campanha, fichas, cenas e arquivos no seu computador. O arquivo inclui as notas privadas do mestre.</p>'+button('Baixar backup completo','campaignBackup','primary')+button('Importar backup','campaignImport')+'<hr>':'')+'<h3>Código de acesso</h3>'+input('accessCode','Código privado de acesso',credentials.id+'.'+credentials.key,'text','readonly autocomplete="off"')+'<p class="muted">Guarde este código em um lugar privado. Ele permite recuperar seu acesso após trocar de endereço ou navegador. Quem possuir um código de mestre terá controle da campanha.</p>'+button('Baixar código','campaignAccessDownload','primary')+'<p class="muted">Este arquivo recupera o acesso; as campanhas e arquivos continuam no servidor e em seus backups.</p>');
   },
   campaignAccessDownload(){
     if(!credentials)return;
@@ -2630,7 +2709,7 @@ dialog.addEventListener('change',event=>{
 });
 
 document.addEventListener('input',event=>{
-  if(event.target.matches('[data-inventory-search]')){inventoryView.query=event.target.value;const shell=document.createElement('div');shell.innerHTML=renderInventory(currentView(),gmUI(),inventoryView);const results=$('[data-inventory-results]',main);if(results)results.innerHTML=$('[data-inventory-results]',shell).innerHTML;}
+  if(event.target.matches('[data-inventory-search]')){inventoryView.query=event.target.value;const shell=document.createElement('div');shell.innerHTML=renderInventory(currentView(),gmUI(),inventoryView);const results=$('[data-inventory-results]',main);if(results){results.innerHTML=$('[data-inventory-results]',shell).innerHTML;applyPortraits(results);}}
   if(event.target.matches('[data-journal-search]')){journalView.query=event.target.value;const grid=$('.journal-grid',main);if(grid){const shell=document.createElement('div');shell.innerHTML=renderJournal(currentView(),gmUI(),journalView);grid.innerHTML=$('.journal-grid',shell).innerHTML;}}
   if(event.target.matches('[data-scene-search]')){sceneUI.query=event.target.value;const cards=$('[data-scene-cards]',main);if(cards){cards.innerHTML=renderSceneCards(currentView(),sceneUI);applyPortraits();}}
   if(current.master&&page==='shield'&&event.target.matches('[data-gm-notes]')){gmNoteDrafts.set(current.id,event.target.value);const status=$('[data-gm-notes-status]',main);if(status)status.textContent='Rascunho não salvo · preservado ao navegar nesta aba.';}

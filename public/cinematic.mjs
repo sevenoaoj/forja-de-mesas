@@ -13,7 +13,7 @@ function prepareCaption(caption,text,speed){
 }
 
 // One stage per browser. Server timestamps let reconnecting viewers enter mid-scene.
-export function createCinematicStage(dialog,{load,stop,report,trackPreferences=()=>({enabled:true,volume:.65})}){
+export function createCinematicStage(dialog,{load,stop,report,trackVolume=()=>.65}){
  const media=dialog.querySelector('[data-cine-media]'),caption=dialog.querySelector('h2');
  const notice=dialog.querySelector('[role=status]'),sound=dialog.querySelector('[data-cine-sound]'),exit=dialog.querySelector('[data-cine-exit]');
  let identity='',revision=-1,current=null,dismissed='',abort,url,revealTimer,endTimer,video;
@@ -97,7 +97,7 @@ export function createCinematicStage(dialog,{load,stop,report,trackPreferences=(
   abort=new AbortController();
   if(run.soundtrackId){
    const audio=track=new Audio();
-   const preferences=trackPreferences();audio.volume=preferences.volume;
+   audio.volume=trackVolume();
    function alignTrack(){
     const position=Math.max(0,(now()-run.startedAt)/1000);
     if(position>=audio.duration){trackButton.hidden=true;return false;}
@@ -107,16 +107,19 @@ export function createCinematicStage(dialog,{load,stop,report,trackPreferences=(
    async function playTrack(){
     if(!alignTrack())return;
     try{await audio.play();if(current===session)trackButton.textContent='Silenciar trilha';}
-    catch{if(current===session)trackButton.textContent='Ativar trilha';}
+    catch(error){
+     if(current!==session)return;
+     if(error.name==='NotAllowedError')trackButton.textContent='Ativar trilha';
+     else{trackButton.hidden=true;if(!audio.error)report('Não foi possível reproduzir a trilha da cinemática.');return;}
+    }
+    if(current===session&&!audio.error)trackButton.hidden=false;
    }
    trackButton.onclick=()=>{
     if(audio.paused)playTrack();
     else{audio.pause();trackButton.textContent='Ativar trilha';}
    };
    audio.onloadedmetadata=()=>{
-    if(current!==session||!alignTrack())return;
-    trackButton.textContent='Ativar trilha';trackButton.hidden=false;
-    if(preferences.enabled)playTrack();
+    if(current===session)playTrack();
    };
    audio.onended=()=>{trackButton.hidden=true;};
    audio.onerror=()=>{if(current===session){trackButton.hidden=true;report('Não foi possível reproduzir a trilha da cinemática.');}};

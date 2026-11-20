@@ -26,9 +26,9 @@
       <a href="/" class="brand"><span class="brand-mark" aria-hidden="true">⬡</span><span>Forja de Mesas<small>RPG DE MESA</small></span></a>
       <div class="sidebar-content">
         <p class="nav-label">CAMPANHA</p>
-        <button class="campaign-picker" data-act="campaigns" title="Trocar campanha"><span class="campaign-icon">✧</span><span id="campaign-name">Escolher campanha</span><span class="caret">⌄</span></button>
-        <p class="nav-label tools-label">FERRAMENTAS</p>
-        <nav id="navigation" aria-label="Ferramentas"></nav>
+        <button class="campaign-picker" type="button" popovertarget="campaign-dropdown" aria-controls="campaign-dropdown" title="Trocar campanha"><span class="campaign-icon">✧</span><span id="campaign-name">Escolher campanha</span><span class="caret">⌄</span></button>
+        <div popover="auto" id="campaign-dropdown" role="region" aria-label="Suas campanhas"></div>
+        <nav id="navigation" aria-label="Navegação da campanha"></nav>
       </div>
       <div class="profile"><span class="profile-icon" aria-hidden="true">✦</span><span id="profile"></span></div>
     </aside>

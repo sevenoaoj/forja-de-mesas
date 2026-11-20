@@ -227,6 +227,7 @@ test('investigação usa o total informado pelo mestre e envia um único recibo 
  await good(await r.action('exploreDecide',{id:p.id,requestId:req.id,audience:req.audience,grant:true,total:14}));
  const [receipt]=(await r.view(r.one)).state.investigationReceipts;
  assert.deepEqual(receipt.items.map(({name,quantity})=>({name,quantity})),[{name:r.item.name,quantity:3},{name:'Anel',quantity:1}]);assert.equal(receipt.location,'Baú');
+ assert.deepEqual(receipt.items.map(i=>i.kind),[r.item.kind,extra.kind]);
  assert.equal((await r.view()).state.investigationReceipts,undefined);assert.deepEqual((await r.view(r.two)).state.investigationReceipts,[]);
  await good(await r.action('investigationReceiptRead',{id:receipt.id},r.two));
  assert.equal((await r.view(r.one)).state.investigationReceipts.length,1);

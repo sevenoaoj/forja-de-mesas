@@ -284,4 +284,5 @@ export function cinematicStyle({transition='rift',reveal='fade',revealSeconds=.7
 }
 
 export const readingKinds={note:'Nota ou bilhete',letter:'Carta',bookPage:'Página de livro',diaryPage:'Página de diário',phone:'Celular',photo:'Fotografia anotada',record:'Documento de arquivo'};
+export const canEquipKind=kind=>['gear','weapon','armor'].includes(kind);
 export const inventoryKinds={gear:'Equipamento',weapon:'Arma',armor:'Armadura',consumable:'Consumível',treasure:'Tesouro',quest:'Objeto de missão',...readingKinds,custom:'Categoria personalizada'};

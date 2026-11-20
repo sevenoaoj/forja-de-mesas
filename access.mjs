@@ -104,7 +104,9 @@ export function publicState(state,access) {
   const own=ownedCharacter(state,access);
   return {
     ...shared,...(own?.party&&campaignParties(state).find(g=>g.id===own.party)?.emblem?{partyEmblem:campaignParties(state).find(g=>g.id===own.party).emblem}:{}),sharing:sharingView(state,own),
-    investigationReceipts:own?(investigationReceipts||[]).filter(r=>r.characterId===own.id&&r.memberId===access.memberId).map(({id,location,from,items})=>({id,location,from,items})):[],
+    investigationReceipts:own?(investigationReceipts||[]).filter(r=>r.characterId===own.id&&r.memberId===access.memberId).map(({id,location,from,items})=>({
+      id,location,from,items:items.map(item=>item.kind?item:{...item,kind:shared.inventory.find(e=>e.id===item.itemId)?.kind})
+    })):[],
     characters:state.characters.filter(character=>!character.hidden&&!outsideParty(character,own)).map(character=>
       isPlayerCharacter(character)&&character.ownerId===access.memberId&&access.memberId ? fullCharacter(state,character) : {
         id:character.id,name:character.name,concept:character.concept,color:character.color,

@@ -461,7 +461,9 @@ export function campaignAudio(dock,fetchClip,report,control) {
     syncLoops(audio);
     for (const cue of audio.cues) {
       if (seen.has(cue.id)) continue;
-      if (now-cue.at>2000) {seen.add(cue.id);continue;}
+      // Uploaded clips can join mid-sound after a slow poll or download.
+      // Synthesized attacks have no seekable buffer.
+      if (now-cue.at>2000 && (!enabled || soundPresets.some(s=>s.id===cue.sound))) {seen.add(cue.id);continue;}
       if (!enabled) continue;
       seen.add(cue.id);
       play(cue,audio.clips).catch(error=>report(error.message||'Não foi possível reproduzir o efeito sonoro.'));

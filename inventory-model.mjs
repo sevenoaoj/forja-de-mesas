@@ -2,7 +2,7 @@ import {removeSessionMaterial} from './scene-model.mjs';
 import {journalView} from './journal-model.mjs';
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
 const clean=(v,max)=>typeof v==='string'?v.trim().slice(0,max):'';
-import {inventoryKinds as itemKinds,readingKinds} from './model.mjs';
+import {inventoryKinds as itemKinds,readingKinds,canEquipKind} from './model.mjs';
 export {itemKinds};
 
 const owned=(state,item,access)=>!access.guest&&access.memberId&&(state.characters||[]).some(c=>c.id===item.characterId&&!c.hidden&&c.ownerId===access.memberId);
@@ -16,7 +16,7 @@ export function chargeFields(item,quantity=item.quantity??1){
 export function recordItemDelivery(state,character,items,context){
  if(!character?.ownerId||!items.length)return;
  (state.investigationReceipts??=[]).push({id:crypto.randomUUID(),memberId:character.ownerId,characterId:character.id,...context,
-  items:items.map(({id,name,quantity,accent,portrait})=>({itemId:id,name,quantity,accent,portrait:portrait||''}))});
+  items:items.map(({id,name,kind,quantity,accent,portrait})=>({itemId:id,name,kind,quantity,accent,portrait:portrait||''}))});
 }
 function removeCatalogReferences(state,id){
  removeSessionMaterial(state,'item',id);
@@ -28,7 +28,7 @@ function removeCatalogReferences(state,id){
   }
  }
 }
-export function inventoryView(state,access){if(access.master)return structuredClone(state.inventory||[]).map(e=>({...e,...chargeFields(e)}));const readable=new Set(journalView(state,access).map(e=>e.id));return (state.inventory||[]).filter(e=>owned(state,e,access)).map(e=>{const {gmNotes,sourceId,...safe}=e;return {...safe,...chargeFields(e),journalId:readable.has(e.journalId)?e.journalId:''};});}
+export function inventoryView(state,access){if(access.master)return structuredClone(state.inventory||[]).map(e=>({...e,equipped:canEquipKind(e.kind)&&!!e.equipped,...chargeFields(e)}));const readable=new Set(journalView(state,access).map(e=>e.id));return (state.inventory||[]).filter(e=>owned(state,e,access)).map(e=>{const {gmNotes,sourceId,...safe}=e;return {...safe,equipped:canEquipKind(e.kind)&&!!e.equipped,...chargeFields(e),journalId:readable.has(e.journalId)?e.journalId:''};});}
 const actions=new Set(['itemSave','itemGrant','itemDelete','itemManage','itemUse']);
 const numeric=(value,label,max,integer=false)=>{const n=Number(value);if(!Number.isFinite(n)||n<0||n>max||integer&&!Number.isInteger(n))fail(400,label+' inválido.');return n;};
 export function mutateInventory(state,action,data={},access={}){
@@ -45,7 +45,7 @@ export function mutateInventory(state,action,data={},access={}){
   if(data.accent!==undefined&&(typeof data.accent!=='string'||!/^#[0-9a-f]{6}$/i.test(data.accent)))fail(400,'Escolha uma cor de destaque válida.');
   const name=clean(data.name,120),kind=data.kind||'gear';if(!name||!Object.hasOwn(itemKinds,kind))fail(400,'Informe nome e categoria válidos.');
   const journalId=clean(data.journalId,100);if(journalId&&!state.journal?.some(e=>e.id===journalId))fail(400,'Documento do diário indisponível.');
-  const entry={id:old?.id||crypto.randomUUID(),version:(old?.version||0)+1,characterId:old?.characterId||null,...(old?.sourceId?{sourceId:old.sourceId}:{}),name,kind,accent:data.accent?.toLowerCase()||old?.accent||'#dfbb73',portrait:data.removePortrait?'':old?.portrait||'',description:clean(data.description,8000),properties:clean(data.properties,4000),gmNotes:clean(data.gmNotes,8000),rarity:clean(data.rarity,80),weight:numeric(data.weight??0,'Peso',1000000),value:clean(data.value,120),journalId,quantity:old?.quantity??1,equipped:old?.equipped??false,notes:old?.notes||''};
+  const entry={id:old?.id||crypto.randomUUID(),version:(old?.version||0)+1,characterId:old?.characterId||null,...(old?.sourceId?{sourceId:old.sourceId}:{}),name,kind,accent:data.accent?.toLowerCase()||old?.accent||'#dfbb73',portrait:data.removePortrait?'':old?.portrait||'',description:clean(data.description,8000),properties:clean(data.properties,4000),gmNotes:clean(data.gmNotes,8000),rarity:clean(data.rarity,80),weight:numeric(data.weight??0,'Peso',1000000),value:clean(data.value,120),journalId,quantity:old?.quantity??1,equipped:canEquipKind(kind)&&!!old?.equipped,notes:old?.notes||''};
   if(Object.hasOwn(readingKinds,kind)||kind==='custom'){
    const content=data.content??old?.content??'';
    if(typeof content!=='string'||content.length>24000)fail(400,'O conteúdo deve ter até 24.000 caracteres.');
@@ -90,6 +90,7 @@ export function mutateInventory(state,action,data={},access={}){
  }else{
   if(!old?.characterId)fail(400,'Selecione um item de inventário.');
   if(typeof data.equipped!=='boolean')fail(400,'Estado de equipamento inválido.');
+  if(data.equipped&&!canEquipKind(old.kind))fail(400,'Somente equipamentos, armas e armaduras podem ser equipados.');
   const quantity=numeric(data.quantity,'Quantidade',999999,true);if(data.equipped&&!quantity)fail(400,'Um item sem unidades não pode ser equipado.');
   next=entries.map(e=>e===old?{...e,version:e.version+1,...chargeFields(e,quantity),quantity,equipped:data.equipped,notes:clean(data.notes,4000)}:e);
  }

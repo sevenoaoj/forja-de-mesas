@@ -551,7 +551,7 @@ dialog::backdrop{background:#080710c9}
 .item-uses progress{width:100%;min-width:0;flex:1;height:.8rem;accent-color:var(--item-accent,#dfbb73)}
 .investigation-rewards li{display:grid;grid-template-columns:clamp(54px,13vw,90px) minmax(0,1fr) auto;align-items:center;text-align:left;border-color:var(--item-accent);background:linear-gradient(110deg,rgba(var(--item-glow),.16),transparent);overflow-wrap:anywhere}
 .reward-flight{position:fixed;z-index:2147483647;pointer-events:none;display:grid;place-items:center;width:44px;height:44px;border-radius:12px;background:#272436;color:#f4d892;box-shadow:0 0 12px #dfbb7380;overflow:hidden}
-.reward-flight img{width:100%;height:100%;object-fit:contain}
+.reward-flight :is(img,svg){width:100%;height:100%;object-fit:contain}
 @media(prefers-reduced-motion:no-preference){dialog[data-loot-reward=true] .item-art{animation:reward-portrait-in .45s ease-out both}}
 @keyframes reward-portrait-in{from{opacity:0;transform:translateY(8px) scale(.84)}to{opacity:1;transform:none}}
 
@@ -678,3 +678,27 @@ dialog::backdrop{background:#080710c9}
 #dialog[data-discovery=noir]{background:#282623;border:5px solid #a69983}
 #dialog[data-discovery=noir] .dialog-head{background:#dacdb5;color:#302820;padding:10px}
 #dialog[data-discovery=noir] .dialog-head h2{font-family:'Courier New',monospace}
+
+.nav-group h3 {margin:0 0 .55rem;padding-inline:.65rem;font-size:.74rem;letter-spacing:.06em;color:var(--accent)}
+.nav-group {padding-top:1.1rem}
+.nav-group + .nav-group {margin-top:.75rem;border-top:1px solid var(--line)}
+.nav-group .nav-btn {margin:2px 0;min-height:40px}
+.nav-group .nav-btn[aria-current=page] {box-shadow:inset 3px 0 var(--accent)}
+.nav-more {display:none}
+@media(min-width:731px){
+  .sidebar-content {overflow-y:auto;min-height:0;scrollbar-width:thin}
+  .sidebar .brand,.sidebar .profile {flex-shrink:0}
+}
+@media(max-width:730px){
+  #navigation .nav-group {display:contents}
+  #navigation .nav-group h3,#navigation .nav-group .nav-btn {display:none}
+  #navigation .nav-group .nav-btn:is([data-id=sheets],[data-id=inventory],[data-id=table]),#navigation .nav-more {display:flex;margin:0;min-height:52px;font-size:.75rem}
+  #navigation .nav-more span {max-width:100%;white-space:normal}
+  .mobile-navigation .nav-group {padding-top:.6rem}
+  .mobile-navigation .nav-btn {flex-direction:row;justify-content:flex-start;gap:.75rem;width:100%;padding:.65rem;min-height:44px}
+}
+#campaign-dropdown {position:fixed;inset:auto;margin:0;padding:.65rem;border:1px solid var(--line);border-radius:.75rem;background:var(--surface);color:var(--text);box-shadow:0 12px 32px #0006;overflow:auto;overscroll-behavior:contain}
+#campaign-dropdown .campaign-list-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.45rem}
+#campaign-dropdown .campaign-list-row > :first-child{justify-content:flex-start;white-space:normal;overflow-wrap:anywhere;text-align:start}
+#campaign-dropdown .campaign-menu-actions{display:flex;flex-wrap:wrap;gap:.45rem;border-top:1px solid var(--line);padding-top:.7rem;margin-top:.7rem}
+.sidebar-content:has(#campaign-dropdown:popover-open) .caret{transform:rotate(180deg)}

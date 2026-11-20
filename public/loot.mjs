@@ -48,7 +48,10 @@ export function flyRewardToInventory(dialog){
   sprite.className='reward-flight';sprite.setAttribute('aria-hidden','true');
   sprite.style.left=(box.left+box.width/2-22)+'px';sprite.style.top=(box.top+box.height/2-22)+'px';
   if(image){const portrait=document.createElement('img');portrait.src=image.currentSrc||image.src;portrait.alt='';sprite.append(portrait);}
-  else sprite.textContent='◇';
+  else {
+   const icon=art.querySelector('.document-miniature');
+   if(icon)sprite.append(icon.cloneNode(true));else sprite.textContent='◇';
+  }
   host.append(sprite);
   const dx=tx-box.left-box.width/2,dy=ty-box.top-box.height/2;
   const animation=sprite.animate([{transform:'scale(1)',opacity:1},{transform:'translate('+dx*.43+'px,'+(dy*.43-32)+'px) scale(.84)',offset:.5},{transform:'translate('+dx+'px,'+dy+'px) scale(.22)',opacity:.15}],{duration:560,delay:Math.min(index,5)*45,easing:'ease-in-out',fill:'both'});

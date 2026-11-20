@@ -393,3 +393,20 @@ test('som do mapa perde agudos atrás da parede e volta à mesma reprodução ao
  assert.equal(sources[0].wallFilter.frequency.value,20000);assert.equal(sources[0].effectGain.gain.value,.6);
  client.dispose();
 });
+
+test('arquivo recebido tarde entra na posição da mesa e não reinicia após o fim',async()=>{
+ const offsets=[];
+ const decode=AudioContext.prototype.decodeAudioData,create=AudioContext.prototype.createBufferSource;
+ AudioContext.prototype.decodeAudioData=async()=>({duration:8});
+ AudioContext.prototype.createBufferSource=()=>({...audioNode(),start(time,offset){offsets.push(offset);}});
+ const client=campaignAudio(new Element(),async()=>new Response(new Uint8Array([1])),()=>{});
+ try{
+  const snapshot=row(1,null,false,1000);
+  client.sync(snapshot);client.toggle();
+  snapshot.state.audio.clips=[{id:'clip'}];snapshot.state.audio.cues=[{id:'event',sound:'clip',at:1000}];
+  client.sync({...snapshot,rev:2,serverTime:4500});await flush();
+  assert.equal(offsets.length,1);assert.ok(Math.abs(offsets[0]-3.5)<.1);
+  snapshot.state.audio.cues=[{id:'expired',sound:'clip',at:1000}];
+  client.sync({...snapshot,rev:3,serverTime:10000});await flush();assert.equal(offsets.length,1);
+ }finally{client.dispose();AudioContext.prototype.decodeAudioData=decode;AudioContext.prototype.createBufferSource=create;}
+});
