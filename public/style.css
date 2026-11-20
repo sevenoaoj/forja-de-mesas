@@ -563,3 +563,118 @@ dialog::backdrop{background:#080710c9}
 [data-theme-custom] :is(.nav-btn[aria-current=page],.brand-mark,.campaign-icon,.profile-icon){background:color-mix(in srgb,var(--theme-secondary) 18%,#171720);border-color:var(--line);color:var(--accent)}
 [data-theme-custom] .btn.primary:not(.sheet-roll-button){color:var(--theme-ink);background:var(--primary)}
 [data-theme-custom] .btn.primary:not(.sheet-roll-button):hover{filter:brightness(1.1)}
+
+.campaign-sheet{--edge:color-mix(in srgb,var(--frame) 60%,#434147);--paper:#241f1b;min-width:0}
+.campaign-theme-name{font:600 1.15rem var(--heading);color:color-mix(in srgb,var(--frame) 55%,white);margin:16px 0 8px;overflow-wrap:anywhere}
+.campaign-sheet.medieval{--heading:Georgia,serif;--corners:14px 3px;--back:repeating-linear-gradient(30deg,#302921 0 2px,#332b23 2px 5px)}
+.campaign-sheet.future{--heading:ui-monospace,monospace;--paper:#12212b;--corners:2px 12px;--back:repeating-linear-gradient(0deg,#111d28 0 3px,#1a2d38 3px 4px)}
+.campaign-sheet.noir{--heading:'Courier New',monospace;--paper:#222323;--corners:2px;--back:repeating-linear-gradient(90deg,#191919 0 7px,#252525 7px 8px)}
+.campaign-sheet :is(.sheet-mosaic[data-background],.sheet-stage){background:var(--back);border:2px solid var(--edge);border-radius:var(--corners);padding:clamp(6px,1vw,14px)}
+.campaign-sheet :is(.sheet-panel,.sheet-node-leaf){background:var(--paper);border-color:var(--edge);border-radius:var(--corners)}
+.campaign-sheet :is(.sheet-tile-header,.sheet-panel-header){font-family:var(--heading);background:color-mix(in srgb,var(--frame) 15%,var(--paper));border-bottom:1px solid var(--edge)}
+.campaign-sheet :is(.sheet-identity h1,.sheet-panel-header h2,.sheet-tile-header button){font-family:var(--heading)}
+
+/* Visual language of the campaign applies equally to the modular and standard sheets. */
+.campaign-sheet.medieval{
+  --paper:#29231f;--heading:var(--serif);--corners:12px 3px;
+  --back:linear-gradient(90deg,#21160e 0%,#57432b 2%,#453421 3%,#30231a 48%,#1e150e 50%,#3d2d1e 52%,#4b3926 98%,#241910);
+}
+.medieval.campaign-sheet :is(.sheet-panel-header,.sheet-tile-header){
+  color:#312316;background:radial-gradient(ellipse at top,#ffefd3,#d9bf92);border-block:3px double #846c46;
+}
+.medieval.campaign-sheet :is(.sheet-panel-header h2,.sheet-tile-header h2){
+  font:600 1.25rem/1.18 var(--heading);color:#3e241c;background:none;border:0;letter-spacing:.025em;
+}
+.medieval.campaign-sheet .sheet-tile-header h2:first-letter{color:#84362c;font-size:1.22em}
+.medieval.campaign-sheet .sheet-portrait{border:4px double #e2bf81;border-radius:48% 48% 16% 16%;box-shadow:0 0 0 3px #492f23,0 0 0 4px var(--edge)}
+.medieval.campaign-sheet .stat-tile{background:linear-gradient(145deg,#392d24,#201b18);border:3px double var(--edge)}
+.campaign-sheet.future{
+  --paper:#0d1b23;--corners:0 12px 0 0;
+  --back:linear-gradient(#54e4dc12 1px,transparent 1px) 0 0/18px 18px,linear-gradient(90deg,#54e4dc12 1px,transparent 1px) 0 0/18px 18px,#08181f;
+}
+.future.campaign-sheet :is(.sheet-panel-header,.sheet-tile-header){
+  background:repeating-linear-gradient(135deg,transparent 0 4px,#74edf34a 4px 6px) right top/28px 5px no-repeat,linear-gradient(90deg,#173841,#10252e);
+  border-inline-start:3px solid var(--edge);color:#b5f6ef;
+}
+.future.campaign-sheet :is(.sheet-panel-header h2,.sheet-tile-header h2){font:600 .85rem/1.4 var(--heading);letter-spacing:.09em;text-transform:uppercase;color:#b5f6ef;background:none;border:0}
+.future.campaign-sheet .sheet-portrait{border-radius:2px;border:2px solid #74cec9;outline:1px dashed var(--edge);outline-offset:4px}
+.future.campaign-sheet .stat-tile{background:linear-gradient(0deg,#173944,#0c1e26 55%);border-radius:2px;border-bottom:2px solid var(--edge);font-variant-numeric:tabular-nums}
+.future.campaign-sheet .stat-tile strong{font-family:var(--heading)}
+.campaign-sheet.noir{
+  --paper:#242322;--corners:1px;
+  --back:linear-gradient(155deg,transparent 60%,#0003 60% 63%,transparent 63% 70%,#0003 70% 73%,transparent 73%),#665947;
+}
+.noir.campaign-sheet :is(.sheet-panel-header,.sheet-tile-header){background:linear-gradient(92deg,#e8ddc8,#cfc1a8);color:#25211e;border-bottom:2px solid #84786a}
+.noir.campaign-sheet :is(.sheet-panel-header h2,.sheet-tile-header h2){font:700 .95rem/1.3 var(--heading);text-transform:uppercase;letter-spacing:.045em;color:#312a25;background:none;border:0;border-bottom:1px solid currentColor;border-radius:0}
+.noir.campaign-sheet .sheet-portrait{border:5px solid #e5dfd2;border-bottom-width:12px;border-radius:1px;transform:rotate(-2deg);box-shadow:2px 4px 7px #0008}
+.noir.campaign-sheet .stat-tile{background:#292825;border-radius:0;border:0;border-bottom:1px dashed #aa9980}
+.campaign-sheet :is(.sheet-tile-header .sheet-tile-button,.sheet-tile-header .sheet-drag-handle){background:#23242a;color:#faf7ee}
+[data-theme-sample]{--sheet-accent:#caa9fc;--sheet-deep:#503669;--sheet-bright:#ba99da;padding:12px;background:var(--back,#201c2b);border:1px solid var(--edge);border-radius:6px}
+[data-theme-sample] .campaign-theme-name{margin:0 0 9px}
+[data-theme-sample] .sheet-identity{display:flex;justify-content:center;align-items:center;padding:16px}
+[data-theme-sample] .sheet-portrait{width:52px;height:60px;flex:none}
+
+.campaign-sheet :is(.stress-panel,.sheet-inventory,.item-card){
+  background:var(--paper);border:1px solid var(--edge);border-radius:var(--corners)
+}
+.campaign-sheet :is(.stress-panel,.sheet-inventory)>header{
+  padding:.7rem 1rem;border-inline-start:3px solid var(--edge);background:var(--back);color:#faf5ef
+}
+.campaign-sheet :is(.stress-panel h2,.sheet-inventory h2,.item-name){font-family:var(--heading)}
+.campaign-sheet :is(.stress-region,.stress-adjust,.inventory-grid>.muted){background:var(--paper);border-radius:var(--corners)}
+.campaign-sheet .stress-region[aria-pressed=true]{background:color-mix(in srgb,var(--ink) 14%,var(--paper));border-color:var(--ink)}
+.campaign-sheet .stress-screen{background:var(--back);border-color:var(--edge);border-radius:var(--corners)}
+.campaign-sheet .item-art{background:radial-gradient(ellipse,color-mix(in srgb,var(--item-accent) 16%,transparent),transparent 68%),var(--back);border-color:var(--edge)}
+.campaign-sheet .item-card:is(:hover,:focus-within){border-color:var(--item-accent)}
+.medieval.campaign-sheet :is(.stress-screen,.item-art){border:4px double var(--edge);border-radius:28px 28px 4px 4px}
+.medieval.campaign-sheet :is(.stress-panel,.sheet-inventory)>header{background:#e6cfa7;color:#35271d;border-block:3px double #876b48}
+.future.campaign-sheet :is(.stress-region b,.stress-adjust output,.item-stock){font-family:var(--heading);font-variant-numeric:tabular-nums}
+.future.campaign-sheet :is(.stress-panel h2,.sheet-inventory h2,.item-category){text-transform:uppercase;letter-spacing:.07em}
+.noir.campaign-sheet .item-art{border:5px solid #ded5c3;border-bottom-width:12px;border-radius:1px}
+.noir.campaign-sheet .stress-region{border-bottom-style:dashed}
+.noir.campaign-sheet :is(.stress-panel,.sheet-inventory)>header{background:#dfd1b9;color:#302922;border-bottom:2px solid #807363}
+.campaign-sheet:is(.medieval,.noir) .sheet-inventory>header .muted{color:#504637}
+.campaign-sheet:is(.medieval,.noir) .stress-alert{color:#812a2a}
+
+.sheet-masthead{display:flex;align-items:center;gap:clamp(12px,3vw,28px);padding:clamp(12px,2vw,22px);color:color-mix(in srgb,var(--frame) 60%,#fff);background:var(--back)}
+.sheet-masthead svg{width:clamp(42px,6vw,64px);flex:none}
+.sheet-masthead .campaign-theme-name{margin:0;color:inherit;font:normal clamp(1.4rem,3vw,2.6rem)/1.1 var(--heading)}
+.medieval .sheet-masthead{border-block:4px double var(--edge);justify-content:center;text-align:center;background:radial-gradient(ellipse at top,#653338,#341c23 75%)}
+.medieval .sheet-masthead:after,.medieval .sheet-masthead:before{content:"";height:5px;width:min(8vw,80px);border-block:1px solid var(--edge)}
+.medieval.campaign-sheet .stress-screen{background:radial-gradient(ellipse at center,#ead9ae,#b59765);box-shadow:inset 0 0 22px #583e3160}
+.medieval.campaign-sheet .stress-orientation{fill:#463122}
+.medieval.campaign-sheet .stress-axis{stroke:#715132}
+.medieval.campaign-sheet .item-art{background:radial-gradient(ellipse,#554036,#241a18);box-shadow:inset 0 0 0 3px #34251c,inset 0 0 0 4px var(--edge)}
+.future .sheet-masthead{border-inline-start:5px solid var(--edge);box-shadow:inset 0 -1px #477077}
+.future .sheet-masthead:after{content:"";flex:1;height:16px;background:repeating-linear-gradient(90deg,transparent 0 5px,#669d9b 5px 6px) bottom right/100% 5px no-repeat;border-bottom:1px solid #496b70}
+.future.campaign-sheet .stress-screen{position:relative;overflow:hidden;background:radial-gradient(ellipse,#18404b77,transparent 68%),var(--back)}
+@media(prefers-reduced-motion:no-preference){
+.future.campaign-sheet .stress-screen:after{content:"";pointer-events:none;position:absolute;inset:0;background:linear-gradient(transparent 92%,#74eee312 99%,#74eee344);height:22%;animation:sheet-scan 7s linear infinite}
+@keyframes sheet-scan{from{top:-22%}to{top:100%}}
+}
+.future.campaign-sheet .item-art{outline:1px dashed #487378;outline-offset:-6px;border-radius:0 14px 0 0}
+.noir .sheet-masthead{color:#382e29;background:linear-gradient(115deg,#dbcdb3,#e8dfce 70%,#beaf93);border-left:8px solid var(--edge);box-shadow:inset 0 -3px #837561}
+.noir .sheet-masthead .campaign-theme-name{font-weight:bold;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:.18em}
+.noir.campaign-sheet .stress-screen{background:radial-gradient(ellipse at center,#414543,#141817 80%);border:6px solid #ded5c3;border-bottom-width:14px;border-radius:0}
+.noir.campaign-sheet .item-card{background:linear-gradient(120deg,#e6ddca,#d4c5aa);color:#302a25;border-radius:1px;box-shadow:2px 3px 0 #0004}
+.noir.campaign-sheet .item-card :is(.item-stock,.item-stock strong,.item-excerpt,.item-category,.item-name,.item-equipped,.item-uses){color:#352f29}
+.noir.campaign-sheet .item-card-footer{border-top:1px dashed #776c5c;padding-top:10px}
+.noir.campaign-sheet .item-card .item-art{background:radial-gradient(ellipse,#504b44,#282724);box-shadow:1px 3px 5px #0005}
+
+.sheet-masthead img{width:clamp(42px,6vw,64px);height:64px;object-fit:contain}
+.campaign-sheet[data-texture=grain]{--kit-pattern:radial-gradient(#fff9 .7px,transparent 1px) 0 0/5px 7px}
+.campaign-sheet[data-texture=grid]{--kit-pattern:linear-gradient(#9eecef88 1px,transparent 1px) 0 0/16px 16px,linear-gradient(90deg,#9eecef88 1px,transparent 1px) 0 0/16px 16px}
+.campaign-sheet[data-texture=lines]{--kit-pattern:repeating-linear-gradient(130deg,transparent 0 6px,#dccfab66 6px 7px)}
+.campaign-sheet[data-texture] :is(.sheet-masthead,.sheet-panel-header,.sheet-tile-header){isolation:isolate;position:relative}
+.campaign-sheet[data-texture] :is(.sheet-masthead,.sheet-panel-header,.sheet-tile-header):before{content:"";position:absolute;inset:0;width:auto;height:auto;border:0;z-index:-1;background:var(--kit-pattern,none);opacity:var(--texture-alpha,0);pointer-events:none}
+.stress-mark{display:block;max-width:100%;margin:.35rem auto;padding:.35em .65em;border:1px solid #e3978d;background:#462829;color:#ffe1d9;border-radius:5px;font-weight:700}
+.medieval .stress-mark{border:3px double #ddab80;background:#692e32;border-radius:15px 3px;font-family:Georgia,serif}
+.future .stress-mark{border-inline-start:4px solid #ff9d72;font-family:monospace}
+.noir .stress-mark{border:2px solid #863c35;color:#78322c;background:#ead6b9;font:700 .85rem monospace;text-transform:uppercase}
+#dialog[data-discovery=medieval]{border:4px double #b69860;background:linear-gradient(115deg,#382429,#231c1a);color:#f5e2bd}
+#dialog[data-discovery=medieval] .dialog-head{border-bottom:3px double #b69860;font-family:Georgia,serif}
+#dialog[data-discovery=future]{border:1px solid #61aaa9;border-inline-start-width:5px;background:linear-gradient(#6ce5ec09 1px,transparent 1px) 0 0/100% 6px,#0c1c26}
+#dialog[data-discovery=future] .dialog-head h2{font:600 1.4rem monospace;color:#bdfff6}
+#dialog[data-discovery=noir]{background:#282623;border:5px solid #a69983}
+#dialog[data-discovery=noir] .dialog-head{background:#dacdb5;color:#302820;padding:10px}
+#dialog[data-discovery=noir] .dialog-head h2{font-family:'Courier New',monospace}

@@ -28,7 +28,7 @@ export function sharingView(state,own){
   if(source.id===own.id){result.sent.push({id:grant.id,kind:grant.kind,materialId:entry.id,until:grant.until,label:grant.label});continue;}
   if(!knownTo(own,source)||!knownTo(source,own)||grant.group!==undefined&&(team(source)!==grant.group||team(own)!==grant.group)||!grant.recipients.some(r=>r.id===own.id&&r.member===own.ownerId))continue;
   const item=grant.kind==='note'?{title:entry.title,body:entry.body}:
-   Object.fromEntries(['name','kind','accent','description','properties','rarity','weight','value','portrait'].map(key=>[key,entry[key]]));
+   Object.fromEntries(['name','kind','accent','description','properties','photos','content','origin','categoryName','rarity','weight','value','portrait'].map(key=>[key,entry[key]]));
   result.received.push({id:grant.id,kind:grant.kind,until:grant.until,from:source.name,material:item});
  }
  return result;

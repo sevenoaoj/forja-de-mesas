@@ -221,3 +221,91 @@ test('janela criada pelo mestre segura o token e deixa ver o outro lado do vão'
  assert.equal(moved.state.tokens.find(t=>t.id==='lyra').x,3);
  assert.equal((await r.action('tableDoorSet',{id:pane.id,open:true})).status,400);
 });
+
+test('tema das fichas pertence à campanha e só o mestre pode alterá-lo',async()=>{
+ const r=await room(),theme={style:'future',trimColor:'#709daf',name:'Estação Atlas'};
+ assert.equal((await r.action('campaignSheetTheme',theme,r.member)).status,403);
+ await ok(await r.action('campaignSheetTheme',theme));
+ assert.deepEqual((await r.view(r.member)).state.sheetTheme,theme);
+ assert.equal((await r.action('campaignSheetTheme',{...theme,trimColor:'invalid'})).status,400);
+ await ok(await r.action('campaignSheetTheme',{style:'classic'}));
+ assert.equal((await r.view(r.member)).state.sheetTheme,undefined);
+});
+
+test('kit da campanha é compartilhado e o emblema de facção só chega aos membros',async()=>{
+ const r=await room(),emblem='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZp8AAAAASUVORK5CYII=';
+ await ok(await r.action('campaignSheetTheme',{style:'noir',trimColor:'#556677',texture:'grain',intensity:42}));
+ const created=await ok(await r.action('partySave',{name:'Arquivo',emblem}));
+ const group=created.state.parties.at(-1);
+ await ok(await r.action('characterParty',{id:'lyra',party:group.id,revealed:false}));
+ const own=(await r.view(r.member)).state,rival=(await r.view(r.other)).state;
+ assert.equal(own.partyEmblem,emblem);assert.equal(own.sheetTheme.intensity,42);
+ assert.ok(!JSON.stringify(rival).includes(emblem));
+ assert.equal((await r.action('partySave',{id:group.id,name:'Arquivo',emblem:'invalid'})).status,400);
+});
+
+test('região retangular registra entrada confirmada e a área da habilidade é compartilhada',async()=>{
+ const r=await room();
+ await ok(await r.action('tokenMove',{id:'lyra',x:1,y:1}));
+ await ok(await r.action('explorePlace',{kind:'clue',mode:'auto',label:'Escada',description:'Degraus antigos',x:5,y:3,radius:1,bounds:{w:4,h:2}}));
+ await ok(await r.action('tokenMove',{id:'lyra',x:3,y:3},r.member));
+ const gm=await r.view(),player=await r.view(r.member);
+ assert.ok(gm.state.table.exploration[0].lastEntry.id);
+ assert.equal(player.state.table.exploration[0].label,'Escada');
+ assert.equal(player.state.table.exploration[0].lastEntry,undefined);
+ await ok(await r.action('tableEffect',{kind:'cone',color:'#8ad5dc',x:2,y:3,toX:6,toY:3},r.member));
+ assert.equal((await r.view(r.other)).state.table.drawings.at(-1).kind,'cone');
+});
+test('pré-carga da cinemática exige autorização e mantém o relatório privado',async()=>{
+ const r=await room(),state=r.rows.get(r.created.id).state;
+ state.cinematicLibrary=[{id:'clip',type:'video/webm'}];
+ state.cinematicCues=[{id:'cue',name:'Abertura',mediaId:'clip',party:'a'}];
+ state.characters.find(c=>c.id==='lyra').party='a';
+ assert.equal((await r.action('mediaCheckStart',{cue:'cue'},r.member)).status,403);
+ await ok(await r.action('mediaCheckStart',{cue:'cue'}));
+ const sync=async key=>(await(await r.call(r.base+'/sync','GET',key)).json()).state.mediaCheck;
+ const check=await sync(r.member);
+ assert.deepEqual(check.assets,['clip']);assert.equal(check.players,undefined);
+ assert.equal(await sync(r.other),null);
+ await ok(await r.action('mediaCheckReport',{id:check.id,status:'Carregado'},r.member));
+ assert.equal((await sync(r.created.key)).players[0].status,'Carregado');
+ assert.equal((await r.view(r.other)).state.mediaCheck,undefined);
+});
+
+test('passagens agrupam entradas e só mudam a cena com aprovação do mestre',async()=>{
+ const r=await room(),initial=(await r.view()).state,from=initial.sceneId;
+ const created=await ok(await r.action('sceneCreate',{name:'Subsolo',sessionId:initial.sceneLibrary.sessions[0].id}));
+ const target=created.state.sceneLibrary.scenes.find(s=>s.name==='Subsolo').id;
+ await ok(await r.action('tokenMove',{id:'lyra',x:1,y:2}));
+ await ok(await r.action('explorePlace',{kind:'region',label:'Escada',x:4,y:2.5,radius:1,bounds:{w:1,h:2},event:'scene',target,sceneId:from}));
+ assert.ok(!(await r.view(r.member)).state.table.exploration.some(p=>p.kind==='region'));
+ const moved=await ok(await r.action('tokenMove',{id:'lyra',x:7,y:2,sceneId:from},r.member));
+ assert.equal(moved.state.sceneId,from);assert.equal(moved.state.travelRequests,undefined);
+ const [request]=(await r.view()).state.travelRequests;
+ await ok(await r.action('tokenMove',{id:'lyra',x:1,y:2,sceneId:from},r.member));
+ assert.deepEqual((await r.view()).state.travelRequests,[request]);
+ assert.equal((await r.action('regionTravelDecision',{id:request.id,approve:true},r.member)).status,403);
+ await ok(await r.action('regionTravelDecision',{id:request.id,approve:true}));
+ assert.equal((await r.view(r.other)).state.sceneId,target);
+ assert.equal((await r.action('regionTravelDecision',{id:request.id,approve:true})).status,409);
+ await ok(await r.action('sceneActivate',{id:from}));
+ await ok(await r.action('tokenMove',{id:'lyra',x:7,y:2,sceneId:from},r.member));
+ const [next]=(await r.view()).state.travelRequests;
+ await ok(await r.action('regionTravelDecision',{id:next.id,approve:false}));
+ await ok(await r.action('tokenMove',{id:'lyra',x:1,y:2,sceneId:from},r.member));
+ assert.equal((await r.view()).state.travelRequests,undefined);
+ assert.equal((await r.view(r.member)).state.sceneId,from);
+});
+
+test('gatilho de cinemática toca uma única vez por entrada',async()=>{
+ const r=await room();
+ await ok(await r.action('cinematicSave',{name:'Visão',text:'A porta desperta',intro:1,duration:8}));
+ const cue=(await r.view()).state.cinematicCues[0];
+ await ok(await r.action('tokenMove',{id:'lyra',x:1,y:1}));
+ await ok(await r.action('explorePlace',{kind:'region',label:'Portal',x:4,y:2,radius:1,bounds:{w:4,h:4},event:'cinematic',target:cue.id}));
+ await ok(await r.action('tokenMove',{id:'lyra',x:3,y:2},r.member));
+ const run=(await r.view(r.member)).state.cinematic;
+ assert.equal(run.text,cue.text);
+ await ok(await r.action('tokenMove',{id:'lyra',x:4,y:2},r.member));
+ assert.equal((await r.view(r.member)).state.cinematic.id,run.id);
+});

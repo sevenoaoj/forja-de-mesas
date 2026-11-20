@@ -1,7 +1,7 @@
 import {clockPanel,clockEditor,recapPanel,recapEditor} from './session-log-ui.mjs';
 import {lootPlacement,lootPreview,createLootRewards,flyRewardToInventory} from './loot.mjs';
 import {renderSheetResource,sheetColorsForm,sheetColorsPayload,createResourceAnimations} from './sheet-resources.mjs';
-import {renderInventory,sheetInventory,itemEditor,itemGrantForm,itemDetails,itemManageForm,itemPortrait,itemTheme,updateItemAccent} from './inventory.mjs';
+import {phoneClick,preparePhonePhotos,updateReadingFields,renderInventory,sheetInventory,itemEditor,itemGrantForm,itemDetails,itemManageForm,itemPortrait,itemTheme,updateItemAccent} from './inventory.mjs';
 import {createSheetHistoryController} from './sheet-history-controller.mjs';
 import {createAccessStorage,restoreCampaignIdentity} from './player-access.mjs';
 import {createInlineSheetEditor} from './sheet-inline.mjs';
@@ -91,8 +91,29 @@ let gmSceneId='',sceneUI={open:false,session:'all',query:''};
 const sheetMosaic=createSheetMosaic({render,report:toast});
 const resourceAnimations=createResourceAnimations();
 const diceDisplay=createDiceDisplay($('#dice-display'));
+let preloadSession=null,preloadStatus=null;
+const preloadBlobs=new Map();
+function cachedMedia(id){return preloadSession?.owner===credentials&&preloadBlobs.get(id);}
+async function mediaCheckSync(check,access){
+ if(current.master){
+   preloadStatus=check;
+   const list=dialog.querySelector('[data-media-check]');
+   if(list)list.innerHTML=(check?.players||[]).map(p=>'<p>'+esc(p.name)+' · '+esc(p.status)+'</p>').join('')||'Nenhum participante confirmado.';
+   return;
+ }
+ if(!check){preloadSession=null;preloadBlobs.clear();return;}
+ if(preloadSession?.owner===access&&preloadSession.id===check.id)return;
+ const session=preloadSession={owner:access,id:check.id};preloadBlobs.clear();
+ let status='Carregado';
+ try{for(const id of check.assets){
+   const blob=await request('/'+access.id+'/asset/'+id,{},access).then(r=>r.blob());
+   if(preloadSession!==session||credentials!==access)return;
+   preloadBlobs.set(id,blob);
+ }}catch{status='Falhou';}
+ if(preloadSession===session&&credentials===access)try{await post('/'+access.id+'/action',{action:'mediaCheckReport',data:{id:check.id,status}},access);}catch{if(preloadSession===session)preloadSession=null;}
+}
 const cinematicStage=createCinematicStage($('#cinematic-stage'),{
-  load:(id,signal)=>request(campaignPath()+'/asset/'+id,{signal}).then(r=>r.blob()),
+  load:(id,signal)=>cachedMedia(id)?Promise.resolve(cachedMedia(id)):request(campaignPath()+'/asset/'+id,{signal}).then(r=>r.blob()),
   trackPreferences:()=>({enabled:audioPlayer.enabled,volume:audioPlayer.musicVolume/100}),
   stop:id=>action('cinematicStop',{id}),report:toast
 });
@@ -124,7 +145,7 @@ const tabletop = createTabletop({
   openLoot:id=>handlers.lootOpen(id),
   placePoint:openPointPlacement,explorationChanged:scheduleMotionSync,
   report:toast,
-  requestAsset:id=>request(campaignPath()+'/asset/'+id)
+  requestAsset:id=>cachedMedia(id)?Promise.resolve(new Response(cachedMedia(id))):request(campaignPath()+'/asset/'+id)
 });
 
 function toast(message) {
@@ -154,7 +175,7 @@ function setCurrent(row) {
   if(inlineSheet.editing&&(row.id!==current.id||!row.master&&!row.state.characters.some(c=>c.id===inlineSheet.characterId&&c.access==='full')))inlineSheet.cancel();
   const nextSceneIdentity=(row.id||'')+'/'+(credentials?.key||'');
   if(sceneIdentity===nextSceneIdentity&&row.rev<latestRollRevision)row={...row,state:{...row.state,rolls:current.state.rolls}};
-  if(sceneIdentity!==nextSceneIdentity){checkStamp='';sceneIdentity=nextSceneIdentity;sceneRevision=-1;gmSceneId='';sceneUI={open:false,session:'all',query:''};}
+  if(sceneIdentity!==nextSceneIdentity){preloadStatus=null;preloadSession=null;preloadBlobs.clear();checkStamp='';sceneIdentity=nextSceneIdentity;sceneRevision=-1;gmSceneId='';sceneUI={open:false,session:'all',query:''};}
   if(row.rev<sceneRevision&&current.id===row.id)row={...row,state:{...row.state,checkRequests:current.state.checkRequests,sessionLog:{...row.state.sessionLog,clocks:current.state.sessionLog?.clocks||[]},table:current.state.table,tokens:current.state.tokens,map:current.state.map,scene:current.state.scene,sceneId:current.state.sceneId,activeSceneId:current.state.activeSceneId,sessionName:current.state.sessionName,sceneLibrary:current.state.sceneLibrary}};
   else {sceneRevision=row.rev;checkStamp=row.checkVersion||'';}
   current=row;cinematicStage.sync(row);updateInvestigationAlert(row);scheduleSharedExpiry(row);showInvestigationReceipt(row);
@@ -196,8 +217,10 @@ function receiveTableEvent(event){
   if(!credentials)return;
   if(event.type==='scene'){
     if(event.id!==current.id||event.rev<sceneRevision)return;
+    if(current.master&&gmSceneId===current.state.activeSceneId&&event.state?.activeSceneId&&gmSceneId!==event.state.activeSceneId){void viewScene(event.state.activeSceneId);return;}
     if(current.master&&gmSceneId&&event.state?.sceneId!==gmSceneId&&event.state?.sceneLibrary?.scenes.some(scene=>scene.id===gmSceneId))return;
     if(event.checkVersion&&event.state?.checkRequests)checkStamp=event.checkVersion;
+    const changedScene=event.state?.sceneId!==current.state.sceneId;
     sceneRevision=event.rev;
     current={...current,state:{...current.state,...event.state}};
     if(event.state?.sessionClocks&&current.state.sessionLog){
@@ -206,7 +229,7 @@ function receiveTableEvent(event){
     if(current.master&&event.state?.sceneId)gmSceneId=event.state.sceneId;
     const row={...currentView(),rev:event.rev,rollVersion:event.rollVersion,checkVersion:checkStamp};
     observeRolls(row);updateInvestigationAlert(current);showInvestigationReceipt(row);
-    if(tableVisible()){if(!tabletop.syncScene?.(row)&&!tabletop.isInteracting()&&!dialog.open)render();else syncSceneOrganizer();}
+    if(tableVisible()){if(!tabletop.syncScene?.(row)&&(changedScene||!tabletop.isInteracting()&&!dialog.open))render();else syncSceneOrganizer();}
     if(event.needsCharacter!==undefined&&(event.needsCharacter!==current.needsCharacter||event.characterId!==current.characterId))refresh();
   }else if(event.type==='tokenPreview'&&tableVisible()&&(!event.sceneId||event.sceneId===current.state.sceneId))tabletop.receiveRealtime?.(event);
   else if(event.type==='closed'){tableLive.disconnect();refresh();}
@@ -264,6 +287,7 @@ async function action(name,data) {
   if(credentials!==access)return;
   // Preserve the private pickup receipt if a newer scene snapshot arrived first.
   if(row.rev<current.rev)return ['lootCollect','checkRespond','exploreInvestigate'].includes(name)?row:undefined;
+  if(current.master&&gmSceneId===current.state.activeSceneId&&row.state.activeSceneId&&row.state.activeSceneId!==gmSceneId){await viewScene(row.state.activeSceneId);return row;}
   if(current.master&&gmSceneId&&row.state.sceneId!==gmSceneId&&row.state.sceneLibrary?.scenes.some(scene=>scene.id===gmSceneId)){refresh();return row;}
   setCurrent(row);
   if(name==='journalSave'&&data.canvasPoint){gmView.folder='';gmView.prepQuery='';gmView.selectedNotes=[row.state.journal.at(-1).id];}
@@ -350,7 +374,7 @@ function prepMapControls(){
     return entry?[button(ref.kind==='character'?'Colocar '+entry.name:ref.kind==='item'?'Colocar '+entry.name:'Ler '+entry.title,{character:'prepToken',item:'lootPlace',note:'prepRead'}[ref.kind],'small','',entry.id)]:[];
   });
   const live=current.state.sceneId===current.state.activeSceneId;
-  return button('‹ Voltar ao roteiro','prepReturn','small')+'<h2>'+esc(current.state.sessionName)+' · '+esc(current.state.scene)+'</h2><p>'+(live?'Cena ao vivo. As alterações aparecem para os jogadores.':'Preparação privada. Os jogadores continuam na cena ao vivo.')+'</p>'+
+  return button('Verificar carregamento','mediaCheckDesk','small')+button('‹ Voltar ao roteiro','prepReturn','small')+'<h2>'+esc(current.state.sessionName)+' · '+esc(current.state.scene)+'</h2><p>'+(live?'Cena ao vivo. As alterações aparecem para os jogadores.':'Preparação privada. Os jogadores continuam na cena ao vivo.')+'</p>'+
     (live?button('Preparar uma cópia privada','prepMapCopy','small','',current.state.sceneId):button('Mostrar esta cena aos jogadores','sceneActivate','small','',current.state.sceneId))+
     '<details data-prep-tools><summary>Materiais do roteiro</summary><div class="actions">'+buttons.join('')+button('Criar NPC','prepNpc','small','plus')+button('Criar item','prepItem','small','plus')+'</div></details>';
 }
@@ -476,8 +500,10 @@ function inlineIdentity(character){
 }
 
 function sheetPortraitMarkup(character){
+  const stress=bodyStressWithHead(character.bodyStress),labels=stressRegionsFor(stress?.mode);
+  const marks=stress?.enabled?Object.entries(stress.regions).filter(([key,part])=>labels[key]&&part.limit>0&&part.value>=part.limit).map(([key])=>'<button class="stress-mark" data-act="bodyStressSelect" data-id="'+esc(key)+'">'+esc(labels[key])+' no limite</button>').join(''):'';
   return '<div class="sheet-portrait"><span aria-hidden="true">'+esc(character.name[0]?.toUpperCase()||'✧')+'</span>'+
-    (character.portrait?'<img alt="" data-portrait="'+esc(character.portrait.id)+'" hidden>':'')+'</div>';
+    (character.portrait?'<img alt="" data-portrait="'+esc(character.portrait.id)+'" hidden>':'')+'</div>'+marks;
 }
 
 function sheetGeneral(character,state) {
@@ -523,7 +549,7 @@ function sheetSkillList(character,state) {
 
 function sheetAbilitiesMarkup(character){return ((character.abilities||[]).length?character.abilities.map(ability=>'<article class="ability-card">'+inlineValue(character,'','name',ability.name,'<h3>'+esc(ability.name)+'</h3>','nome da habilidade','name','abilities',ability.id)+
       inlineValue(character,'','long',ability.description||'','<p>'+esc(ability.description||'Adicionar descrição')+'</p>','descrição da habilidade','description','abilities',ability.id)+(ability.sourcePage?'<a class="btn small" href="'+dndBook+'#page='+ability.sourcePage+'" target="_blank" rel="noopener noreferrer">Ver no livro ↗</a>':'')+(character.dnd&&ability.id.startsWith('spell-')?button('Conjurar','dndCast','small primary','',character.id+'/'+ability.id):'')+
-      (sheetView.editing?button('Opções da habilidade','sheetAbility','small','',ability.id):'')+'</article>').join(''):'<p class="sheet-empty">Nenhuma habilidade cadastrada.</p>');}
+      button('Área na mesa','abilityArea','small','',ability.id)+(sheetView.editing?button('Opções da habilidade','sheetAbility','small','',ability.id):'')+'</article>').join(''):'<p class="sheet-empty">Nenhuma habilidade cadastrada.</p>');}
 
 function sheetCompetencies(character,state) {
   const isSkills=sheetView.tab==='skills';
@@ -655,16 +681,44 @@ function gmResourcePanel(state,character){
   return '<section class="sheet-panel"><div class="sheet-panel-header"><h2>Recursos privados do mestre</h2>'+button('Adicionar recurso privado','gmResourceEdit','small','plus')+'</div>'+ (bars?'<div class="sheet-body">'+bars+'</div>':'')+'</section>';
 }
 
+// Small line engravings share the frame color selected by the GM.
+const sheetEngravings={
+  medieval:'<path d="M32 5 51 12v17c0 13-9 22-19 29-10-7-19-16-19-29V12Z M32 10l14 5v14c0 10-6 18-14 24-8-6-14-14-14-24V15Z"/><path d="M32 16v25m-6-17 6-7 6 7m-14 8q0-12 8 0 8-12 8 0m-15 3h14M9 20Q0 37 17 47m38-27q9 17-8 27"/>',
+  future:'<circle cx="32" cy="32" r="19" stroke-dasharray="18 4 42 6"/><ellipse cx="32" cy="32" rx="30" ry="9" transform="rotate(-32 32 32)"/><circle cx="32" cy="32" r="6"/><path d="M4 15V5h11m34 0h10v10m0 34v10H49m-34 0H5V49"/>',
+  noir:'<g transform="rotate(-14 32 32)"><path d="M12 8h35v45H12z M17 13h25v23H17z M16 42h21m-21 5h13"/><path d="m20 32 6-9 4 4 4-7 6 12Z"/></g><circle cx="43" cy="39" r="11"/><path d="m51 47 10 12m-13-10 10 12"/>'
+};
+function emblemField(){return '<label>Enviar emblema<input name="emblemFile" type="file" accept="image/png,image/jpeg,image/webp"></label><label><input type="checkbox" name="clearEmblem"> Remover emblema atual</label>';}
+async function readEmblem(data,existing){
+ const file=dialog.querySelector('[name=emblemFile]')?.files?.[0];
+ delete data.emblemFile;
+ if(!file)return data.clearEmblem?'':existing||'';
+ const bitmap=await createImageBitmap(file);
+ try{
+   const canvas=document.createElement('canvas'),scale=Math.min(1,64/Math.max(bitmap.width,bitmap.height));
+   canvas.width=Math.max(1,Math.round(bitmap.width*scale));canvas.height=Math.max(1,Math.round(bitmap.height*scale));
+   canvas.getContext('2d').drawImage(bitmap,0,0,canvas.width,canvas.height);return canvas.toDataURL('image/png');
+ }finally{bitmap.close();}
+}
+function themeMasthead(style,title,emblem){
+  if(/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(emblem))return '<div class="sheet-masthead"><img alt="" src="'+emblem+'"><p class="campaign-theme-name">'+esc(title)+'</p></div>';
+  return '<div class="sheet-masthead"><svg aria-hidden="true" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.6">'+sheetEngravings[style]+'</svg><p class="campaign-theme-name">'+esc(title)+'</p></div>';
+}
+function campaignThemeStart(state,showName=false){
+  const base=state.sheetTheme;
+  const themed=base&&['medieval','future','noir'].includes(base.style)&&/^#[0-9a-f]{6}$/i.test(base.trimColor);
+  return '<div'+(themed?' class="campaign-sheet '+base.style+'" style="--frame:'+base.trimColor+';--texture-alpha:'+Math.max(0,Math.min(1,Number(base.intensity||0)/100))+'" data-texture="'+(['grain','grid','lines'].includes(base.texture)?base.texture:'')+'"':'')+'>'+(showName&&themed?themeMasthead(base.style,base.name||state.name,state.parties?.find(g=>g.id===currentSheet()?.party)?.emblem||state.partyEmblem||base.emblem):'');
+}
+
 function sheets(state) {
   const character=currentSheet();
   if (!character) return head('Fichas universais','Crie um personagem ou abra sua ficha para jogar.',
-    button('Modelos salvos','sheetTemplates','small')+(current.master||!state.sheetModelVersion||state.ruleset==='dnd-2024'?button('Criar personagem D&D','dndCreate','small'):'')+(current.master?button('Grupos rivais','partyRoster','small')+button('Modelo da campanha','schema')+(state.characters.some(c=>c.masteries?.length)?button('Nova sessão: renovar maestrias','sheetMasteryRefresh'):''):'')+button(current.master?'Nova ficha':'Minha ficha','character','primary','plus'))+characterCards(state.characters);
+    button('Modelos salvos','sheetTemplates','small')+(current.master||!state.sheetModelVersion||state.ruleset==='dnd-2024'?button('Criar personagem D&D','dndCreate','small'):'')+(current.master?button('Grupos rivais','partyRoster','small')+button('Tema das fichas','campaignSheetTheme','small')+button('Modelo da campanha','schema')+(state.characters.some(c=>c.masteries?.length)?button('Nova sessão: renovar maestrias','sheetMasteryRefresh'):''):'')+button(current.master?'Nova ficha':'Minha ficha','character','primary','plus'))+characterCards(state.characters);
   sheetMosaic.sync(state,character,current.id+'/'+character.id+'/'+Boolean(current.master));
   const custom=sheetMosaic.editing||sheetView.layoutView==='custom';
   const viewButton=(id,label)=>'<button type="button" class="btn small '+(custom===(id==='custom')?'primary':'')+'" data-act="sheetReadingView" data-id="'+id+'" aria-pressed="'+(custom===(id==='custom'))+'" '+(sheetMosaic.editing?'disabled':'')+'>'+label+'</button>';
   const toolbar='<div class="sheet-toolbar"><div>'+button(gmView.sheetReturn===character.id?'‹ Voltar ao escudo':'‹ Todas as fichas','sheetBack','ghost small')+(current.master?(state.journal||[]).filter(n=>n.characterIds?.includes(character.id)).map(n=>button(n.title,'prepRead','small','',n.id)).join(''):'')+(!character.dnd?button('Salvar como modelo','sheetTemplateSave','small','',character.id):'')+button('Modelos salvos','sheetTemplates','small')+button('Histórico','sheetHistory','small','',character.id)+'<p class="muted sheet-campaign">'+esc(state.name)+'</p></div><div class="actions">'+viewButton('custom','Personalizada')+viewButton('standard','Padronizada')+(sheetMosaic.editing?'':button('Cores e recursos','sheetColors','small'))+(sheetMosaic.editing?'<button type="button" class="btn small" disabled>Organizando</button>':button('Organizar','sheetLayoutBegin','small'))+(current.master?(character.characterType!=='npc'&&state.parties?.length?button(state.parties.find(g=>g.id===character.party)?.name||'Definir grupo','characterParty','small','',character.id):'')+button('Estresse corporal','bodyStressConfig','small')+button(character.characterType==='npc'?'Tipo: NPC':'Tipo: Jogador','characterType','small')+button(character.hidden?'Mostrar aos jogadores':'Ocultar dos jogadores','characterVisibility','small'):'')+'</div></div>';
   const editing=custom&&sheetView.editing?'<div class="actions mosaic-data-actions">'+button('Personalizar campos','sheetFields','small')+button('Adicionar atributo','sheetFields','small','plus','number')+button('Adicionar recurso','sheetFields','small','plus','counter')+button(character.portrait?'Trocar retrato':'Enviar retrato','sheetPortrait','small')+'</div>':'';
-  return toolbar+(custom?'<p class="sheet-view-note">Visualização personalizada · Clique nos valores para editar. Enter salva; Escape cancela. Para textos longos, use Ctrl+Enter ou saia do campo.</p>'+editing+(sheetMosaic.editing?renderSheetLayoutEditor(state,character,sheetMosaic.appearance,sheetMosaic.canUndo):'')+renderSheetMosaic(state,character,sheetMosaic.appearance,{editing:sheetMosaic.editing,renderModule:id=>sheetModuleContent(id,character,state)}):'<p class="sheet-view-note">Visualização padronizada · Clique em um valor para editar. Enter salva; Escape cancela. Recursos usam atual/máximo, como 8/10.</p><div class="sheet-stage theme-'+esc(character.color)+'" style="'+sheetThemeStyle(state,character)+'" aria-label="Ficha de '+esc(character.name)+'">'+sheetGeneral(character,state)+sheetCompetencies(character,state)+sheetDice(character,state)+'</div>')+(current.master?gmResourcePanel(state,character):'')+(character.access==='full'||current.master?bodyStressPanel(character)+sheetInventory(character,currentView(),gmUI()):'');
+  return toolbar+campaignThemeStart(state,true)+(custom?'<p class="sheet-view-note">Visualização personalizada · Clique nos valores para editar. Enter salva; Escape cancela. Para textos longos, use Ctrl+Enter ou saia do campo.</p>'+editing+(sheetMosaic.editing?renderSheetLayoutEditor(state,character,sheetMosaic.appearance,sheetMosaic.canUndo):'')+renderSheetMosaic(state,character,sheetMosaic.appearance,{editing:sheetMosaic.editing,renderModule:id=>sheetModuleContent(id,character,state)}):'<p class="sheet-view-note">Visualização padronizada · Clique em um valor para editar. Enter salva; Escape cancela. Recursos usam atual/máximo, como 8/10.</p><div class="sheet-stage theme-'+esc(character.color)+'" style="'+sheetThemeStyle(state,character)+'" aria-label="Ficha de '+esc(character.name)+'">'+sheetGeneral(character,state)+sheetCompetencies(character,state)+sheetDice(character,state)+'</div>')+(current.master?gmResourcePanel(state,character):'')+(character.access==='full'||current.master?bodyStressPanel(character)+sheetInventory(character,currentView(),gmUI()):'')+'</div>';
 }
 
 const themeDefaults={primary:'#b994ff',secondary:'#bd9afc'};
@@ -698,7 +752,7 @@ const screens = {
   settings:()=>'<h1>Configurações</h1><section class="panel"><h2>Aparência</h2><p>As cores são pessoais e ficam salvas neste navegador.</p>'+Object.entries({primary:'Cor primária · botões e ações',secondary:'Cor secundária · navegação e destaques'}).map(([key,label])=>'<label class="theme-field"><input type="color" data-theme-color="'+key+'" value="'+theme[key]+'"> '+label+'</label>').join('')+'<button class="btn" data-theme-reset>Restaurar roxo original</button></section>',
   home,
   sheets,
-  table, shield, library, inventory:()=>sharedList('item')+renderInventory(currentView(),gmUI(),inventoryView), journal:()=>sharedList('note')+renderJournal(currentView(),gmUI(),journalView), audio:audioScreen
+  table, shield, library, inventory:()=>campaignThemeStart(current.state)+sharedList('item')+renderInventory(currentView(),gmUI(),inventoryView)+'</div>', journal:()=>sharedList('note')+renderJournal(currentView(),gmUI(),journalView), audio:audioScreen
 };
 
 function campaignList() {
@@ -811,7 +865,10 @@ function applyPortraits(scope=main,receiptItems=[]) {
   }
 }
 
-function modal(title,content,form) {
+function modal(title,content,form,discovery=false) {
+  delete dialog.dataset.discovery;
+  const style=current?.state?.sheetTheme?.style;
+  if((discovery||['Item coletado','Itens recebidos'].includes(title))&&Object.hasOwn(sheetEngravings,style))dialog.dataset.discovery=style;
   delete dialog.dataset.lootReward;
   dialog.style.removeProperty('--item-accent');
   delete dialog.dataset.inventoryId;delete dialog.dataset.inventoryVersion;delete dialog.dataset.itemView;delete dialog.dataset.sharedRead;
@@ -943,7 +1000,7 @@ function editSheetEntry(category,id) {
       '<p class="muted">Ao selecionar um atributo, o valor dele será usado como base.</p>'+
       '<div class="form-grid">'+number('base','Base manual')+number('bonus','Bônus')+number('other','Outros')+'</div>'+
       '<label class="check"><input type="checkbox" name="favorite" value="true" '+(entry?.favorite?'checked':'')+'> Favorita</label>'
-    : area('description','Descrição',entry?.description,'maxlength="4000"');
+    : area('description','Descrição',entry?.description,'maxlength="4000"')+select('effectShape','Área de efeito',{'':'Definir ao usar',cone:'Cone de 60°',beam:'Linha',burst:'Círculo'},entry?.effectShape||'')+input('effectLength','Alcance na unidade da cena',entry?.effectLength||6,'number','min=".01" max="10000" step="any"');
   modal((entry?'Editar ':'Nova ')+label,'<input type="hidden" name="category" value="'+category+'"><input type="hidden" name="entry" value="'+esc(entry?.id)+'">'+
     input('name','Nome',entry?.name,'text','required maxlength="80"')+details+submit('Salvar')+
     (entry?'<div>'+button('Remover '+label,'sheetEntryDelete','small danger','',category+'/'+entry.id)+'</div>':''),'sheetEntry');
@@ -1108,10 +1165,22 @@ function showInvestigationReceipt(row){
  },{once:true});
 }
 let investigationMarkup='';
+const regionNotices=new Set();
+function regionAlerts(row){
+ if(!row.master)return;
+ for(const p of row.state.table?.exploration||[]){
+   const event=p.lastEntry;
+   if(p.event==='scene'||p.destination||!event||Date.now()-event.at>15000||regionNotices.has(event.id))continue;
+   regionNotices.add(event.id);if(regionNotices.size>100)regionNotices.delete(regionNotices.values().next().value);
+   toast(event.name+' entrou em '+p.label);
+ }
+}
 function updateInvestigationAlert(row){
+ regionAlerts(row);
  const host=$('#investigation-inbox');if(!host)return;
  const pending=row.master?row.state?.investigations||[]:[];
- const html=pending.length?'<strong>Investigação aguardando o mestre</strong>'+pending.map(r=>button(r.name+' · '+r.label,'investigationReview','small','',r.id)).join(''):'';
+ const travel=(row.master?row.state?.travelRequests||[]:[]).map(r=>'<div><strong>Pedido de troca de mapa</strong><p>'+esc(r.name)+' atravessou '+esc(r.label)+'. Levar toda a mesa para '+esc(r.destination)+'?</p>'+button('Trocar mapa','travelApprove','primary small','',r.id)+button('Recusar','travelDecline','small','',r.id)+'</div>').join('');
+ const html=travel+(pending.length?'<strong>Investigação aguardando o mestre</strong>'+pending.map(r=>button(r.name+' · '+r.label,'investigationReview','small','',r.id)).join(''):'');
  if(investigationMarkup===html)return;
  investigationMarkup=html;host.innerHTML=html;host.hidden=!html;
  if(html&&host.showPopover&&!host.matches(':popover-open'))host.showPopover();
@@ -1138,6 +1207,12 @@ function sharedList(kind){
  return grants.length?'<section class="panel"><h2>Compartilhados comigo</h2><div class="actions">'+grants.map(g=>button((g.material.title||g.material.name)+' · '+g.from,'sharedRead','small','',g.id)).join('')+'</div></section>':'';
 }
 function openPointPlacement(kind,point,sceneId){
+  if(kind==='region'){
+    const choices={alert:'Avisar o mestre'};
+    for(const scene of current.state.sceneLibrary.scenes)if(scene.id!==sceneId)choices['scene/'+scene.id]='Pedir troca de mapa · '+scene.name;
+    for(const cue of current.state.cinematicCues||[])choices['cinematic/'+cue.id]='Exibir cinemática · '+cue.name;
+    modal('Criar gatilho de entrada',input('label','Nome do gatilho','','text','maxlength="80" required')+select('trigger','Quando um personagem entrar',choices,'alert')+input('sceneId','',sceneId,'hidden')+Object.entries(point).map(([k,v])=>input(k,'',v,'hidden')).join('')+submit('Criar gatilho'),'regionCreate');return;
+  }
   const sound=kind==='sound';
   const files=current.state.audio?.clips||[];
   const title=sound?'Colocar som local':'Colocar pista';
@@ -1204,10 +1279,14 @@ const handlers = {
   },
   exploreOpen(id){
     const p=current.state.table?.exploration?.find(p=>p.id===id);if(!p)return;
+    if(p.kind==='region'&&current.master){
+      const event=p.event==='scene'?'Pedir troca de mapa · '+(current.state.sceneLibrary.scenes.find(s=>s.id===p.target)?.name||'Cena excluída'):p.event==='cinematic'?'Exibir cinemática · '+(current.state.cinematicCues.find(c=>c.id===p.target)?.name||'Preparação excluída'):'Avisar o mestre';
+      modal(esc(p.label),'<p>Ao entrar: '+esc(event)+'</p>'+(p.lastEntry?'<p>Última entrada: '+esc(p.lastEntry.name)+'</p>':'')+button('Excluir gatilho','exploreRemove','small danger','',id));return;
+    }
     const clue=p.kind==='clue',note=current.state.journal?.find(n=>n.id===p.noteId);
     if(!current.master){
       if(!clue){modal('Som local','<p>Você encontrou a origem de um som ambiente.</p>');return;}
-      if(p.found){modal(esc(note?.title||p.label),'<p class="journal-body">'+esc([p.description,note?.body].filter(Boolean).join('\n\n')||'Local investigado.')+'</p>');return;}
+      if(p.found){modal(esc(note?.title||p.label),'<p class="journal-body">'+esc([p.description,note?.body].filter(Boolean).join('\n\n')||'Local investigado.')+'</p>',null,true);return;}
       modal(esc(p.label),p.pending?'<p>O mestre recebeu o pedido de investigação.</p>':'<p>'+(p.mode==='auto'?'Você poderá consultar a descoberta neste local.':'O mestre vai avaliar seu pedido para investigar.')+'</p>'+button('Investigar','exploreInvestigate','primary','',id));return;
     }
     const clip=current.state.audio?.clips?.find(c=>c.id===p.clipId);
@@ -1215,7 +1294,7 @@ const handlers = {
      const name=current.state.characters.find(c=>c.id===req.characterId)?.name||'Personagem';
      return button('Resolver pedido de '+name,'investigationResolve','primary','',p.id+'|'+req.audience);
     }).join('');
-    modal(clue?esc(p.label):'Som local','<p>'+esc(clue?note?.title||p.label:clip?.name)+' · '+esc(p.radius)+' células</p>'+requests+
+    modal(clue?esc(p.label):'Som local',(p.lastEntry?'<p>Última entrada: '+esc(p.lastEntry.name)+'</p>':'')+(p.destination?button('Levar a mesa à cena de destino','regionTravel','small','',p.destination):'')+'<p>'+esc(clue?note?.title||p.label:clip?.name)+' · '+esc(p.radius)+' células</p>'+requests+
      (clue?button('Revelar manualmente','investigationResolve','small','',p.id)+button('Configurar teste e recompensa','investigationConfigure','small','',p.id):button(p.muffle===false?'Ativar filtro de paredes (experimental)':'Desativar filtro de paredes (experimental)','soundOcclusion','small','',p.id))+
      button('Remover do mapa','exploreRemove','small danger','',id));
   },
@@ -1291,7 +1370,7 @@ const handlers = {
     const cues=current.state.cinematicCues||[];
     const groups=Object.fromEntries([['','Toda a mesa'],...(current.state.parties||[]).map(g=>[g.id,g.name])]);
     if(cue?.party&&!Object.hasOwn(groups,cue.party))groups[cue.party]='Grupo removido · escolha outro público';
-    modal('Cinemáticas · experimental',(cues.length?'<div class="actions">'+cues.map(c=>button(c.name,'cinematicLoad','small','',c.id)).join('')+'</div>':'')+
+    modal('Cinemáticas · experimental',button('Verificar carregamento','mediaCheckDesk','small')+button('Preparar abertura de sessão','sessionOpening','small')+(cues.length?'<div class="actions">'+cues.map(c=>button(c.name,'cinematicLoad','small','',c.id)).join('')+'</div>':'')+
       input('id','',cue?.id||'','hidden')+input('name','Nome de preparação (só o mestre vê)',cue?.name||'','text','maxlength="80"')+select('mediaId','Mídia da revelação',Object.fromEntries([['','Somente texto'],...visuals.map(a=>[a.id,a.name])]),clip?.id||'')+
       button('Enviar mídia','cinematicUpload','small','plus')+
       select('soundtrackId','Trilha sonora desde a entrada',Object.fromEntries([['','Sem trilha'],...tracks.map(a=>[a.id,a.name])]),cue?.soundtrackId||'')+
@@ -1304,6 +1383,14 @@ const handlers = {
       input('duration','Tempo de exibição (s, prolongado se a legenda precisar)',cue?.duration??20,'number','min="1" max="600" required')+
       select('party','Quem vai assistir',groups,cue?.party||'')+
       '<div class="actions">'+button('Prévia só para mim','cinematicPreview','small')+button('Guardar cinemática','cinematicSave','small')+(cue?.id?button('Excluir preparação','cinematicForget','small danger','',cue.id):'')+submit('Transmitir')+'</div>'+(visuals.length?button('Excluir mídia selecionada','cinematicDelete','small danger'):'')+(tracks.length?button('Excluir trilha selecionada','cinematicDelete','small danger','','audio'):''),'cinematicStart');
+  },
+  mediaCheckDesk(){
+    modal('Verificar carregamento',select('cue','Mídia a liberar para download',Object.fromEntries([['','Mapa da cena selecionada'],...(current.state.cinematicCues||[]).map(c=>[c.id,c.name])]),'')+'<p>O mapa será enviado aos jogadores da campanha. Uma cinemática usa o público da preparação. A mídia fica acessível por dez minutos.</p><div data-media-check></div>'+submit('Iniciar teste'),'mediaCheckStart');
+    mediaCheckSync(preloadStatus,credentials);
+  },
+  sessionOpening(){
+    const scenes=current.state.sceneLibrary.scenes,images=(current.state.cinematicLibrary||[]).filter(a=>a.type.startsWith('image/'));
+    modal('Abertura de sessão',select('scene','Cena da abertura',Object.fromEntries(scenes.map(sc=>[sc.id,sc.name])),current.state.sceneId)+select('mediaId','Imagem',Object.fromEntries([['','Somente texto'],...images.map(a=>[a.id,a.name])]),'')+input('phrase','Frase de abertura','','text','maxlength="150"')+submit('Preparar prévia'),'openingPrepare');
   },
   cinematicLoad(id){const cue=current.state.cinematicCues.find(c=>c.id===id);if(cue)handlers.cinematicDesk('',cue);},
   async cinematicSave(){
@@ -1366,6 +1453,21 @@ const handlers = {
   async journalStatus(id){const e=current.state.journal?.find(e=>e.id===id);if(e)await action('journalStatus',{id,version:e.version,status:e.status==='completed'?'active':'completed'});},
   journalDelete(id){const e=current.state.journal?.find(e=>e.id===id);if(e)modal('Excluir documento','<input type="hidden" name="id" value="'+esc(id)+'"><input type="hidden" name="version" value="'+e.version+'"><p>Excluir permanentemente '+esc(e.title)+'?</p>'+submit('Excluir documento'),'journalDelete');},
   sheetTemplates(){modal('Modelos de fichas',sheetTemplateLibrary(currentView(),gmUI()));},
+  campaignSheetTheme(){
+    if(!current.master)return;
+    const base=current.state.sheetTheme||{};
+    const choices={classic:'Original da Forja',medieval:'Medieval',future:'Futurista',noir:'Investigação noir'};
+    modal('Tema das fichas da campanha','<p>O estilo e a moldura valem para todas as fichas. Cada jogador pode escolher suas cores de destaque.</p><label>Estilo<select name="style">'+Object.entries(choices).map(([id,label])=>'<option value="'+id+'" '+((base.style||'classic')===id?'selected':'')+'>'+label+'</option>').join('')+'</select></label><label>Nome do tema (opcional)<input name="name" maxlength="60" value="'+esc(base.name||'')+'"></label><label>Cor da moldura<input type="color" name="trimColor" value="'+(/^#[0-9a-f]{6}$/i.test(base.trimColor)?base.trimColor:'#bc9860')+'"></label>'+emblemField()+select('texture','Textura',{none:'Original',grain:'Granulado',grid:'Quadriculado',lines:'Linhas'},base.texture||'none')+input('intensity','Intensidade da textura',base.intensity??35,'range','min="0" max="100"')+'<div data-theme-sample aria-label="Prévia da ficha"><p class="campaign-theme-name"></p><section class="sheet-panel"><header class="sheet-panel-header"><h2>Identidade</h2></header><div class="sheet-identity"><div class="sheet-portrait"><span aria-hidden="true">A</span></div><h1>Ariadne</h1></div></section></div><button class="btn primary">Aplicar à campanha</button>','campaignSheetTheme');
+    const form=dialog.querySelector('form'),sample=form.querySelector('[data-theme-sample]');
+    function preview(){
+      sample.dataset.texture=form.elements.texture.value;sample.style.setProperty('--texture-alpha',form.elements.intensity.value/100);
+      sample.className='campaign-sheet '+form.elements.style.value;
+      sample.style.setProperty('--frame',form.elements.trimColor.value);
+      const style=form.elements.style.value,title=form.elements.namedItem('name').value.trim()||choices[style];
+      sample.firstElementChild.outerHTML=Object.hasOwn(sheetEngravings,style)?themeMasthead(style,title):'<p class="campaign-theme-name">'+esc(title)+'</p>';
+    }
+    form.oninput=preview;preview();
+  },
   sheetTemplateSave(id){const c=current.state.characters.find(c=>c.id===id);if(c&&!c.dnd)modal('Salvar estrutura como modelo',sheetTemplateSaveForm(c,gmUI()),'sheetTemplateSave');},
   sheetTemplateImport(){modal('Importar modelo','<p class="muted">Selecione um arquivo .forja.json exportado pela Forja. O modelo começa privado.</p><label>Arquivo JSON<input type="file" name="file" accept=".json,application/json" required></label>'+submit('Importar modelo'),'sheetTemplateImport');},
   sheetTemplateEdit(id){const item=current.state.sheetTemplates?.items.find(x=>x.id===id);if(item?.canEdit)modal('Editar modelo',sheetTemplateEditForm(item,gmUI()),'sheetTemplateEdit');},
@@ -1437,6 +1539,11 @@ const handlers = {
     modal(esc(entry.name),'<p class="gm-card-text">'+esc(entry.description)+'</p><p class="muted">Resumo adaptado do SRD 5.2.1 · página '+entry.page+'</p>'+button('Ver página no livro','gmRuleBook','primary','',entry.page));
   },
   gmRuleBook(page){const local=current.state.books.find(book=>book.source==='srd-5.2.1');if(local)return handlers.book(local.id,null,Number(page));modal('Livro oficial','<a class="btn primary" href="'+dndBook+'#page='+Number(page)+'" target="_blank" rel="noopener noreferrer">Abrir SRD na página '+Number(page)+' ↗</a>');},
+  abilityArea(id){
+    const ability=currentSheet()?.abilities?.find(a=>a.id===id);if(!ability)return;
+    if(ability.effectShape){handlers.nav('table');tabletop.aim(ability.effectShape,ability.name,ability.effectLength);return;}
+    modal('Área de '+esc(ability.name),select('shape','Formato',{cone:'Cone de 60°',burst:'Círculo',beam:'Linha de uma célula'},'cone')+input('ability','',ability.name,'hidden')+submit('Posicionar na mesa'),'abilityArea');
+  },
   nav(key) {if(current.needsCharacter)return;page=key;if(key==='sheets') {if(!current.master&&current.characterId)return openSheet(current.characterId);sheetId='';}render();main.focus({preventScroll:true});window.scrollTo({top:0});},
   close() {flyRewardToInventory(dialog);dialog.close();},
   create:createDialog,
@@ -1567,7 +1674,7 @@ const handlers = {
   },
   partyEdit(id){
     const group=current.state.parties?.find(g=>g.id===id);
-    modal(group?'Editar grupo':'Criar grupo',input('id','',id||'','hidden')+input('name','Nome do grupo',group?.name||'','text','required maxlength="80"')+submit(group?'Salvar nome':'Criar grupo')+(group?button('Excluir grupo','partyDeleteConfirm','small danger','',id):''),'partySave');
+    modal(group?'Editar grupo':'Criar grupo',input('id','',id||'','hidden')+input('name','Nome do grupo',group?.name||'','text','required maxlength="80"')+emblemField()+submit(group?'Salvar grupo':'Criar grupo')+(group?button('Excluir grupo','partyDeleteConfirm','small danger','',id):''),'partySave');
   },
   partyDeleteConfirm(id){
     const group=current.state.parties.find(g=>g.id===id);
@@ -1616,9 +1723,10 @@ const handlers = {
   },
   bodyStressSelect(region,node) {
     sheetView.stressRegion=region;
-    const panel=node.closest('.stress-panel');
+    const panel=node.closest('.stress-panel')||main.querySelector('.stress-panel');
+    if(!panel)return;
     panel.outerHTML=bodyStressPanel(currentSheet());
-    main.querySelector('.stress-region[aria-pressed=true]')?.focus({preventScroll:true});
+    main.querySelector('.stress-region[aria-pressed=true]')?.focus({preventScroll:!!node.closest('.stress-panel')});
   },
   async bodyStressStep(region,node) {
     const step=node.dataset.step;
@@ -1745,6 +1853,9 @@ const handlers = {
   sceneEdit:sceneEditor,
   sessionEdit:sessionEditor,
   sceneView:viewScene,
+  travelApprove(id){return action('regionTravelDecision',{id,approve:true});},
+  travelDecline(id){return action('regionTravelDecision',{id,approve:false});},
+  regionTravel(id){dialog.close();return handlers.sceneActivate(id);},
   async sceneActivate(id){await action('sceneActivate',{id});if(gmSceneId!==id)await viewScene(id);toast('Cena compartilhada com os jogadores.');},
   async sceneDuplicate(id){const before=new Set(current.state.sceneLibrary.scenes.map(scene=>scene.id));const row=await action('sceneDuplicate',{id});const created=row?.state.sceneLibrary.scenes.find(scene=>!before.has(scene.id));if(created)await viewScene(created.id);},
   sceneShift(value){const [id,direction]=value.split('/');return action('sceneMove',{id,direction:Number(direction)});},
@@ -1922,7 +2033,11 @@ function cinematicConfig(data){
 const forms = {
   materialShare:data=>action('materialShare',{...data,version:Number(data.version),minutes:Number(data.minutes)}),
   playerTransfer:data=>action('playerTransfer',{...data,version:Number(data.version),quantity:Number(data.quantity)}),
-  explorePlace:(data,form)=>action('explorePlace',{...cluePayload(data,form),...(data.kind==='sound'?{muffle:data.muffle==='on'}:{}),x:Number(data.x),y:Number(data.y),radius:Number(data.radius)}),
+  regionCreate(data){
+    const [event,target]=data.trigger.split('/');
+    return action('explorePlace',{kind:'region',label:data.label,event,target,sceneId:data.sceneId,x:Number(data.x),y:Number(data.y),bounds:{w:Number(data.w),h:Number(data.h)},radius:1});
+  },
+  explorePlace:(data,form)=>action('explorePlace',{...cluePayload(data,form),...(data.w?{bounds:{w:Number(data.w),h:Number(data.h)}}:{}),...(data.kind==='sound'?{muffle:data.muffle==='on'}:{}),x:Number(data.x),y:Number(data.y),radius:Number(data.radius)}),
   exploreConfigure:(data,form)=>action('exploreConfigure',cluePayload(data,form)),
   investigationResolve(data,form){return action(data.audience?'exploreDecide':'exploreReveal',{...data,grant:form.dataset.decision!=='deny',reward:data.reward==='on',total:data.total?Number(data.total):null});},
   clockSave:data=>action('clockSave',{...data,version:Number(data.version),segments:Number(data.segments),value:Number(data.value)}),
@@ -1933,6 +2048,14 @@ const forms = {
     const characterIds=new FormData(form).getAll('recipients');
     if(!characterIds.length)throw new Error('Selecione pelo menos um participante.');
     return action('checkCreate',{test:data.test,dc:data.dc===''?null:Number(data.dc),showDc:data.showDc==='on',characterIds});
+  },
+  abilityArea(data){handlers.nav('table');tabletop.aim(data.shape,data.ability);},
+  async mediaCheckStart(data){await action('mediaCheckStart',data);handlers.mediaCheckDesk();},
+  openingPrepare(data){
+    const scene=current.state.sceneLibrary.scenes.find(sc=>sc.id===data.scene);
+    if(!scene)return;
+    const theme=current.state.sheetTheme,style=theme?.style;
+    handlers.cinematicDesk('',{name:'Abertura · '+scene.name,text:[scene.name,data.phrase].filter(Boolean).join(' — '),mediaId:data.mediaId,accent:theme?.trimColor,transition:style==='medieval'?'curtain':style==='future'?'rift':'ink',reveal:style==='future'?'sweep':'emerge',background:style==='medieval'?'#291d18':style==='future'?'#081921':'#201e1b',intro:2,duration:12});
   },
   async cinematicForget(data){await action('cinematicForget',data);handlers.cinematicDesk();},
   cinematicStart:data=>action('cinematicStart',cinematicConfig(data)),
@@ -1976,6 +2099,8 @@ const forms = {
   async itemSave(data,form){
     const file=form.elements?.portraitFile?.files?.[0],{portraitFile,portrait,...fields}=data;
     const payload={...fields,version:Number(data.version),id:data.id||undefined,removePortrait:data.removePortrait==='on'};
+    delete payload.phoneFiles;
+    if(data.kind==='phone')payload.photos=await preparePhonePhotos(form,current.state.inventory?.find(i=>i.id===data.id));
     if(!file?.size)return action('itemSave',payload);
     if(file.size>3*1024*1024||!['image/png','image/jpeg','image/webp','image/gif'].includes(file.type))throw new Error('Selecione PNG, JPG, WebP ou GIF de até 3 MB.');
     const body=new FormData();body.set('data',JSON.stringify(payload));body.set('file',file,file.name);
@@ -1990,6 +2115,7 @@ const forms = {
   journal(data,form){return action('journalSave',{...journalFormData(new FormData(form)),...(data.canvasX!==undefined?{canvasPoint:{x:Number(data.canvasX),y:Number(data.canvasY)}}:{})});},
   vaultEdge(data,form){return action('gmCanvasEdge',{from:data.from,to:data.to,label:data.label,remove:form.dataset.remove==='true'});},
   journalDelete(data){return action('journalDelete',{id:data.id,version:Number(data.version)});},
+  async campaignSheetTheme(data){data.emblem=await readEmblem(data,current.state.sheetTheme?.emblem);return action('campaignSheetTheme',data);},
   sheetTemplateSave(data){return action('sheetTemplateSave',{...data,shared:data.shared==='on',includeAbilities:data.includeAbilities==='on',includeAppearance:data.includeAppearance==='on'});},
   async sheetTemplateImport(data,form){const file=form.elements.file.files[0];if(!file||file.size>100*1024)throw new Error('Selecione um arquivo JSON de até 100 KB.');let bundle;try{bundle=JSON.parse(await file.text());}catch{throw new Error('O arquivo não contém JSON válido.');}return action('sheetTemplateImport',{bundle,shared:false});},
   sheetTemplateEdit(data){return action('sheetTemplateUpdate',{...data,expectedVersion:Number(data.expectedVersion),shared:data.shared==='on'});},
@@ -2051,7 +2177,7 @@ const forms = {
     const entries = [...form.querySelectorAll('[data-entry]')].map(row=>({name:$('[name=name]',row).value,value:$('[name=value]',row).value}));
     return action('initiative',{entries});
   },
-  partySave:async data=>{await action('partySave',data);handlers.partyRoster();},
+  partySave:async data=>{data.emblem=await readEmblem(data,current.state.parties?.find(g=>g.id===data.id)?.emblem);await action('partySave',data);handlers.partyRoster();},
   partyDelete:async data=>{await action('partyDelete',data);handlers.partyRoster();},
   characterParty:data=>action('characterParty',{id:data.id,party:data.party,revealed:!!data.party&&data.revealed==='on'}),
   characterType:data=>action('characterType',{id:data.id,characterType:data.characterType}),
@@ -2156,6 +2282,7 @@ dialog.addEventListener('change',event=>{
   if(event.target.matches('[data-form="investigationResolve"] [name="reward"]'))event.target.form.elements.total.required=event.target.checked;
   if(!event.target.matches('[data-form="itemSave"] [name="kind"]'))return;
   const field=event.target.form.querySelector('[data-item-uses-field]');
+  updateReadingFields(event.target.form);
   field.hidden=event.target.value!=='consumable';
   field.querySelector('input').disabled=field.hidden;
 });
@@ -2279,12 +2406,13 @@ async function refresh(force=false) {
     if(!credentials&&reconnectingAccess===access){await openCampaign(access);toast('Conexão restabelecida. Seu acesso foi mantido.');return;}
     const row = await request('/'+access.id,{signal:task.controller.signal},access).then(response=>response.json());
     if (credentials!==access || row.rev<current.rev) return;
-    if(current.master&&gmSceneId&&row.state.sceneId!==gmSceneId&&row.state.sceneLibrary?.scenes.some(scene=>scene.id===gmSceneId))return;
+    if(current.master&&gmSceneId===current.state.activeSceneId&&row.state.activeSceneId&&row.state.activeSceneId!==gmSceneId){await viewScene(row.state.activeSceneId);return row;}
+  if(current.master&&gmSceneId&&row.state.sceneId!==gmSceneId&&row.state.sceneLibrary?.scenes.some(scene=>scene.id===gmSceneId))return;
     if (row.characterId!==current.characterId||row.needsCharacter!==current.needsCharacter||
         sheetId&&!current.master&&!row.state.characters.some(character=>character.id===sheetId&&character.access==='full')) {
       dialog.close();setCurrent(row);render();return;
     }
-    if(row.master&&row.rev>=sceneRevision){current.state.investigations=row.state.investigations;updateInvestigationAlert(current);}
+    if(row.master&&row.rev>=sceneRevision){current.state.investigations=row.state.investigations;current.state.travelRequests=row.state.travelRequests;updateInvestigationAlert(current);}
     if(dialog.dataset.sharedRead&&!row.state.sharing?.received?.some(g=>g.id===dialog.dataset.sharedRead)){
       dialog.close();delete dialog.dataset.sharedRead;
     }
@@ -2338,6 +2466,7 @@ async function refreshAudio(fast=false) {
       tabletop.syncPoints(row.state.movingPoints??null);
       if(motionOnly){if(row.state.ambient)audioPlayer.syncAmbient(row.state.ambient);return;}
     }
+    if(Object.hasOwn(row.state,'mediaCheck'))void mediaCheckSync(row.state.mediaCheck,access);
     row.serverTime+=(performance.now()-started)/2;
     audioPlayer.sync(row);
     musicDock.sync(row);soundboardDock.sync(row);audioPopover.sync(row);
@@ -2442,3 +2571,5 @@ initialize();
   node.disabled=true;
   try{await action('gmCardToggle',{id:node.dataset.gmTask,itemId:node.dataset.gmItem,done:node.checked});}catch(error){node.checked=!node.checked;toast(error.message);}finally{node.disabled=false;}
  });
+
+dialog.addEventListener('click',event=>phoneClick(event.target));

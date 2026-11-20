@@ -81,6 +81,7 @@ export function mutateScenes(state,action,data,master){
   if(data.direction!==undefined){if(![-1,1].includes(data.direction))fail(400,'Direção inválida.');const same=lib.scenes.filter(item=>item.sessionId===scene.sessionId),at=same.indexOf(scene),target=same[at+data.direction];if(target){const a=lib.scenes.indexOf(scene),b=lib.scenes.indexOf(target);[lib.scenes[a],lib.scenes[b]]=[lib.scenes[b],lib.scenes[a]];}}
  }else if(action==='sceneActivate'){
   const target=requireScene(lib,data.id);if(target.id!==lib.activeId){
+   for(const p of state.table?.exploration||[]){delete p.travelRequest;delete p.travelQuietUntil;}
    const previous=requireScene(lib,lib.activeId),content=world(state,target);previous.name=state.scene||previous.name;Object.assign(previous,{map:state.map||null,tokens:state.tokens||[],table:state.table});
    state.map=content.map;state.tokens=content.tokens;state.table=content.table;state.scene=target.name;lib.activeId=target.id;
    delete target.map;delete target.tokens;delete target.table;

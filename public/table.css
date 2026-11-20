@@ -402,3 +402,8 @@ dialog[data-loot-reward=true]{border-color:#dfbb73;box-shadow:0 0 55px #d2a65630
 .vtt-point{position:absolute;display:grid;place-items:center;pointer-events:auto;width:27px;height:27px;padding:4px;transform:translate(-50%,-50%) scale(var(--vtt-label-scale,1)) translate(50%,-56%);border:1px solid #d6b5fc;border-radius:50%;background:#332742;color:#f6e4ff;cursor:pointer}
 .vtt-point svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.6}
 .is-player-preview .vtt-points{display:none}
+
+.region-guide{position:absolute;border:2px dashed #8ad5dc;background:#67dadd22;pointer-events:none}
+
+.map-fade-curtain{position:absolute;inset:0;z-index:18;overflow:hidden;background:#101018;pointer-events:none}
+.map-fade-curtain>.map-fade-old{position:absolute;inset:0;width:100%;height:100%;margin:0;pointer-events:none}

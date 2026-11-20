@@ -4,11 +4,12 @@ import {publicItemToken} from './loot-data.mjs';
 import {visionSources,tokenInVision,recordExploration,normalizeVision,normalizeDarkness,normalizeRotation} from './vision-model.mjs';
 export {normalizeVision,normalizeDarkness,normalizeRotation} from './vision-model.mjs';
 import {tokenIconIds} from './token-icons.mjs';
+export {pointRevealed} from './fog-geometry.mjs';
 import {normalizeFogStrokes} from './fog-geometry.mjs';
 import {outsideParty,playerVisionSource,tokenCharacterId,isPlayerCharacter,colors} from './model.mjs';
 
 const palette = new Set(colors);
-const drawingKinds = new Set(['line','rectangle','circle','freehand']);
+const drawingKinds = new Set(['cone','burst','beam','line','rectangle','circle','freehand']);
 export const weatherNames={clear:'Céu limpo',rain:'Chuva',snow:'Neve',embers:'Brasas',storm:'Tempestade',mist:'Neblina',dust:'Poeira ao vento'};
 export const sceneTones={natural:'Original do mapa',dawn:'Amanhecer',dusk:'Crepúsculo',moon:'Luar',sun:'Sol a pino',forest:'Bosque',ice:'Gélido',sepia:'Sépia'};
 export const pingNames={point:'Apontar',danger:'Perigo',gather:'Reunir aqui',clue:'Pista'};
@@ -16,11 +17,11 @@ const weatherLevels={light:'Leve',medium:'Moderada',heavy:'Intensa'};
 export {weatherLevels};
 const distanceModes = new Set(['euclidean','chebyshev','manhattan']);
 const tableActions = new Set([
-  'tableAtmosphere','tableLightSet','tableLightDelete','tableWallAdd','tableWallDelete','tableDoorSet','tableSettings','tableFog','tableDrawingAdd','tableDrawingDelete','tableDrawingClear',
+  'tableEffect','tableAtmosphere','tableLightSet','tableLightDelete','tableWallAdd','tableWallDelete','tableDoorSet','tableSettings','tableFog','tableDrawingAdd','tableDrawingDelete','tableDrawingClear',
   'tablePing','tokenCondition','tokenPatrol','tokenAdd','tokenMove','tokenRotate','tokenUpdate','tokenDelete','combatSet','combatNext','combatEndOwn'
 ]);
 export const tableSceneActions=tableActions;
-const sharedActions = new Set(['tablePing','tokenMove','tokenRotate','combatEndOwn']);
+const sharedActions = new Set(['tableEffect','tablePing','tokenMove','tokenRotate','combatEndOwn']);
 const clean = (value,max) => typeof value==='string' ? value.trim().slice(0,max) : '';
 const clamp = (value,min,max) => Math.max(min,Math.min(max,value));
 const number = (value,fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
@@ -348,7 +349,7 @@ function changeSettings(state,table,data) {
       for(const wall of table.walls){
         wall.x*=ratio;wall.y*=ratio;wall.toX*=ratio;wall.toY*=ratio;
       }
-      for(const point of table.exploration||[]){point.x=clamp(point.x*ratio,0,next.columns);point.y=clamp(point.y*ratio,0,next.rows);point.radius=clamp(point.radius*ratio,.25,80);}
+      for(const point of table.exploration||[]){point.x=clamp(point.x*ratio,0,next.columns);point.y=clamp(point.y*ratio,0,next.rows);point.radius=clamp(point.radius*ratio,.25,80);if(point.bounds){point.bounds.w*=ratio;point.bounds.h*=ratio;}}
       for(const light of table.lights){
         light.x*=ratio;light.y*=ratio;light.radius*=ratio;
       }
@@ -464,7 +465,8 @@ function changeToken(state,table,action,data,master) {
   if (action==='tokenMove') {
     const x=requireRange(data.x,0,table.grid.columns-token.size,'Posição X');
     const y=requireRange(data.y,0,table.grid.rows-token.size,'Posição Y');
-    const moved=resolveTokenPath(token,{x,y},table,data.path,table.grid.snap);
+    const trace=token.characterId&&table.exploration?.some(p=>p.bounds)?[token]:null;
+    const moved=resolveTokenPath(token,{x,y},table,data.path,table.grid.snap,trace);
     if(table.fog.enabled&&table.fog.mode==='war'&&data.trail!==undefined&&playerVisionSource(state,token)){
       if(!Array.isArray(data.trail)||data.trail.length>64)fail(400,'Trajeto de exploração inválido.');
       let at=token;
@@ -475,6 +477,22 @@ function changeToken(state,table,action,data,master) {
         at={...token,...resolveTokenPath(at,{x,y},table),rotation};
         recordExploration(table.fog,at,table.grid,table.walls);
       }
+    }
+    for(const region of table.exploration||[]){
+      if(!region.bounds||!token.characterId)continue;
+      const inside=p=>Math.abs(p.x+token.size/2-region.x)<=region.bounds.w/2&&Math.abs(p.y+token.size/2-region.y)<=region.bounds.h/2;
+      const crosses=(a,b)=>{
+        if(inside(a))return false;
+        let enter=0,exit=1;
+        for(const [axis,extent] of [['x',region.bounds.w],['y',region.bounds.h]]){
+          const delta=b[axis]-a[axis],offset=a[axis]+token.size/2-region[axis];
+          if(!delta){if(Math.abs(offset)>extent/2)return false;continue;}
+          const t1=(-extent/2-offset)/delta,t2=(extent/2-offset)/delta;
+          enter=Math.max(enter,Math.min(t1,t2));exit=Math.min(exit,Math.max(t1,t2));
+        }
+        return enter<=exit;
+      };
+      if(trace?.some((p,i)=>i>0&&crosses(trace[i-1],p)))region.lastEntry={id:uid(),name:token.name,at:Date.now()};
     }
     Object.assign(token,moved);delete token.patrol;
     return;
@@ -602,7 +620,8 @@ export function mutateTable(state,action,data,master,actorName=master?'Mestre':'
     table.pings=[...table.pings.filter(ping=>now-ping.at<1500),{
       id:uid(),...(actorCharacterId?{characterId:actorCharacterId}:{}),...(data.signal?{signal:data.signal}:{}),x:requireRange(data.x,0,table.grid.columns,'Posição X'),y:requireRange(data.y,0,table.grid.rows,'Posição Y'),at:now,name:clean(actorName,80)||'Participante'
     }].slice(-12);
-  } else if (action==='tableDrawingAdd') {
+  } else if (action==='tableDrawingAdd'||action==='tableEffect') {
+    if(action==='tableEffect'&&(!['cone','burst','beam'].includes(data.kind)||!master&&!actorCharacterId))fail(403,'Área indisponível.');
     if (table.drawings.length>=150) fail(409,'Limite de 150 desenhos atingido.');
     if (!drawingKinds.has(data.kind) || !/^#[a-f0-9]{6}$/i.test(data.color)) fail(400,'Desenho inválido.');
     const item={id:uid(),kind:data.kind,color:data.color};

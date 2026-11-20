@@ -31,7 +31,12 @@ const uid = () => crypto.randomUUID();
 const key = () => uid().replaceAll('-', '') + uid().slice(0,8);
 const int = (value, max) => Math.max(0,Math.min(max,Math.round(Number(value)||0)));
 const color = value => colors.includes(value) ? value : colors[0];
-const privateActions = new Set(['checkCreate','checkClose','cinematicSave','cinematicForget','cinematicStart','cinematicStop','cinematicDelete','partySave','partyDelete','characterParty','gmResourceChange','bodyStressConfig','settings','schema','notes','initiative','tokenAdd','tokenDelete','bookDelete','track','soundPlay','soundDelete','characterType','characterVisibility','characterRelease','sheetMasteryRefresh',...musicActions,...soundboardActions,...gmScreenActions]);
+function emblemData(value){
+ if(!value)return '';
+ if(typeof value!=='string'||value.length>28000||!/^data:image\/png;base64,iVBORw0KGgo[A-Za-z0-9+/]+=*$/.test(value))fail(400,'Emblema PNG inválido.');
+ return value;
+}
+const privateActions = new Set(['regionTravelDecision','mediaCheckStart','campaignSheetTheme','checkCreate','checkClose','cinematicSave','cinematicForget','cinematicStart','cinematicStop','cinematicDelete','partySave','partyDelete','characterParty','gmResourceChange','bodyStressConfig','settings','schema','notes','initiative','tokenAdd','tokenDelete','bookDelete','track','soundPlay','soundDelete','characterType','characterVisibility','characterRelease','sheetMasteryRefresh',...musicActions,...soundboardActions,...gmScreenActions]);
 const updateList = (list, entry) => list.some(item => item.id === entry.id)
   ? list.map(item => item.id === entry.id ? entry : item) : [...list, entry];
 const validTypes = new Set(['text','number','counter','long','check']);
@@ -168,6 +173,14 @@ function sheetAction(state,action,data) {
   const entry=category==='skills'
     ? {id,name,attribute,base:number(data.base),bonus:number(data.bonus),other:number(data.other),favorite:data.favorite===true,...(character.dnd?{rank:[0,1,2].includes(Number(data.rank))?Number(data.rank):existing?.rank||0}:{})}
     : {id,name,description:str(data.description,4000)};
+  if(category==='abilities'){
+    const shape=data.effectShape??existing?.effectShape;
+    if(shape){
+      const length=Number(data.effectLength??existing?.effectLength);
+      if(!['cone','beam','burst'].includes(shape)||!Number.isFinite(length)||length<=0||length>10000)fail(400,'Escolha um alcance válido para a área.');
+      Object.assign(entry,{effectShape:shape,effectLength:length});
+    }
+  }
   character[category]=updateList(entries,entry);
 }
 
@@ -245,9 +258,38 @@ function makeSheetRoll(state,data,access){
     ...(character?{characterId:character.id,diceColor:sheetAppearance(state,character).options.accent}:{}),kind:button&&(button.id==='dd-initiative'||/^iniciativa$/i.test(button.name?.trim()))?'initiative':'check',...result};
 }
 
+function mediaCheckView(state,access){
+  const check=state.mediaCheck;
+  if(!check||Date.now()>check.until)return null;
+  const own=ownedCharacter(state,access);
+  if(!access.master&&(!own||!check.players.some(p=>p.id===own.id&&p.owner===access.memberId)||check.party&&own.party!==check.party))return null;
+  return {id:check.id,assets:check.assets,...(access.master?{players:check.players.map(({name,status})=>({name,status}))}:{})};
+}
 function mutate(state, action, data, access) {
   const {master}=access;
   validateActionAccess(state,action,data,access);
+  if(action==='regionTravelDecision'){
+    const region=state.table?.exploration?.find(p=>p.travelRequest?.id===data.id);
+    if(!region||typeof data.approve!=='boolean')fail(409,'Este pedido de passagem já foi encerrado.');
+    const target=region.travelRequest.target;
+    delete region.travelRequest;
+    if(data.approve)mutateScenes(state,'sceneActivate',{id:target},true);
+    else region.travelQuietUntil=Date.now()+30000;
+    return;
+  }
+  if(action==='mediaCheckStart'){
+    const cue=data.cue&&state.cinematicCues?.find(c=>c.id===data.cue);
+    if(data.cue&&!cue)fail(404,'Preparação indisponível.');
+    const map=sceneProjection(state,data.sceneId).map;
+    const assets=cue?[cue.mediaId,cue.soundtrackId].filter(Boolean):[map?.id].filter(Boolean);
+    if(!assets.length)fail(400,'Selecione um mapa ou uma preparação com mídia.');
+    state.mediaCheck={id:uid(),assets:[...new Set(assets)],party:cue?.party||'',until:Date.now()+600000,players:state.characters.filter(c=>c.ownerId&&!c.hidden&&(!cue?.party||c.party===cue.party)).map(c=>({id:c.id,owner:c.ownerId,name:c.name,status:'Aguardando'}))};return;
+  }
+  if(action==='mediaCheckReport'){
+    if(!mediaCheckView(state,access)||state.mediaCheck.id!==data.id||!['Carregado','Falhou'].includes(data.status))fail(409,'Teste encerrado.');
+    const player=state.mediaCheck.players.find(p=>p.owner===access.memberId);if(!player)fail(403,'Participante indisponível.');
+    player.status=data.status;return;
+  }
   if(action==='investigationReceiptRead'){
     const own=ownedCharacter(state,access);
     if(!own)fail(403,'Escolha seu personagem.');
@@ -290,7 +332,23 @@ function mutate(state, action, data, access) {
   }
   if(tableSceneActions.has(action)){
     const actor=ownedCharacter(state,access);
+    const liveMove=action==='tokenMove'&&(!data.sceneId||data.sceneId===activeSceneId(state));
+    const oldEntries=liveMove?new Map((state.table?.exploration||[]).map(p=>[p.id,p.lastEntry?.id])):null;
     withScene(state,data.sceneId,master,world=>mutateTable(world,action,data,master,master?'Mestre':actor?.name,actor?.id));
+    if(liveMove){
+      const entered=(state.table?.exploration||[]).filter(p=>p.lastEntry&&oldEntries.get(p.id)!==p.lastEntry.id);
+      for(const region of entered){
+        if(region.event==='cinematic'){
+          const cue=state.cinematicCues?.find(c=>c.id===region.target);
+          if(cue)mutate(state,'cinematicStart',cue,{master:true});
+        }
+        const destination=region.event==='scene'?region.target:region.bounds&&region.destination;
+        if(destination&&sceneSummary(state).scenes.some(s=>s.id===destination)){
+          if(!region.travelRequest&&!(region.travelQuietUntil>Date.now()))
+            region.travelRequest={id:uid(),name:region.lastEntry.name,target:destination};
+        }
+      }
+    }
     return;
   }
   if(soundboardActions.has(action)){changeAudio(state,action,data);return;}
@@ -473,7 +531,8 @@ function mutate(state, action, data, access) {
       const name=typeof data.name==='string'?data.name.trim():'';
       if(!name||name.length>80)fail(400,'Informe um nome de até 80 caracteres.');
       if(parties.some(p=>p.id!==current?.id&&p.name.toLocaleLowerCase('pt-BR')===name.toLocaleLowerCase('pt-BR')))fail(409,'Já existe um grupo com esse nome.');
-      state.parties=updateList(parties,{id:current?.id||uid(),name});
+      const emblem=emblemData(data.emblem??current?.emblem);
+      state.parties=updateList(parties,{id:current?.id||uid(),name,...(emblem?{emblem}:{})});
       break;
     }
     case 'partyDelete': {
@@ -637,6 +696,16 @@ function mutate(state, action, data, access) {
       card.lastRoll={rollId:roll.id,at:roll.at,index:result.total,text:entry.text};
       break;
     }
+    case 'campaignSheetTheme':
+      if(data.style==='classic'){delete state.sheetTheme;break;}
+      if(!['medieval','future','noir'].includes(data.style)||!/^#[0-9a-f]{6}$/i.test(data.trimColor))fail(400,'Escolha um estilo e uma cor de moldura válidos.');
+      state.sheetTheme={style:data.style,name:str(data.name,60),trimColor:data.trimColor};
+      if(data.emblem)state.sheetTheme.emblem=emblemData(data.emblem);
+      if(['grain','grid','lines'].includes(data.texture)){
+        state.sheetTheme.texture=data.texture;
+        state.sheetTheme.intensity=Math.max(0,Math.min(100,Number(data.intensity)||0));
+      }
+      break;
     case 'notes':
       state.notes = str(data.text,12000);
       break;
@@ -764,7 +833,9 @@ function projectedTable(scoped,access,own){
 function view(row,access,sceneId) {
   const scoped=sceneProjection(row.state,access.master?sceneId:undefined);
   const state=publicState(scoped,access);
-  if(access.master){state.sceneLibrary=sceneSummary(row.state);state.investigations=investigationInbox(row.state);}
+  if(access.master){state.sceneLibrary=sceneSummary(row.state);state.investigations=investigationInbox(row.state);
+    const requests=(row.state.table?.exploration||[]).filter(p=>p.travelRequest&&state.sceneLibrary.scenes.some(s=>s.id===p.travelRequest.target)).map(p=>({...p.travelRequest,label:p.label,destination:state.sceneLibrary.scenes.find(s=>s.id===p.travelRequest.target).name}));
+    if(requests.length)state.travelRequests=requests;}
   state.audio={...audioView(row.state.audio,access.master),ambient:ambientAt(row.state,ownedCharacter(row.state,access),access.master)};
   const own=ownedCharacter(scoped,access);
   const table=projectedTable(scoped,access,own);
@@ -779,7 +850,7 @@ const toolVersion=items=>rollVersion((items||[]).map(item=>({id:item.id+':'+item
 
 export function sceneView(row,access,sceneId){
   const visible=view(row,access,sceneId);
-  return {type:'scene',checkVersion:checkVersion(visible.state.checkRequests),id:visible.id,rev:visible.rev,master:visible.master,characterId:visible.characterId,needsCharacter:visible.needsCharacter,serverTime:visible.serverTime,rollVersion:rollVersion(visible.state.rolls||[]),state:{checkRequests:visible.state.checkRequests,...(access.master?{investigations:visible.state.investigations}:{investigationReceipts:visible.state.investigationReceipts}),sessionClocks:visible.state.sessionLog.clocks,cinematic:visible.state.cinematic,scene:visible.state.scene,sceneId:visible.state.sceneId,activeSceneId:visible.state.activeSceneId,sessionName:visible.state.sessionName,...(visible.master?{sceneLibrary:visible.state.sceneLibrary}:{}),journalVersion:toolVersion(visible.state.journal),sheetTemplatesVersion:toolVersion(visible.state.sheetTemplates?.items),narrations:visible.state.narrations||[],rolls:visible.state.rolls||[],table:visible.state.table,tokens:visible.state.tokens,map:visible.state.map||null}};
+  return {type:'scene',checkVersion:checkVersion(visible.state.checkRequests),id:visible.id,rev:visible.rev,master:visible.master,characterId:visible.characterId,needsCharacter:visible.needsCharacter,serverTime:visible.serverTime,rollVersion:rollVersion(visible.state.rolls||[]),state:{checkRequests:visible.state.checkRequests,...(access.master?{investigations:visible.state.investigations,travelRequests:visible.state.travelRequests||[]}:{investigationReceipts:visible.state.investigationReceipts}),sessionClocks:visible.state.sessionLog.clocks,cinematic:visible.state.cinematic,scene:visible.state.scene,sceneId:visible.state.sceneId,activeSceneId:visible.state.activeSceneId,sessionName:visible.state.sessionName,...(visible.master?{sceneLibrary:visible.state.sceneLibrary}:{}),journalVersion:toolVersion(visible.state.journal),sheetTemplatesVersion:toolVersion(visible.state.sheetTemplates?.items),narrations:visible.state.narrations||[],rolls:visible.state.rolls||[],table:visible.state.table,tokens:visible.state.tokens,map:visible.state.map||null}};
 }
 
 async function update(store, row, operation,commit=null) {
@@ -796,12 +867,12 @@ function campaignAssets(state){return [...(state.cinematicLibrary||[]),...itemPo
 
 async function uploadItemPortrait(request,store,row,access){
   if(!access.master)fail(403,'Somente o mestre pode enviar o retrato de um item.');
-  const max=3*1024*1024+128*1024;if(Number(request.headers.get('Content-Length'))>max)fail(413,'A imagem deve ter até 3 MB.');
+  const max=3*1024*1024+1_500_000+32768;if(Number(request.headers.get('Content-Length'))>max)fail(413,'A imagem deve ter até 3 MB.');
   const reader=request.body?.getReader();if(!reader)fail(400,'Selecione uma imagem.');const chunks=[];let size=0;
   while(true){const {value,done}=await reader.read();if(done)break;size+=value.byteLength;if(size>max){await reader.cancel();fail(413,'A imagem deve ter até 3 MB.');}chunks.push(value);}
   let form;try{form=await new Response(new Blob(chunks),{headers:{'Content-Type':request.headers.get('Content-Type')||''}}).formData();}catch{fail(400,'Envie a imagem e os dados do item pelo formulário.');}
   const file=form.get('file'),raw=form.get('data');if(!(file instanceof Blob)||!file.size||file.size>3*1024*1024)fail(413,'Selecione uma imagem de até 3 MB.');
-  if(typeof raw!=='string'||new TextEncoder().encode(raw).length>96*1024)fail(400,'Dados do item inválidos.');let data;try{data=JSON.parse(raw);}catch{fail(400,'Dados do item inválidos.');}if(!data||typeof data!=='object'||Array.isArray(data))fail(400,'Dados do item inválidos.');
+  if(typeof raw!=='string'||new TextEncoder().encode(raw).length>1_500_000)fail(400,'Dados do item inválidos.');let data;try{data=JSON.parse(raw);}catch{fail(400,'Dados do item inválidos.');}if(!data||typeof data!=='object'||Array.isArray(data))fail(400,'Dados do item inválidos.');
   const bytes=new Uint8Array(await file.slice(0,16).arrayBuffer()),type=file.type.toLowerCase();
   const png=bytes.length>=8&&[137,80,78,71,13,10,26,10].every((v,i)=>bytes[i]===v),jpeg=bytes[0]===255&&bytes[1]===216&&bytes[2]===255,gif=new TextDecoder().decode(bytes.slice(0,6)).match(/^GIF8[79]a$/),webp=new TextDecoder().decode(bytes.slice(0,4))==='RIFF'&&new TextDecoder().decode(bytes.slice(8,12))==='WEBP';
   if(!({'image/png':png,'image/jpeg':jpeg,'image/gif':gif,'image/webp':webp}[type]))fail(415,'Use uma imagem PNG, JPG, WebP ou GIF válida.');
@@ -1050,7 +1121,7 @@ export async function api(request,store) {
       const checks=scene.checkRequests??(params.get('checkRev')===String(row.rev)?null:checkRequestView(row.state,access));
       delete scene.checkRequests;
       const stamp=checks?checkVersion(checks):null;
-      return json({id:row.id,rev:row.rev,master,characterId:ownedCharacter(row.state,access)?.id||null,needsCharacter:!master&&!ownedCharacter(row.state,access),rollVersion:version,checkVersion:stamp,serverTime:Date.now(),state:{...(checks&&params.get('checks')!==stamp?{checkRequests:checks}:{}),cinematic:cinematicView(row.state,access),...(!master?{narrations:narrationView(row.state,access)}:{}),audio:{...audioView(row.state.audio,master,{includeLibrary:false}),ambient:moving?.ambient??ambientAt(row.state,ownedCharacter(row.state,access),master)},...(moving?{movingPoints:moving.points}:{}),...(changed?{rolls}:{}),...scene}});
+      return json({id:row.id,rev:row.rev,master,characterId:ownedCharacter(row.state,access)?.id||null,needsCharacter:!master&&!ownedCharacter(row.state,access),rollVersion:version,checkVersion:stamp,serverTime:Date.now(),state:{mediaCheck:mediaCheckView(row.state,access),...(checks&&params.get('checks')!==stamp?{checkRequests:checks}:{}),cinematic:cinematicView(row.state,access),...(!master?{narrations:narrationView(row.state,access)}:{}),audio:{...audioView(row.state.audio,master,{includeLibrary:false}),ambient:moving?.ambient??ambientAt(row.state,ownedCharacter(row.state,access),master)},...(moving?{movingPoints:moving.points}:{}),...(changed?{rolls}:{}),...scene}});
     }
     if (method === 'GET' && route === 'asset') {
       const viewer=ownedCharacter(row.state,access);
@@ -1061,7 +1132,9 @@ export async function api(request,store) {
       const itemImages=master?itemPortraits(row.state):itemPortraits({inventory:inventoryView(row.state,access),tokens:(row.state.tokens||[]).filter(t=>!t.hidden)});
       const visibleRun=cinematicView(row.state,access);
       const cineAssets=master?row.state.cinematicLibrary||[]:(row.state.cinematicLibrary||[]).filter(a=>a.id===visibleRun?.media?.id||a.id===visibleRun?.soundtrackId);
-      const asset = [...cineAssets,...sharedImages,...itemImages,...tokenPortraits,...row.state.books,...(row.state.audio?.clips||[]),...visibleCharacters.map(character=>character.portrait),...(master?sceneMaps(row.state):[row.state.map])].find(item=>item?.id===assetId);
+      const checkedAssets=mediaCheckView(row.state,access)?.assets||[];
+      const prepared=[...sceneMaps(row.state),...(row.state.cinematicLibrary||[])].filter(a=>checkedAssets.includes(a.id));
+      const asset = [...prepared,...cineAssets,...sharedImages,...itemImages,...tokenPortraits,...row.state.books,...(row.state.audio?.clips||[]),...visibleCharacters.map(character=>character.portrait),...(master?sceneMaps(row.state):[row.state.map])].find(item=>item?.id===assetId);
       if (!asset) fail(404,'Arquivo indisponível.');
       const body = await store.getAsset(id+'/'+asset.id);
       if (!body) fail(404,'Arquivo indisponível.');
@@ -1069,7 +1142,7 @@ export async function api(request,store) {
     }
     if (method === 'POST' && route === 'action') {
       const {action,data} = await requestJson(request);
-      let lootResult;
+      let lootResult,responseScene;
       if(typeof action!=='string'||!action||action.length>80||data!==undefined&&(!data||typeof data!=='object'||Array.isArray(data)))fail(400,'Ação ou dados inválidos.');
       let deleted,removedMaps=[],removedPortraits=[],removedItemPortraits=[];
       const updated = await update(store,row,state=>{
@@ -1083,7 +1156,9 @@ export async function api(request,store) {
         const previousMaps=action==='sceneDelete'?sceneMaps(state):[];
         validateActionAccess(state,action,data||{},access);
         const captured=captureSheetChanges(state,action,data||{},access);
+        const from=activeSceneId(state);
         lootResult=mutate(state,action,data||{},access);
+        responseScene=from!==activeSceneId(state)?activeSceneId(state):data?.sceneId;
         recordSheetChanges(state,captured,{action});
         const retainedItemPortraits=new Set(itemPortraits(state).map(a=>a.id));removedItemPortraits=previousItemPortraits.filter(a=>!retainedItemPortraits.has(a.id));
         const retainedPortraits=new Set(sceneTokenPortraits(state).map(item=>item.id));removedPortraits=previousPortraits.filter(item=>!retainedPortraits.has(item.id));
@@ -1091,7 +1166,7 @@ export async function api(request,store) {
       },['tokenMove','tokenRotate'].includes(action)?{id:data?.id,dragId:data?.dragId,sceneId:data?.sceneId,action}:null);
       if (deleted&&!campaignAssets(updated.state).some(a=>a.id===deleted.id)) await store.deleteAsset(id+'/'+deleted.id).catch(()=>{});
       await Promise.all([...removedMaps,...removedPortraits,...removedItemPortraits].filter(asset=>!campaignAssets(updated.state).some(a=>a.id===asset.id)).map(asset=>store.deleteAsset(id+'/'+asset.id).catch(()=>{})));
-      return json({...view(updated,access,data?.sceneId),...(action==='lootCollect'&&lootResult?.itemId?{pickup:lootResult}:{})});
+      return json({...view(updated,access,responseScene),...(action==='lootCollect'&&lootResult?.itemId?{pickup:lootResult}:{})});
     }
     if (method === 'POST' && ['cinematic','map','pdf','sound','portrait','token-portrait'].includes(route)) {
       if (!master && route!=='portrait') fail(403,'Somente o mestre pode enviar arquivos.');

@@ -19,7 +19,8 @@ function distance(source,token){
 function sightAndReach(clue,tokens,table){
  if(table.fog?.mode!=='war'&&!pointRevealed(table.fog,clue))return false;
  return tokens.some(t=>{
-  if(distance(clue,t)>clue.radius)return false;
+  if(clue.bounds){const {w,h}=clue.bounds,size=(Number(t.size)||1)/2;if(Math.abs(t.x+size-clue.x)>w/2||Math.abs(t.y+size-clue.y)>h/2)return false;}
+  else if(distance(clue,t)>clue.radius)return false;
   const sector=visionSector(t,table.grid);
   if(table.darkness?.enabled||table.fog?.enabled&&table.fog.mode==='war')return pointInVision(clue,sector,table.walls);
   return pointInVision(clue,{...sector,angle:360,enabled:true,radius:Infinity},table.walls);
@@ -132,7 +133,17 @@ export function mutateExploration(state,action,data,access){
   if(points.length>=96)fail(409,'A cena comporta até 96 pontos de exploração.');
   const base={id:crypto.randomUUID(),kind:data.kind,x:checked(data.x,table.grid.columns),y:checked(data.y,table.grid.rows),radius:checked(data.radius,80)};
   if(base.radius<.25)fail(400,'Informe pelo menos um quarto de célula de alcance.');
-  if(data.kind==='clue'){
+  if(data.kind==='region'){
+   const w=checked(data.bounds?.w,table.grid.columns),h=checked(data.bounds?.h,table.grid.rows);
+   const label=typeof data.label==='string'?data.label.trim():'';
+   if(!w||!h||!label||label.length>80)fail(400,'Informe uma área e um nome para o gatilho.');
+   const event=data.event||'alert';
+   if(!['alert','scene','cinematic'].includes(event))fail(400,'Evento de região inválido.');
+   if(event==='scene'&&(!sceneLibrary(state).scenes.some(s=>s.id===data.target)||data.target===data.sceneId))fail(400,'Escolha outra cena.');
+   if(event==='cinematic'&&!state.cinematicCues?.some(c=>c.id===data.target))fail(400,'Cinemática indisponível.');
+   points.push({...base,bounds:{w,h},label,event,...(event!=='alert'?{target:data.target}:{})});
+  }else if(data.kind==='clue'){
+   if(data.bounds){const w=checked(data.bounds.w,table.grid.columns),h=checked(data.bounds.h,table.grid.rows);if(!w||!h)fail(400,'Região vazia.');base.bounds={w,h};if(data.destination){if(!sceneLibrary(state).scenes.some(s=>s.id===data.destination))fail(400,'Cena de destino indisponível.');base.destination=data.destination;}}
    if(!['auto','approve'].includes(data.mode)||typeof data.label!=='string'||!data.label.trim()||data.label.length>80)fail(400,'Informe o nome no mapa e o modo de investigação.');
    const rules=clueRules(state,data);
    points.push({...base,label:data.label.trim(),...clueContent(state,data),discoveries:[],mode:rules.test||rules.rewards.length?'approve':data.mode,pending:[],rules});
@@ -231,6 +242,7 @@ export function validateExploration(state){
   for(const p of points){
    if(!p||!ref(p.id)||ids.has(p.id)||![p.x,p.y,p.radius].every(Number.isFinite)||p.x<0||p.y<0||p.radius<=0)fail(400,'Ponto de exploração inválido no backup.');
    ids.add(p.id);
+   if(p.kind==='region'&&ref(p.label)&&Number.isFinite(p.bounds?.w)&&p.bounds.w>0&&Number.isFinite(p.bounds?.h)&&p.bounds.h>0&&(['scene','cinematic'].includes(p.event)?ref(p.target):p.event==='alert'))continue;
    if(p.kind==='sound'&&ref(p.clipId)&&Number.isFinite(p.at)&&(p.muffle===undefined||typeof p.muffle==='boolean'))continue;
    if(p.rules&&(typeof p.rules.test!=='string'||p.rules.test.length>180||!Number.isInteger(p.rules.dc)||Math.abs(p.rules.dc)>999||!Array.isArray(rewardsFor(p.rules))||!rewardsFor(p.rules).every(validReward)))fail(400,'Teste de investigação inválido no backup.');
    if(p.awarded!==undefined&&(!Array.isArray(p.awarded)||p.awarded.some(key=>!ref(key))))fail(400,'Registro de recompensas inválido no backup.');

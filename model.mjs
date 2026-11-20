@@ -271,3 +271,6 @@ export function cinematicStyle({transition='rift',reveal='fade',revealSeconds=.7
     throw Object.assign(new Error('Velocidade da legenda inválida.'),{status:400});
   return {transition,reveal,revealSeconds,captionSpeed,accent,background,lettering};
 }
+
+export const readingKinds={note:'Nota ou bilhete',letter:'Carta',bookPage:'Página de livro',diaryPage:'Página de diário',phone:'Celular',photo:'Fotografia anotada',record:'Documento de arquivo'};
+export const inventoryKinds={gear:'Equipamento',weapon:'Arma',armor:'Armadura',consumable:'Consumível',treasure:'Tesouro',quest:'Objeto de missão',...readingKinds,custom:'Categoria personalizada'};

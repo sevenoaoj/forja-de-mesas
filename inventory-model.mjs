@@ -2,7 +2,8 @@ import {removeSessionMaterial} from './scene-model.mjs';
 import {journalView} from './journal-model.mjs';
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
 const clean=(v,max)=>typeof v==='string'?v.trim().slice(0,max):'';
-export const itemKinds={gear:'Equipamento',weapon:'Arma',armor:'Armadura',consumable:'Consumível',treasure:'Tesouro',quest:'Objeto de missão'};
+import {inventoryKinds as itemKinds,readingKinds} from './model.mjs';
+export {itemKinds};
 
 const owned=(state,item,access)=>!access.guest&&access.memberId&&(state.characters||[]).some(c=>c.id===item.characterId&&!c.hidden&&c.ownerId===access.memberId);
 // A stack shares its charge pool. Old consumables have one use per unit.
@@ -45,6 +46,21 @@ export function mutateInventory(state,action,data={},access={}){
   const name=clean(data.name,120),kind=data.kind||'gear';if(!name||!Object.hasOwn(itemKinds,kind))fail(400,'Informe nome e categoria válidos.');
   const journalId=clean(data.journalId,100);if(journalId&&!state.journal?.some(e=>e.id===journalId))fail(400,'Documento do diário indisponível.');
   const entry={id:old?.id||crypto.randomUUID(),version:(old?.version||0)+1,characterId:old?.characterId||null,...(old?.sourceId?{sourceId:old.sourceId}:{}),name,kind,accent:data.accent?.toLowerCase()||old?.accent||'#dfbb73',portrait:data.removePortrait?'':old?.portrait||'',description:clean(data.description,8000),properties:clean(data.properties,4000),gmNotes:clean(data.gmNotes,8000),rarity:clean(data.rarity,80),weight:numeric(data.weight??0,'Peso',1000000),value:clean(data.value,120),journalId,quantity:old?.quantity??1,equipped:old?.equipped??false,notes:old?.notes||''};
+  if(Object.hasOwn(readingKinds,kind)||kind==='custom'){
+   const content=data.content??old?.content??'';
+   if(typeof content!=='string'||content.length>24000)fail(400,'O conteúdo deve ter até 24.000 caracteres.');
+   if(kind==='phone'){
+    const photos=data.photos??old?.photos??[];
+    if(!Array.isArray(photos)||photos.length>6||photos.some(p=>!p||typeof p.name!=='string'||!p.name.trim()||p.name.length>255||typeof p.src!=='string'||p.src.length>150000||!/^data:image\/jpeg;base64,\/9j\/[A-Za-z0-9+/]+=*$/.test(p.src))||new Set(photos.map(p=>p.name)).size!==photos.length)fail(400,'Álbum de fotos inválido.');
+    if(photos.length)entry.photos=photos.map(({name,src})=>({name,src}));
+   }
+   entry.content=content.trim();
+   entry.origin=clean(data.origin??old?.origin,160);
+   if(kind==='custom'){
+    entry.categoryName=clean(data.categoryName??old?.categoryName,60);
+    if(!entry.categoryName)fail(400,'Informe o nome da categoria personalizada.');
+   }
+  }
   if(kind==='consumable'){
    entry.usesPerUnit=numeric(data.usesPerUnit??old?.usesPerUnit??1,'Usos por unidade',9999,true);
    if(!entry.usesPerUnit)fail(400,'Informe pelo menos um uso por unidade.');

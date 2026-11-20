@@ -92,13 +92,13 @@ export function cinematicView(state,access){
   return {id:run.id,text:run.text,soundtrackId:run.soundtrackId||'',...cinematicStyle(run),startedAt:run.startedAt,revealAt:run.revealAt,endsAt:run.endsAt,media:asset?{id:asset.id,type:asset.type}:null};
 }
 export function publicState(state,access) {
-  const {investigationReceipts,materialShares,sessionLog,cinematicCues,cinematicRun,cinematicLibrary,parties,gmResources,sheetStarter,members,notes,initiative,gmScreen,sceneLibrary,inventory,journal,sheetTemplates,narrations,...base}=state;
+  const {mediaCheck,investigationReceipts,materialShares,sessionLog,cinematicCues,cinematicRun,cinematicLibrary,parties,gmResources,sheetStarter,members,notes,initiative,gmScreen,sceneLibrary,inventory,journal,sheetTemplates,narrations,...base}=state;
   const shared={...base,checkRequests:checkRequestView(state,access),cinematic:cinematicView(state,access),tokens:(base.tokens||[]).filter(t=>access.master||!t.hidden).map(t=>publicItemToken(t,access.master)),...(base.table?{table:{...base.table,...(!access.master&&base.table.exploration?{exploration:[]}:{}),lootEvents:(base.table.lootEvents||[]).filter(e=>access.master||e.public!==false)}}:{}),inventory:inventoryView(state,access),narrations:narrationView(state,access),journal:journalView(state,access),sheetTemplates:sheetTemplatesView(state,access)};
   shared.sessionLog=sessionLogView(state,access.master,ownedCharacter(state,access),shared.journal,shared.inventory);
   if (access.master) return {...shared,cinematicCues:cinematicCues||[],cinematicLibrary:cinematicLibrary||[],parties:campaignParties(state),gmResources:gmResources||{},characters:state.characters.map(fullCharacter),notes,initiative,gmScreen};
   const own=ownedCharacter(state,access);
   return {
-    ...shared,sharing:sharingView(state,own),
+    ...shared,...(own?.party&&campaignParties(state).find(g=>g.id===own.party)?.emblem?{partyEmblem:campaignParties(state).find(g=>g.id===own.party).emblem}:{}),sharing:sharingView(state,own),
     investigationReceipts:own?(investigationReceipts||[]).filter(r=>r.characterId===own.id&&r.memberId===access.memberId).map(({id,location,from,items})=>({id,location,from,items})):[],
     characters:state.characters.filter(character=>!character.hidden&&!outsideParty(character,own)).map(character=>
       isPlayerCharacter(character)&&character.ownerId===access.memberId&&access.memberId ? fullCharacter(character) : {

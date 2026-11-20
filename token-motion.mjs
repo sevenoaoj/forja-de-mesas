@@ -2,10 +2,10 @@
 const epsilon=1e-8;
 const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
 
-export function slideToken(start,target,size,table){
+export function slideToken(start,target,size,table,trace){
  const radius=size/2,maxX=table.grid.columns-size,maxY=table.grid.rows-size;
  const goal={x:clamp(target.x,0,maxX),y:clamp(target.y,0,maxY)};
- if(!table.walls?.length)return goal;
+ if(!table.walls?.length){trace?.push(goal);return goal;}
  let x=start.x+radius,y=start.y+radius,dx=goal.x-start.x,dy=goal.y-start.y;
  // After the first contact, spend the remaining motion along the tangent.
  // Additional contacts handle corners and the edges of the map.
@@ -44,7 +44,7 @@ export function slideToken(start,target,size,table){
     if(h>epsilon)hit(t,hx/h,hy/h);
    }
   }
-  x+=time*dx;y+=time*dy;
+  x+=time*dx;y+=time*dy;trace?.push({x:x-radius,y:y-radius});
   if(time===1)break;
   const inward=dx*nx+dy*ny;
   dx=(1-time)*(dx-inward*nx);dy=(1-time)*(dy-inward*ny);
@@ -52,14 +52,14 @@ export function slideToken(start,target,size,table){
  return {x:clamp(x-radius,0,maxX),y:clamp(y-radius,0,maxY)};
 }
 
-export function resolveTokenPath(token,target,table,path=[],snap=false){
+export function resolveTokenPath(token,target,table,path=[],snap=false,trace){
  if(!Array.isArray(path)||path.length>64)throw Object.assign(new Error('Trajeto do token inválido.'),{status:400});
  const size=Number(token.size)||1;
  let at=token;
  for(const p of path){
   if(!Number.isFinite(p?.x)||!Number.isFinite(p?.y))throw Object.assign(new Error('Posição do trajeto inválida.'),{status:400});
-  at=slideToken(at,p,size,table);
+  at=slideToken(at,p,size,table,trace);
  }
- at=slideToken(at,target,size,table);
- return snap?slideToken(at,{x:Math.round(at.x),y:Math.round(at.y)},size,table):at;
+ at=slideToken(at,target,size,table,trace);
+ return snap?slideToken(at,{x:Math.round(at.x),y:Math.round(at.y)},size,table,trace):at;
 }

@@ -66,3 +66,26 @@ test('consumível antigo tem um uso por unidade e a barra respeita os limites',(
  assert.throws(()=>step(-1),{status:409});step(1);
  assert.equal(inventoryView(s,alice)[0].uses,1);assert.equal(inventoryView(s,alice)[0].quantity,3);
 });
+
+test('celular entrega mensagens consultáveis e categorias próprias conservam o conteúdo',()=>{
+ const s=seed(),phone=prepare(s,{kind:'phone',origin:'Arquivo 7',content:'Ana\nAbra <o cofre>\n\nRui\nCheguei.'});
+ grant(s,phone);
+ const e=inventoryView(s,alice)[0],html=itemDetails(e,{state:{journal:[]},characterId:'a'},ui);
+ assert.match(html,/reading-phone/);assert.match(html,/<summary>Ana<\/summary>/);assert.match(html,/Abra &lt;o cofre&gt;/);
+ assert.match(html,/<summary>Rui<\/summary>/);assert.doesNotMatch(html,/SEGREDO ITEM/);
+ assert.deepEqual(inventoryView(s,bob),[]);
+ const custom=prepare(s,{kind:'custom',categoryName:'Fita cassete',content:'Transcrição'});
+ assert.match(itemDetails(custom,{state:{journal:[]},master:true},ui),/Transcrição/);
+ assert.throws(()=>prepare(s,{kind:'custom'}),/categoria/);
+});
+
+test('álbum do celular acompanha a entrega, aparece na conversa e permanece privado',()=>{
+ const state=seed(),photo={name:'cais.jpg',src:'data:image/jpeg;base64,/9j/2Q=='};
+ const phone=prepare(state,{kind:'phone',photos:[photo],content:'Ana\n[foto:cais.jpg]\n>Recebi.'});
+ grant(state,phone);
+ const item=inventoryView(state,alice)[0],html=itemDetails(item,{state:{journal:[]},characterId:'a'},ui);
+ assert.deepEqual(item.photos,[photo]);assert.match(html,/phone-bubble sent/);
+ assert.equal((html.match(/data-phone-photo="0"/g)||[]).length,2);
+ assert.deepEqual(inventoryView(state,bob),[]);
+ assert.throws(()=>prepare(state,{kind:'phone',photos:[{...photo,src:'https://invalid.example/photo.jpg'}]}),/Álbum/);
+});

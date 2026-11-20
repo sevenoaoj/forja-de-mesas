@@ -3,11 +3,12 @@ import {lightShape,renderDarkness,updateDarkness,renderVisionCones,updateVisionC
 import {tokenIconSvg} from './token-icons.mjs';
 import {renderTableRollPanel,renderTableRollContent,renderFreeRollPreview,tableRollPreview,tableRollTabs} from './table-rolls.mjs';
 import {renderRollHistory} from './rolls.mjs';
-import {slideToken,conditionSummary,normalizeTable,pingNames,mapPixelsPerCell} from './table-model.mjs';
+import {pointRevealed,slideToken,conditionSummary,normalizeTable,pingNames,mapPixelsPerCell} from './table-model.mjs';
 import {colors,sheetFields,sheetValue,skillValues,displaySheetFormula,rollFormulaLimit,sheetTestBase,sheetAttributeTest,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
 
 const escape = value => String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const icons = {
+  region:'<rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="4 2"/><path d="M8 12h8m-4-4v8"/>',
   select:'<path d="m5 3 14 9-7 1-3 7z"/>',
   pan:'<path d="M8 12V5a2 2 0 0 1 4 0v6-7a2 2 0 0 1 4 0v8-5a2 2 0 0 1 4 0v9c0 4-3 6-6 6h-2c-2 0-3-1-4-3l-5-7a2 2 0 0 1 3-2l2 2"/>',
   measure:'<path d="m3 15 12-12 6 6L9 21zM8 10l3 3m1-7 3 3M4 14l3 3"/>',
@@ -37,6 +38,13 @@ const clamp = (value,min,max) => Math.max(min,Math.min(max,value));
 function drawingShape(drawing, extra='') {
   const {x,y,toX,toY,kind,color} = drawing;
   const common = ' fill="none" stroke="'+escape(color)+'" stroke-width="0.06" '+extra;
+  if(['cone','burst','beam'].includes(kind)){
+    const dx=toX-x,dy=toY-y,r=Math.hypot(dx,dy),angle=Math.atan2(dy,dx),paint=' fill="'+escape(color)+'" fill-opacity=".22" stroke="'+escape(color)+'" stroke-width=".07"';
+    if(kind==='burst')return '<circle cx="'+x+'" cy="'+y+'" r="'+r+'"'+paint+'/>';
+    if(kind==='beam')return '<line x1="'+x+'" y1="'+y+'" x2="'+toX+'" y2="'+toY+'" stroke="'+escape(color)+'" stroke-opacity=".5" stroke-width="1"/>';
+    const edge=a=>(x+r*Math.cos(a))+' '+(y+r*Math.sin(a));
+    return '<path d="M'+x+' '+y+' L'+edge(angle-Math.PI/6)+' A'+r+' '+r+' 0 0 1 '+edge(angle+Math.PI/6)+' Z"'+paint+'/>';
+  }
   if (kind==='freehand') {
     const points=Array.isArray(drawing.points)?drawing.points:[];
     return '<polyline points="'+points.map(point=>point.x+','+point.y).join(' ')+'"'+common+' stroke-linecap="round" stroke-linejoin="round"/>';
@@ -96,7 +104,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},placePoint=
   let tool='select';
   let shape='freehand',pingSignal='point';
   let lightColor='#ffb760',lightMode='draw',lightAngle=0,lightScope='';
-  let wallMode='wall';
+  let wallMode='wall',effect='cone',effectName='',effectLength=0;
   let fogOperation='reveal';
   let fogShape='brush',fogBrushPixels=160;
   const brushRadius=()=>{const map=row?.state.map;const pixels=table.grid.mode==='manual'&&map?.width&&map?.height?Math.max(map.width/table.grid.columns,map.height/table.grid.rows):table.grid.cellPixels;return clamp(fogBrushPixels/(2*pixels),.001,8);};
@@ -110,7 +118,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},placePoint=
   let offset={x:0,y:0};
   let campaign;
   let loadedMap;
-  let mapTask;
+  let mapTask,previousViewport;
   let mapURL;
   const seenPings=new Set(),pingTimers=new Set(),remoteMoves=new Map(),seenLoot=new Set();
   let dragSequence=0;
@@ -315,12 +323,12 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},placePoint=
     return p.kind==='sound'?(row.state.audio?.clips||[]).find(c=>c.id===p.clipId)?.name||'Som local':p.label;
   }
   function pointMarkers(){
-    return (movingPoints??table.exploration??[]).map(p=>'<button type="button" class="vtt-point" data-act="exploreOpen" data-id="'+escape(p.id)+'" title="'+escape(pointLabel(p))+'" aria-label="'+escape(pointLabel(p))+'" style="left:'+p.x/table.grid.columns*100+'%;top:'+p.y/table.grid.rows*100+'%">'+icon(p.kind==='sound'?'sound':'clue')+'</button>').join('');
+    return (movingPoints??table.exploration??[]).map(p=>(row.master&&p.bounds?'<i class="region-guide" style="left:'+((p.x-p.bounds.w/2)/table.grid.columns*100)+'%;top:'+((p.y-p.bounds.h/2)/table.grid.rows*100)+'%;width:'+(p.bounds.w/table.grid.columns*100)+'%;height:'+(p.bounds.h/table.grid.rows*100)+'%"></i>':'')+'<button type="button" class="vtt-point" data-act="exploreOpen" data-id="'+escape(p.id)+'" title="'+escape(pointLabel(p))+'" aria-label="'+escape(pointLabel(p))+'" style="left:'+p.x/table.grid.columns*100+'%;top:'+p.y/table.grid.rows*100+'%">'+icon(p.kind==='region'?'region':p.kind==='sound'?'sound':'clue')+'</button>').join('');
   }
   function pointsList(){
     const points=movingPoints??table.exploration??[];
     if(!points.length)return '';
-    return '<section class="vtt-side-section"><h2>'+ (row.master?'Pontos da cena':'Pontos por perto')+'</h2><div class="actions">'+points.map(p=>button(pointLabel(p)+(p.found?' · descoberta':p.pending?.length?' · '+p.pending.length+' pedido(s)':p.pending===true?' · aguardando':''),'exploreOpen',p.id,p.kind==='sound'?'sound':'clue')).join('')+'</div></section>';
+    return '<section class="vtt-side-section"><h2>'+ (row.master?'Pontos da cena':'Pontos por perto')+'</h2><div class="actions">'+points.map(p=>button(pointLabel(p)+(p.found?' · descoberta':p.pending?.length?' · '+p.pending.length+' pedido(s)':p.pending===true?' · aguardando':''),'exploreOpen',p.id,p.kind==='region'?'region':p.kind==='sound'?'sound':'clue')).join('')+'</div></section>';
   }
   function sceneMarkup() {
     const {columns,rows,visible}=table.grid;
@@ -467,7 +475,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},placePoint=
     if (!(row.state.tokens||[]).some(token=>token.id===selected)) selected='';
     return '<section class="vtt"><div class="vtt-heading"><div><p class="vtt-eyebrow" data-table-campaign-name>'+escape(row.state.name)+'</p><h1>Mesa virtual</h1><p class="subtitle" data-table-scene-name>'+escape([row.state.sessionName,row.state.scene].filter(Boolean).join(' · ')||'Cena atual')+'</p></div><div class="actions">'+'<button type="button" class="btn small" data-table-focus-rolls>'+icon('dice')+'Dados da ficha</button>'+(row.master?button('Ambiente','tableAtmosphere','','darkness')+button('Enviar mapa','upload','map','image')+button('Novo token','tableTokenAdd','','plus')+button('Colocar item','lootPlace','','plus'):'')+'</div></div>'+
       '<div class="vtt-layout"><div class="vtt-scene-column"><section class="vtt-stage"><div class="vtt-toolbar" role="toolbar" aria-label="Ferramentas da mesa"><div class="vtt-tools">'+
-      toolButton('select','Selecionar')+toolButton('pan','Mover visão')+toolButton('measure','Medir')+toolButton('ping','Apontar')+(row.master?toolButton('draw','Desenhar')+toolButton('fog','Névoa')+toolButton('walls','Paredes, portas e janelas')+toolButton('lights','Iluminação')+toolButton('clue','Colocar pista')+toolButton('sound','Colocar som'):'')+'</div>'+
+      toolButton('select','Selecionar')+toolButton('pan','Mover visão')+toolButton('measure','Medir')+toolButton('ping','Apontar')+(row.master?toolButton('draw','Desenhar')+toolButton('fog','Névoa')+toolButton('walls','Paredes, portas e janelas')+toolButton('lights','Iluminação')+toolButton('region','Região interativa')+toolButton('clue','Colocar pista')+toolButton('sound','Colocar som'):'')+'</div>'+
       '<div class="vtt-view-controls"><span class="vtt-connection" data-table-connection role="status" aria-live="polite">Conectando…</span><button class="vtt-tool" type="button" data-table-zoom="out" aria-label="Diminuir zoom" title="Diminuir zoom">'+icon('zoomOut')+'</button><span data-table-zoom-label>'+Math.round(zoom*100)+'%</span><button class="vtt-tool" type="button" data-table-zoom="in" aria-label="Aumentar zoom" title="Aumentar zoom">'+icon('zoomIn')+'</button><button class="vtt-tool" type="button" data-table-zoom="fit" aria-label="Ajustar mapa à tela" title="Ajustar mapa à tela">'+icon('fit')+'</button>'+(row.master?'<button class="vtt-tool" type="button" data-table-action="darknessToggle" aria-pressed="'+table.darkness.enabled+'" title="'+(table.darkness.enabled?'Desativar escuridão':'Ativar escuridão')+'" aria-label="'+(table.darkness.enabled?'Desativar escuridão':'Ativar escuridão')+'">'+icon('darkness')+'</button>':'')+(row.master?'<button type="button" class="vtt-tool vtt-vision-sharing" data-table-action="visionShare" aria-pressed="'+(table.darkness.mode==='group')+'" title="Compartilhar visão entre jogadores">'+icon('sharedVision')+'<span data-vision-share-label>'+(table.darkness.mode==='teams'?'Visão: por grupos':table.darkness.mode==='group'?'Visão: compartilhada':'Visão: individual')+'</span></button><button type="button" class="vtt-tool vtt-cones-control" data-table-action="visionCones" aria-pressed="'+showCones+'" title="Mostrar cones de todos os tokens, só para o mestre" '+(!table.darkness.enabled||playerPreview?'disabled':'')+'>'+icon('cones')+'<span>Cones</span></button>':'')+(row.master?'<button class="vtt-tool" type="button" data-act="tableSettings" aria-label="Configurar grade" title="Configurar grade">'+icon('settings')+'</button>':'')+'</div></div><div class="vtt-measure-options" '+(tool==='measure'?'':'hidden')+'><label>Régua <select data-measure-mode><option value="direct">Linha direta</option><option value="path" '+(measureMode==='path'?'selected':'')+'>Percurso por pontos</option></select></label><button type="button" class="btn small" data-table-action="measureUndo" '+(measureMode==='path'?'':'hidden')+'>Desfazer ponto</button><button type="button" class="btn small" data-table-action="measureClear">Limpar medida</button></div><div class="vtt-ping-options" '+(tool==='ping'?'':'hidden')+'><label>Sinal no mapa <select data-ping-signal>'+Object.entries(pingNames).map(([key,label])=>'<option value="'+key+'" '+(key===pingSignal?'selected':'')+'>'+label+'</option>').join('')+'</select></label></div>'+drawingOptions()+
       '<div class="vtt-viewport" tabindex="0" role="region" aria-label="Mapa interativo. Use as ferramentas para medir, apontar e movimentar tokens.">'+sceneMarkup()+
       (!row.state.map?'<p class="vtt-map-hint">'+(row.master?'Envie um mapa ou use a grade para começar.':'A cena está pronta para os tokens.')+'</p>':'')+'</div>'+
@@ -476,7 +484,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},placePoint=
   }
 
   function help() {
-    return ({clue:'Toque no mapa para vincular uma anotação',sound:'Toque no mapa para colocar um emissor de som',lights:lightMode==='delete'?'Toque no centro da luz para removê-la':'Toque para colocar uma luz ou arraste para apontar e definir o alcance · Comece no centro de uma luz para ajustá-la',walls:['wall','door','window'].includes(wallMode)?'Arraste de uma ponta à outra · Pontas próximas se conectam · Esc cancela':wallMode==='toggle'?'Toque na porta para abrir ou fechar':'Toque no segmento que deseja excluir',select:'Arraste tokens · Dois dedos movem e ampliam · Setas movem a seleção',pan:'Arraste o mapa para mudar a visão',measure:measureMode==='path'?'Toque no mapa para marcar cada ponto do percurso':'Arraste entre dois pontos para medir',ping:'Clique no mapa para apontar para o grupo',draw:shape==='freehand'?'Desenhe livremente · Esc cancela':'Arraste para desenhar uma forma',fog:(fogShape==='brush'?'Pincel livre · ':'Retângulo na grade · ')+'Mouse: esquerdo revela · direito oculta · No toque, escolha a operação · Esc cancela'})[tool]+' · Botão do meio: mover câmera';
+    return ({clue:'Toque no mapa para vincular uma anotação',sound:'Toque no mapa para colocar um emissor de som',lights:lightMode==='delete'?'Toque no centro da luz para removê-la':'Toque para colocar uma luz ou arraste para apontar e definir o alcance · Comece no centro de uma luz para ajustá-la',region:'Arraste para delimitar o gatilho de entrada',effect:'Arraste da origem para mirar e definir o alcance · Solte para confirmar',walls:['wall','door','window'].includes(wallMode)?'Arraste de uma ponta à outra · Pontas próximas se conectam · Esc cancela':wallMode==='toggle'?'Toque na porta para abrir ou fechar':'Toque no segmento que deseja excluir',select:'Arraste tokens · Dois dedos movem e ampliam · Setas movem a seleção',pan:'Arraste o mapa para mudar a visão',measure:measureMode==='path'?'Toque no mapa para marcar cada ponto do percurso':'Arraste entre dois pontos para medir',ping:'Clique no mapa para apontar para o grupo',draw:shape==='freehand'?'Desenhe livremente · Esc cancela':'Arraste para desenhar uma forma',fog:(fogShape==='brush'?'Pincel livre · ':'Retângulo na grade · ')+'Mouse: esquerdo revela · direito oculta · No toque, escolha a operação · Esc cancela'})[tool]+' · Botão do meio: mover câmera';
   }
 
   function updateTransform() {
@@ -617,6 +625,18 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},placePoint=
         preview.innerHTML='<rect x="'+rect.x+'" y="'+rect.y+'" width="'+rect.width+'" height="'+rect.height+'" fill="'+color+'" fill-opacity=".24" stroke="'+color+'" stroke-width="2" stroke-dasharray="6 3" vector-effect="non-scaling-stroke"/>';
         root.querySelector('[data-table-help]').textContent=(operation==='reveal'?'Revelar':'Ocultar')+' '+rect.width+' × '+rect.height+' células · Solte para aplicar · Esc cancela';
       }
+    } else if(gesture.kind==='region'||gesture.kind==='effect'){
+      const dx=end.x-start.x,dy=end.y-start.y,r=Math.hypot(dx,dy);
+      preview.innerHTML=drawingShape({...start,toX:end.x,toY:end.y,kind:gesture.kind==='region'?'rectangle':effect,color:'#8ad5dc'});
+      if(gesture.kind==='effect'){
+        const hits=visualTokens().filter(t=>{
+          if(!tokenShown(t)||!row.master&&(t.hidden||table.fog.mode!=='war'&&!pointRevealed(table.fog,{x:t.x+(t.size||1)/2,y:t.y+(t.size||1)/2})))return false;
+          const x=t.x+(t.size||1)/2-start.x,y=t.y+(t.size||1)/2-start.y,d=Math.hypot(x,y),along=(x*dx+y*dy)/(r||1);
+          if(effect==='beam')return along>=0&&along<=r&&Math.abs(x*dy-y*dx)<=(r||1)/2;
+          return d<=r&&(effect==='burst'||along>=d*Math.cos(Math.PI/6));
+        });
+        root.querySelector('[data-table-help]').textContent=effectName+' · '+(r*table.grid.size).toFixed(1)+' '+table.grid.unit+' · '+(hits.map(t=>t.name).join(', ')||'Nenhum alvo visível');
+      }
     } else if (gesture.kind==='draw') {
       preview.innerHTML=drawingShape({kind:gesture.shape,x:start.x,y:start.y,toX:end.x,toY:end.y,color:gesture.color,points:gesture.points});
     }
@@ -733,7 +753,11 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},placePoint=
       updateTransform();
       return;
     }
-    const end=point(event);
+    let end=point(event);
+    if(gesture.kind==='effect'&&effectLength){
+      const dx=end.x-gesture.start.x,dy=end.y-gesture.start.y,d=Math.hypot(dx,dy);
+      if(d){const scale=effectLength/(table.grid.size*d);end={x:clamp(gesture.start.x+dx*scale,0,table.grid.columns),y:clamp(gesture.start.y+dy*scale,0,table.grid.rows)};}
+    }
     gesture.end=end;
     if (gesture.kind==='token') {
       const size=Number(gesture.item.size)||1;
@@ -813,6 +837,13 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},placePoint=
         const hit=wallPick(point(event));
         if(hit)perform(wallMode==='delete'?'tableWallDelete':'tableDoorSet',{id:hit.wall.id,open:!hit.wall.open});
       }
+    }
+    if(active.kind==='region'){
+      const w=Math.abs(end.x-active.start.x),h=Math.abs(end.y-active.start.y);
+      if(w>.05&&h>.05)placePoint('region',{x:(active.start.x+end.x)/2,y:(active.start.y+end.y)/2,w,h},row.state.sceneId);
+    }
+    if(active.kind==='effect'&&Math.hypot(end.x-active.start.x,end.y-active.start.y)>.05){
+      perform('tableEffect',{kind:effect,...active.start,toX:end.x,toY:end.y,color:'#8ad5dc'});switchTool('select');
     }
     if(active.kind==='draw'){
       if(active.shape==='freehand'){addFreehandPoint(active,end);if(active.points.length>1)perform('tableDrawingAdd',{kind:'freehand',points:active.points,color:active.color});}
@@ -1264,7 +1295,17 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},placePoint=
     paintPings();paintLoot();queueVision();
     setConnectionStatus(connectionStatus);
     loadPortraits();
-    loadMap().catch(error=>{mapTask=null;report(error.message||'Não foi possível carregar o mapa.');});
+    const ready=loadMap().catch(error=>{mapTask=null;report(error.message||'Não foi possível carregar o mapa.');});
+    const previous=previousViewport;previousViewport=null;
+    if(previous&&previous.campaign===row.id&&previous.key!==row.state.sceneId+'/'+row.state.map?.id&&viewport.animate&&!globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches){
+      const curtain=document.createElement('div');
+      curtain.className='map-fade-curtain';curtain.inert=true;curtain.setAttribute('aria-hidden','true');
+      const old=previous.node;old.classList.add('map-fade-old');curtain.append(old);viewport.append(curtain);
+      const fade=old.animate([{opacity:1},{opacity:0}],{duration:240,fill:'forwards'});
+      Promise.allSettled([fade.finished,ready]).then(()=>{
+        old.remove();return curtain.animate([{opacity:1},{opacity:0}],{duration:320,fill:'forwards'}).finished;
+      }).catch(()=>{}).finally(()=>curtain.remove());
+    }
   }
 
   function syncRolls(next) {
@@ -1284,6 +1325,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},placePoint=
   }
 
   function dispose() {
+    if(viewport&&row)previousViewport={node:viewport,campaign:row.id,key:row.state.sceneId+'/'+row.state.map?.id};
     movingPoints=null;
     routeDraft=null;
     if(gesture?.kind==='token')sendTokenPreview(gesture,'cancel');
@@ -1291,5 +1333,5 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},placePoint=
     events?.abort();resize?.disconnect();for(const timer of pingTimers)clearTimeout(timer);pingTimers.clear();clearRemoteMoves();gesture=null;touches.clear();rotationPreview=null;localPlacement=null;root=null;viewport=null;world=null;
   }
 
-  return {explorationMotion,syncPoints,render,mount,syncRolls,syncScene,receiveRealtime,resetRealtime,setConnectionStatus,isInteracting:()=>Boolean(gesture)||busy||rotationSending,dispose};
+  return {aim(kind,name,length=0){effect=kind;effectName=name;effectLength=length;switchTool('effect');},explorationMotion,syncPoints,render,mount,syncRolls,syncScene,receiveRealtime,resetRealtime,setConnectionStatus,isInteracting:()=>Boolean(gesture)||busy||rotationSending,dispose};
 }
