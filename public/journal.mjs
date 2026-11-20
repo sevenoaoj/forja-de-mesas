@@ -1,9 +1,10 @@
 const kinds={note:'Anotação',item:'Inventário',clue:'Pista',character:'Personagem',place:'Local',quest:'Missão'};
 const norm=value=>String(value||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase();
-export function visibleJournal(row,view={}){return (row.state.journal||[]).filter(e=>(!view.kind||view.kind==='all'||e.kind===view.kind)&&norm(e.title+' '+e.body+(row.master?' '+e.gmNotes:'')).includes(norm(view.query)));}
+export const journalEntries=row=>(row.state.journal||[]).filter(e=>!row.master||!e.sourcePath||e.inJournal===true);
+export function visibleJournal(row,view={}){return journalEntries(row).filter(e=>(!view.kind||view.kind==='all'||e.kind===view.kind)&&norm(e.title+' '+e.body+(row.master?' '+e.gmNotes:'')).includes(norm(view.query)));}
 export function renderJournal(row,ui,view={}){
- const {esc,button,head}=ui,entries=visibleJournal(row,view),all=row.state.journal||[];
- return head('Diário da campanha',row.master?'Prepare pistas e acompanhe os registros dos personagens.':'Suas anotações, inventário e descobertas da campanha.',button(row.master?'Novo documento':'Novo registro','journalEdit','primary','plus'))+
+ const {esc,button,head}=ui,entries=visibleJournal(row,view),all=journalEntries(row);
+ return head('Diário da campanha',row.master?'Prepare pistas e acompanhe os registros dos personagens.':'Suas anotações, inventário e descobertas da campanha.',button(row.master?'Novo documento':'Novo registro','journalEdit','primary','plus')+(row.master?button('Abrir cofre de notas','vaultOpen','small') : ''))+
  '<section class="journal-toolbar"><label>Buscar no diário<input type="search" data-journal-search value="'+esc(view.query||'')+'" placeholder="Título ou conteúdo" autocomplete="off"></label><label>Categoria<select data-journal-kind><option value="all">Todas</option>'+Object.entries(kinds).map(([id,label])=>'<option value="'+id+'" '+(view.kind===id?'selected':'')+'>'+label+'</option>').join('')+'</select></label></section><div class="journal-grid">'+(entries.length?entries.map(e=>{
  const sharing=e.audience==='all'?'Visível para todos':e.audience==='selected'?'Compartilhado com '+(e.recipientIds||[]).length+' personagem(ns)':e.authorName?'Autor e mestre':'Só mestre';
  const editable=row.master||e.canEdit;
@@ -11,6 +12,7 @@ export function renderJournal(row,ui,view={}){
  return '<article class="panel journal-entry journal-'+e.kind+'"><header><div><p class="journal-meta">'+esc(kinds[e.kind])+' · '+esc(e.authorName||'Mestre')+(e.kind==='quest'?' · '+(e.status==='completed'?'Concluída':'Em andamento'):'')+'</p><h2>'+esc(e.title)+'</h2></div><button type="button" class="btn small ghost" data-act="journalCollapse" data-id="'+esc(e.id)+'" aria-expanded="'+!collapsed+'" aria-label="'+esc((collapsed?'Expandir ':'Recolher ')+e.title)+'">'+(collapsed?'＋':'−')+'</button></header>'+
  (!collapsed?'<p class="journal-body">'+esc(e.body||'Sem conteúdo.')+'</p>'+(row.master&&e.gmNotes?'<details class="journal-secret"><summary>Segredo do mestre</summary><p class="journal-body">'+esc(e.gmNotes)+'</p></details>':''):'')+
  (!collapsed?'<div class="actions">'+(row.state.inventory||[]).filter(item=>item.journalId===e.id).map(item=>button('Item: '+item.name,'itemOpen','small','',item.id)).join('')+'</div>':'')+
+ (!row.master&&row.state.sharing?.notes?.includes(e.id)?button('Compartilhar por tempo limitado','shareMaterial','small','','note/'+e.id):'')+
  (editable?'<footer><span class="journal-sharing '+(e.audience==='private'?'is-private':'')+'">'+sharing+'</span><div class="actions">'+button('Editar','journalEdit','small','',e.id)+(e.audience!=='private'?button('Recolher da mesa','journalHide','small','',e.id):button('Mostrar a todos','journalShow','small','',e.id))+(e.kind==='quest'?button(e.status==='completed'?'Reabrir missão':'Concluir missão','journalStatus','small','',e.id):'')+button('Excluir','journalDelete','small danger','',e.id)+'</div></footer>':'')+'</article>';
  }).join(''):'<div class="panel journal-empty"><h2>'+(all.length?'Nenhum resultado':'O diário está começando')+'</h2><p>'+(all.length?'Tente outra busca ou categoria.':row.master?'Crie uma pista, um personagem, um local ou uma missão. Tudo começa privado.':'Crie seu primeiro registro: uma anotação da sessão, uma lembrança ou um item do inventário.')+'</p></div>')+'</div>';
 }
@@ -120,7 +122,7 @@ export async function collectMarkdown(files,existing,update=false){
   const body=await file.text();
   const old=known.get(path);
   if(old&&old.body===body){skipped++;continue;}
-  if(old&&(old.sourceEdited===true||old.audience!=='private'||old.sourceEdited===undefined&&old.version>1)){conflicts.push(path);continue;}
+  if(old&&(old.sourceEdited===true||old.audience!=='private'||old.discoveredBy?.length||old.sourceEdited===undefined&&old.version>1)){conflicts.push(path);continue;}
   pending.push({path,body,...(old?{version:old.version}:{})});
  }
  if(!pending.length&&!skipped&&!conflicts.length)throw new Error('Selecione uma pasta ou arquivos .md.');

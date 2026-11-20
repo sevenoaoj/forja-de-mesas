@@ -22,3 +22,37 @@ export function createLootRewards({dialog,current,access,modal,ui,schedule=setTi
  return {enqueue(id,owner){const key=owner?.id+'/'+id;if(!id||seen.has(key))return;seen.add(key);if(seen.size>200)seen.delete(seen.values().next().value);const reduce=Boolean(globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);schedule(()=>{queue.push({id,access:owner});flush();},reduce?0:750);}};
 }
 export function lootEffect(event,grid,width,height){const x=event.x/grid.columns*100,y=event.y/grid.rows*100;return '<span class="vtt-loot-flight" data-loot-effect="'+event.id.replace(/[^a-z0-9-]/gi,'')+'" style="left:'+x+'%;top:'+y+'%;--loot-dx:'+((event.toX-event.x)/grid.columns*width)+'px;--loot-dy:'+((event.toY-event.y)/grid.rows*height)+'px" aria-hidden="true">◇<span>✦</span></span>';}
+
+// Capture the portraits before the native dialog leaves the top layer.
+export function flyRewardToInventory(dialog){
+ if(dialog.dataset.lootReward!=='true'||globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches)return;
+ let target=document.querySelector('#navigation [data-id="inventory"] .svg-icon');
+ if(!target||!target.animate)return;
+ const arts=[...dialog.querySelectorAll('.item-art')];
+ if(!arts.length)return;
+ const host=document.fullscreenElement||document.body;
+ let destination=target.getBoundingClientRect(),proxy;
+ if(!destination.width||destination.right<=0||destination.left>=innerWidth||destination.bottom<=0||destination.top>=innerHeight||document.fullscreenElement&&!host.contains(target)){
+  proxy=document.createElement('span');proxy.className='reward-backpack';proxy.setAttribute('aria-hidden','true');
+  target=target.cloneNode(true);proxy.append(target);host.append(proxy);destination=target.getBoundingClientRect();
+  setTimeout(()=>proxy.remove(),1200);
+ }
+ const tx=destination.left+destination.width/2,ty=destination.top+destination.height/2;
+ const visibleBox=dialog.getBoundingClientRect();
+ const source=arts.map(art=>{
+  const box=art.getBoundingClientRect();
+  return {art,box:box.bottom>visibleBox.top&&box.top<visibleBox.bottom&&box.width?box:visibleBox};
+ });
+ source.forEach(({art,box},index)=>{
+  const image=art.querySelector('img:not([hidden])'),sprite=document.createElement('span');
+  sprite.className='reward-flight';sprite.setAttribute('aria-hidden','true');
+  sprite.style.left=(box.left+box.width/2-22)+'px';sprite.style.top=(box.top+box.height/2-22)+'px';
+  if(image){const portrait=document.createElement('img');portrait.src=image.currentSrc||image.src;portrait.alt='';sprite.append(portrait);}
+  else sprite.textContent='◇';
+  host.append(sprite);
+  const dx=tx-box.left-box.width/2,dy=ty-box.top-box.height/2;
+  const animation=sprite.animate([{transform:'scale(1)',opacity:1},{transform:'translate('+dx*.43+'px,'+(dy*.43-32)+'px) scale(.84)',offset:.5},{transform:'translate('+dx+'px,'+dy+'px) scale(.22)',opacity:.15}],{duration:560,delay:Math.min(index,5)*45,easing:'ease-in-out',fill:'both'});
+  animation.oncancel=()=>sprite.remove();
+  animation.onfinish=()=>{sprite.remove();if(index===source.length-1)target.animate([{transform:'scale(1)'},{transform:'scale(1.3)'},{transform:'scale(1)'}],{duration:280});};
+ });
+}

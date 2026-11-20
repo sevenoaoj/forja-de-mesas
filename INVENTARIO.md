@@ -14,10 +14,12 @@ A implementação adapta esses padrões ao sistema universal da Forja, sem impor
 2. Cada item tem nome, retrato enviado pelo mestre (PNG, JPG, WebP ou GIF, até 3 MB), categoria, raridade, peso por unidade, valor/moeda, descrição, propriedades, segredos e vínculo opcional ao diário.
 3. **Entregar** seleciona ficha e quantidade. A entrega cria uma cópia independente e mantém o original no catálogo. Edições posteriores do original não alteram as cópias.
 4. O inventário aparece ao final da ficha nas visualizações padronizada e personalizada. A página Inventário permite buscar por nome/conteúdo e filtrar por ficha ou catálogo.
-5. O portador abre o item para controlar quantidade, equipamento e anotações. Quantidade zero representa um item esgotado e exige desequipá-lo. O mestre também edita ou remove a ficha do item.
+5. O portador abre o item para controlar quantidade, equipamento e anotações. Quantidade zero representa um item esgotado e exige desequipá-lo. O jogador pode descartar sua pilha. A exclusão pelo mestre remove o original do catálogo e todas as cópias vinculadas nos inventários, inclusive as transferidas entre aliados. Tokens de itens já preparados na mesa conservam sua ficha própria.
 6. Um documento do diário pode ser vinculado ao item. Quando autorizado, seu conteúdo aparece na ficha do item e o diário oferece um botão para abrir os itens relacionados. A entrega não compartilha o documento automaticamente: suas permissões continuam sendo definidas no Diário.
 
-Somente o mestre prepara, entrega, edita os dados principais e remove itens. Jogadores recebem apenas itens das fichas visíveis que controlam. Catálogo, itens de terceiros, segredos e vínculos a documentos não autorizados são filtrados no servidor. Não há bônus de atributos automáticos ao equipar: propriedades e efeitos são informativos, pois a campanha pode usar qualquer sistema.
+Na categoria **Consumível**, o mestre define os usos por unidade. A barra mostra a soma dos usos disponíveis na pilha. Use **−** para consumir e **+** para restaurar. Em uma entrega parcial, os usos disponíveis acompanham primeiro as unidades entregues. Consumíveis antigos começam com um uso por unidade.
+
+Somente o mestre prepara e edita os dados principais do catálogo. Jogadores recebem apenas itens das fichas visíveis que controlam. Catálogo, itens de terceiros, segredos e vínculos a documentos não autorizados são filtrados no servidor. Não há bônus de atributos automáticos ao equipar: propriedades e efeitos são informativos, pois a campanha pode usar qualquer sistema.
 
 O inventário é salvo no estado da campanha e incluído nos backups `.forja`. Campanhas antigas começam sem itens, sem migração destrutiva. O limite é 1000 registros e 512 KB por campanha; retratos enviados ficam armazenados na campanha e são incorporados ao backup, inclusive quando usados por cópias ou itens em cenas privadas. Versões por item recusam edições concorrentes desatualizadas.
 

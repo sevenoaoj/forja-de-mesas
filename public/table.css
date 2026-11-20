@@ -394,3 +394,11 @@ dialog[data-loot-reward=true]{border-color:#dfbb73;box-shadow:0 0 55px #d2a65630
 .vtt-atmosphere[data-weather=dust] i::after{width:3px;height:2px;background:#e0c39b;border-radius:50%}
 @keyframes dust-drift{from{transform:translate(-2%,8px)}to{transform:translate(103%,-14px)}}
 @media(prefers-reduced-motion:reduce){.vtt-atmosphere .vtt-lightning{display:none}.vtt-atmosphere[data-weather=mist]::before{animation:none}.vtt-atmosphere[data-weather=dust] i{inset-inline-start:var(--dust-x)!important}}
+
+.vtt-token-status .vtt-condition {display:inline-flex;align-items:center;gap:3px}
+.vtt-condition i {width:1em;height:1em;border-radius:50%;background:conic-gradient(#f2d394 var(--remaining),#514256 0);mask-image:radial-gradient(circle,transparent 38%,black 45%)}
+
+.vtt-points{position:absolute;inset:0;z-index:5;pointer-events:none}
+.vtt-point{position:absolute;display:grid;place-items:center;pointer-events:auto;width:27px;height:27px;padding:4px;transform:translate(-50%,-50%) scale(var(--vtt-label-scale,1)) translate(50%,-56%);border:1px solid #d6b5fc;border-radius:50%;background:#332742;color:#f6e4ff;cursor:pointer}
+.vtt-point svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.6}
+.is-player-preview .vtt-points{display:none}

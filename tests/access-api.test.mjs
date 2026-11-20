@@ -292,3 +292,104 @@ test('grupos antigos só aparecem quando usados e preservam os nomes já revelad
  assert.deepEqual(updated.parties,[{id:'a',name:'Vigias'}]);
  assert.equal(updated.characters[0].partyRevealed,true);
 });
+
+test('cinemática experimental protege preparação, mídia e transmissão por grupo',async()=>{
+ const r=await room(),gm=r.created.key,player=await r.join('a'),rival=await r.join('b');
+ await r.action(player,'characterClaim',{id:'lyra'});await r.action(rival,'characterClaim',{id:'dorian'});
+ const group=(await(await r.action(gm,'partySave',{name:'Vigias'})).json()).state.parties[0].id;
+ await r.action(gm,'characterParty',{id:'lyra',party:group,revealed:false});
+ const upload=(key,type='image/gif')=>api(new Request('http://app/api/campaigns'+r.base+'/cinematic',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':type},body:'GIF89a'}),r.store);
+ assert.equal((await upload(player)).status,403);
+ const asset=(await(await upload(gm)).json()).state.cinematicLibrary[0];
+ const track=(await(await upload(gm,'audio/ogg')).json()).state.cinematicLibrary.at(-1);
+ const music=key=>r.request(r.base+'/asset/'+track.id,'GET',key);
+ const get=key=>r.request(r.base+'/asset/'+asset.id,'GET',key);
+ const config={captionSpeed:'dramatic',transition:'ink',reveal:'slit',revealSeconds:1.5,accent:'#637590',background:'#041528',lettering:'#ffcc99',name:'Final secreto',text:'O tempo acordou',intro:4,duration:15,mediaId:asset.id,soundtrackId:track.id,party:group};
+ assert.equal((await get(player)).status,404);
+ for(const invalid of [{captionSpeed:'unknown'},{transition:'unknown'},{reveal:'unknown'},{revealSeconds:-1},{accent:'blue'}]){
+  assert.equal((await r.action(gm,'cinematicSave',{...config,...invalid})).status,400);
+ }
+ assert.equal((await music(player)).status,404);
+ assert.equal((await r.action(gm,'cinematicSave',{...config,soundtrackId:asset.id})).status,404);
+ assert.equal((await r.action(gm,'cinematicSave',{...config,mediaId:track.id})).status,404);
+ const saved=(await(await r.action(gm,'cinematicSave',config)).json()).state.cinematicCues.at(-1);
+ for(const field of ['captionSpeed','soundtrackId','reveal','transition','revealSeconds','accent','background','lettering'])assert.equal(saved[field],config[field]);
+ assert.equal((await r.view(player)).state.cinematicCues,undefined);
+ assert.equal((await r.action(player,'cinematicStart',config)).status,403);
+ const run=(await(await r.action(gm,'cinematicStart',config)).json()).state.cinematic;
+ const sync=async key=>(await(await r.request(r.base+'/sync','GET',key)).json()).state.cinematic;
+ const presentation=await sync(player);for(const field of ['captionSpeed','soundtrackId','reveal','transition','revealSeconds','accent','background','lettering'])assert.equal(presentation[field],config[field]);
+ assert.equal(presentation.id,run.id);assert.equal(run.revealAt-run.startedAt,4000);
+ assert.equal((await get(player)).status,200);
+ assert.equal((await music(player)).status,200);
+ for(const key of [rival,r.created.invite]){assert.equal(await sync(key),null);assert.equal((await music(key)).status,404);assert.equal((await get(key)).status,404);}
+ await r.action(gm,'cinematicStop',{id:'exibição anterior'});assert.equal((await sync(player)).id,run.id);
+ await r.action(gm,'cinematicStop',{id:run.id});assert.equal(await sync(player),null);assert.equal((await music(player)).status,404);
+ assert.equal((await get(player)).status,404);
+});
+
+test('relógios e passagem de sessão respeitam público, versão e acesso ao material original',async()=>{
+ const r=await room(),gm=r.created.key,a=await r.join('a'),b=await r.join('b');
+ await r.action(a,'characterClaim',{id:'lyra'});await r.action(b,'characterClaim',{id:'dorian'});
+ const group=(await(await r.action(gm,'partySave',{name:'Expedição'})).json()).state.parties.at(-1).id;
+ await r.action(gm,'characterParty',{id:'lyra',party:group,revealed:false});
+ const clock={title:'Alarme do cais',audience:group,segments:4,value:2};
+ assert.equal((await r.action(a,'clockSave',clock)).status,403);
+ const saved=(await(await r.action(gm,'clockSave',clock)).json()).state.sessionLog.clocks.at(-1);
+ const step={id:saved.id,version:saved.version,step:1};
+ assert.equal((await r.action(gm,'clockStep',step)).status,200);
+ assert.equal((await r.action(gm,'clockStep',step)).status,409);
+ assert.equal((await r.view(a)).state.sessionLog.clocks[0].value,3);
+ const entry=(await(await r.action(gm,'journalSave',{kind:'note',title:'Segredo do mestre',body:'Não compartilhar',audience:'private'})).json()).state.journal.at(-1);
+ const data={title:'Ao anoitecer',body:'A guarda ouviu o sino.',audience:group,sessionId:'session-initial',linkedSceneId:'scene-initial',notes:[entry.id]};
+ const response=await r.action(gm,'recapSave',data);
+ assert.equal(response.status,200);const recap=(await response.json()).state.sessionLog.recaps[0];assert.deepEqual(recap.notes,[entry.id]);
+ const player=(await r.view(a)).state.sessionLog.recaps[0];
+ assert.equal(player.body,data.body);assert.equal(player.sceneId,data.linkedSceneId);assert.deepEqual(player.notes,[]);
+ for(const key of [b,r.created.invite])assert.deepEqual((await r.view(key)).state.sessionLog,{clocks:[],recaps:[]});
+ await r.action(gm,'partyDelete',{id:group});
+ assert.deepEqual((await r.view(a)).state.sessionLog,{clocks:[],recaps:[]});
+});
+
+test('pedidos coletivos respeitam os destinatários e a CD privada, mesmo em requisições concorrentes',async()=>{
+ const r=await room(),gm=r.created.key,a=await r.join('a'),b=await r.join('b'),c=await r.join('c');
+ await r.action(a,'characterClaim',{id:'lyra'});
+ await r.action(b,'characterClaim',{id:'dorian'});
+ const config={characterIds:['lyra','dorian'],test:'attribute:forca',dc:19};
+ assert.equal((await r.action(a,'checkCreate',config)).status,403);
+ assert.equal((await r.action(gm,'checkCreate',{...config,test:'attribute:nivel'})).status,400);
+ const request=(await(await r.action(gm,'checkCreate',config)).json()).state.checkRequests[0];
+ assert.equal(request.targets.length,2);
+ const own=(await r.view(a)).state.checkRequests[0];
+ assert.deepEqual(own.targets.map(t=>t.characterId),['lyra']);
+ assert.equal(own.dc,undefined);assert.equal(own.targets[0].memberId,undefined);
+ for(const key of [c,r.created.invite])assert.deepEqual((await r.view(key)).state.checkRequests,[]);
+ assert.equal((await r.action(c,'checkRespond',{id:request.id})).status,403);
+ const responses=await Promise.all([1,2].map(()=>r.action(a,'checkRespond',{id:request.id,formula:'1d10000',mode:'advantage',characterId:'dorian'})));
+ for(const response of responses)assert.equal(response.status,200);
+ const results=await Promise.all(responses.map(async response=>(await response.json()).state.checkRequests[0].targets[0].result));
+ assert.equal(results[0].id,results[1].id);assert.equal(results[0].formula,'1d20+1');
+ const partial=async key=>(await(await r.request(r.base+'/sync?table=1','GET',key)).json()).state;
+ assert.deepEqual((await partial(b)).checkRequests[0].targets.map(t=>t.result),[null]);
+ assert.deepEqual((await partial(a)).rolls,[]);assert.deepEqual((await partial(gm)).rolls,[]);
+ const snapshot=await r.view(gm);
+ const unchanged=await(await r.request(r.base+'/sync?table=1&checks='+snapshot.checkVersion,'GET',gm)).json();
+ assert.equal(unchanged.state.checkRequests,undefined);
+ const report=snapshot.state.checkRequests[0];assert.equal(report.targets[0].result.groups,undefined);assert.equal(report.targets[0].result.id,results[0].id);assert.equal(report.dc,19);
+ await r.action(gm,'characterRelease',{id:'lyra'});await r.action(c,'characterClaim',{id:'lyra'});
+ assert.deepEqual((await partial(c)).checkRequests,[]);assert.equal((await r.action(c,'checkRespond',{id:request.id})).status,403);
+ assert.equal((await r.action(b,'checkClose',{id:request.id})).status,403);await r.action(gm,'checkClose',{id:request.id});
+ assert.deepEqual((await partial(b)).checkRequests,[]);
+});
+
+test('pedido de Essência usa a maestria da própria ficha uma única vez',async()=>{
+ const r=await room(),gm=r.created.key,a=await r.join('a');
+ const sheet=(await(await r.action(gm,'character',{name:'Anuki',preset:'herdeiros-destino',values:{'hd-essence':'2'}})).json()).state.characters.at(-1);
+ await r.action(a,'characterClaim',{id:sheet.id});
+ const check=(await(await r.action(gm,'checkCreate',{characterIds:[sheet.id],test:'attribute:essencia',dc:8,showDc:true})).json()).state.checkRequests[0];
+ const send=()=>r.action(a,'checkRespond',{id:check.id,masteryId:'hd-mastery'});
+ const out=await(await send()).json();
+ assert.equal(out.state.checkRequests[0].dc,8);assert.equal(out.state.checkRequests[0].targets[0].result.formula,'2d6+2+1d4');
+ const retry=await(await send()).json();assert.equal(retry.state.checkRequests[0].targets[0].result.id,out.state.checkRequests[0].targets[0].result.id);
+ assert.equal(retry.state.characters.find(x=>x.id===sheet.id).masteries[0].remaining,0);
+});

@@ -42,3 +42,24 @@ dialog[data-loot-reward=true] .item-art{box-shadow:0 0 42px rgba(var(--item-glow
 dialog[data-loot-reward=true] .item-art:after{background:linear-gradient(115deg,transparent 40%,rgba(var(--item-glow,223,187,115),.2) 49%,transparent 58%)}
 .item-accent-editor{display:flex;align-items:center;gap:20px;flex-wrap:wrap}.item-accent-editor label{display:grid;gap:8px}.item-accent-editor input[type=color]{width:72px;height:44px;padding:4px;cursor:pointer}
 .item-accent-preview{border:1px solid var(--item-accent);border-radius:10px;padding:18px;color:color-mix(in srgb,var(--item-accent) 40%,white);background:rgba(var(--item-glow),.12);box-shadow:0 0 18px rgba(var(--item-glow),.1)}
+
+/* Bound the artwork to its own grid cell, including tall and wide uploads. */
+#dialog .investigation-rewards .item-art{
+  width:100%;aspect-ratio:1;height:auto;min-height:0;min-width:0;
+  grid-template:minmax(0,1fr) / minmax(0,1fr);padding:4px;margin:0;box-sizing:border-box
+}
+#dialog .investigation-rewards .item-portrait{
+  width:100%;height:100%;min-width:0;min-height:0;max-width:100%;max-height:100%;
+  margin:0;object-fit:contain;object-position:center;border-radius:6px
+}
+#dialog[data-loot-reward=true] .item-details .item-art{
+  height:clamp(128px,30dvh,260px);min-height:0;grid-template:minmax(0,1fr) / minmax(0,1fr);box-sizing:border-box
+}
+#dialog[data-loot-reward=true] .item-details .item-art .item-portrait{height:100%;width:100%;margin:0;object-fit:contain}
+#dialog .investigation-rewards li:only-child{
+  grid-template-columns:minmax(0,1fr) auto;justify-items:start;
+}
+#dialog .investigation-rewards li:only-child .item-art{
+  grid-column:1/-1;justify-self:center;width:min(100%,260px);
+  height:clamp(112px,22dvh,200px);aspect-ratio:auto
+}

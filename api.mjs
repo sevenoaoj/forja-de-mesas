@@ -1,10 +1,12 @@
+import {resolveTokenPath} from './token-motion.mjs';
+import {mutateSharing,sharingView} from './player-sharing.mjs';
 import {itemPortraits} from './item-assets.mjs';
 import {mutateLoot} from './loot-model.mjs';
 import {requestJson} from './request-json.mjs';
 import {exportCampaignBackup,importCampaignBackup} from './campaign-backup.mjs';
 import {soundboardActions,mutateSoundboard,normalizeSoundboard,sessionSounds,removeSoundFromBoards} from './soundboard-model.mjs';
 import {installSoundPack} from './sound-pack-import.mjs';
-import {mutateInventory,inventoryView,commitInventory} from './inventory-model.mjs';
+import {recordItemDelivery,mutateInventory,inventoryView,commitInventory} from './inventory-model.mjs';
 import {mutateJournal} from './journal-model.mjs';
 import {browserSessionKey,lastBrowserCampaign,rememberBrowserSession} from './browser-session.mjs';
 import {mutateNarration,narrationView} from './narration-model.mjs';
@@ -12,13 +14,15 @@ import {mutateSheetTemplates,readableSheetTemplate,sheetTemplateCharacter} from 
 import {captureSheetChanges,recordSheetChanges,mutateSheetHistory} from './sheet-history.mjs';
 import {removeSessionMaterial,sceneProjection,sceneSummary,sceneMaps,sceneTokenPortraits,withScene,mutateScenes,activeSceneId} from './scene-model.mjs';
 import {validateSheetAppearance,sheetAppearance} from './sheet-layout.mjs';
+import {mutateSessionLog} from './session-log.mjs';
 import {mutateGmScreen,gmScreenActions,gmBoard} from './gm-screen-model.mjs';
 import {dndCharacter,dndFields,dndAdd,dndDerived,dndCatalog,dndSpellFormula,dndBook} from './dnd.mjs';
-import {campaignParties,tokenCharacterId,outsideParty,stressRegionsFor,bodyStressWithHead,newCampaign,characterType,isPlayerCharacter,playerVisionSource, colors, characterColorHex, rollFormulaLimit, sheetFields, sheetValue,parseDiceFormula,resolveSheetFormula,displaySheetFormula,sheetPreset,sheetAttributeTest,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
+import {sheetRequestOptions,cinematicStyle,cinematicDisplayMs,campaignParties,tokenCharacterId,outsideParty,stressRegionsFor,bodyStressWithHead,newCampaign,characterType,isPlayerCharacter,playerVisionSource, colors, characterColorHex, rollFormulaLimit, sheetFields, sheetValue,parseDiceFormula,resolveSheetFormula,displaySheetFormula,sheetPreset,sheetAttributeTest,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
 import {emptyAudio,soundPresets,audioDelay} from './media.mjs';
 import {musicActions,changeMusic,musicCommand,audioView} from './music-model.mjs';
-import {playerSight,mutateTable,tableView,tableSceneActions} from './table-model.mjs';
-import {accessFor,ownedCharacter,requireOwnCharacter,authorizeAction,publicState,rollView,rollVersion} from './access.mjs';
+import {investigationInbox,explorationActions,mutateExploration,explorationView,ambientAt} from './exploration-model.mjs';
+import {normalizeTable,playerSight,mutateTable,tableView,tableSceneActions} from './table-model.mjs';
+import {checkVersion,checkRequestView,cinematicView,accessFor,ownedCharacter,requireOwnCharacter,authorizeAction,publicState,rollView,rollVersion} from './access.mjs';
 
 const json = (value, status = 200) => Response.json(value, {status, headers:{'Cache-Control':'no-store'}});
 const fail = (status, message) => { throw Object.assign(new Error(message), {status}); };
@@ -27,7 +31,7 @@ const uid = () => crypto.randomUUID();
 const key = () => uid().replaceAll('-', '') + uid().slice(0,8);
 const int = (value, max) => Math.max(0,Math.min(max,Math.round(Number(value)||0)));
 const color = value => colors.includes(value) ? value : colors[0];
-const privateActions = new Set(['partySave','partyDelete','characterParty','gmResourceChange','bodyStressConfig','settings','schema','notes','initiative','tokenAdd','tokenDelete','bookDelete','track','soundPlay','soundDelete','characterType','characterVisibility','characterRelease','sheetMasteryRefresh',...musicActions,...soundboardActions,...gmScreenActions]);
+const privateActions = new Set(['checkCreate','checkClose','cinematicSave','cinematicForget','cinematicStart','cinematicStop','cinematicDelete','partySave','partyDelete','characterParty','gmResourceChange','bodyStressConfig','settings','schema','notes','initiative','tokenAdd','tokenDelete','bookDelete','track','soundPlay','soundDelete','characterType','characterVisibility','characterRelease','sheetMasteryRefresh',...musicActions,...soundboardActions,...gmScreenActions]);
 const updateList = (list, entry) => list.some(item => item.id === entry.id)
   ? list.map(item => item.id === entry.id ? entry : item) : [...list, entry];
 const validTypes = new Set(['text','number','counter','long','check']);
@@ -185,12 +189,76 @@ function prepareMaterial(state,data,access,kind,id){
   }
 }
 
+function createCheckRequest(state,data){
+  const ids=data.characterIds;
+  if(!Array.isArray(ids)||!ids.length||ids.length>60||new Set(ids).size!==ids.length)fail(400,'Escolha até 60 personagens diferentes.');
+  const dc=data.dc??null;
+  if(dc!==null&&(!Number.isInteger(dc)||Math.abs(dc)>999))fail(400,'Confira a dificuldade.');
+  let label;
+  const targets=ids.map(id=>{
+    const c=state.characters.find(c=>c.id===id&&c.ownerId&&!c.hidden&&isPlayerCharacter(c));
+    if(!c)fail(409,'Um dos personagens já não está disponível.');
+    const matches=sheetRequestOptions(state,c).filter(o=>o.key===data.test);
+    if(matches.length!==1)fail(400,'O teste precisa ter um nome único em cada ficha selecionada.');
+    const option=matches[0];label=option.name;
+    return {characterId:c.id,name:c.name,memberId:c.ownerId,kind:option.kind,testId:option.id,result:null};
+  });
+  const checks=state.checkRequests??=[];
+  if(checks.length>=30)fail(409,'Encerre um pedido anterior para abrir espaço.');
+  const request={id:uid(),label,targets,dc,showDc:data.showDc===true,closed:false};
+  checks.unshift(request);return request.id;
+}
+
+function makeSheetRoll(state,data,access){
+  const {master}=access;
+  const own=ownedCharacter(state,access);
+  if(!master&&data.characterId&&data.characterId!==own?.id) fail(403,'Você pode rolar apenas pela própria ficha.');
+  const character=master&&data.characterId ? findCharacter(state,data.characterId) : own;
+  const button=data.rollId?(character?.rollButtons||[]).find(item=>item.id===data.rollId):null;
+  if(data.rollId&&!button) fail(404,'Rolagem salva indisponível.');
+  if([data.rollId,data.attributeId,data.skillId].filter(Boolean).length>1)fail(400,'Escolha apenas uma rolagem da ficha.');
+  if((data.attributeId||data.skillId)&&!character)fail(400,'Escolha uma ficha para testar.');
+  const test=data.attributeId?sheetAttributeTest(state,character,data.attributeId,data.testDice):data.skillId?sheetSkillTest(state,character,data.skillId,data.testDice):null;
+  const resolved=resolveSheetFormula(button?sheetSavedRollFormula(character,button):test?.formula??data.formula,state,character);
+  let formula=resolved.formula;
+  if(data.mode&&data.mode!=='normal') {
+    if(!['advantage','disadvantage'].includes(data.mode)||!/^1?d20(?:[+-]|$)/.test(formula))fail(400,'Vantagem e desvantagem se aplicam a um teste com um d20.');
+    formula=formula.replace(/^1?d20/,'2d20'+(data.mode==='advantage'?'kh1':'kl1'));
+  }
+  const mastery=data.masteryId?character?.masteries?.find(item=>item.id===data.masteryId):null;
+  if(data.masteryId) {
+    if(!mastery) fail(400,'Maestria indisponível.');
+    if(mastery.remaining<1) fail(409,'A maestria já foi usada nesta sessão.');
+    if(!resolved.bindings.some(field=>field.id===mastery.attributeId)) fail(400,'Esta maestria só pode ser usada em testes do atributo vinculado.');
+    formula+='+'+mastery.die;
+  }
+  const result=rollDice(formula);
+  if(data.mode&&data.mode!=='normal')result.mode=data.mode;
+  if(mastery) {mastery.remaining--;result.mastery={name:mastery.name,die:mastery.die};}
+  if(button) result.label=button.name;
+  else if(test)result.label=test.label;
+  if(resolved.bindings.length) {
+    result.expression=displaySheetFormula(resolved.template,state,character);
+    result.bindings=resolved.bindings;
+  }
+  return {id:uid(),at:Date.now(),rolledBy:master?'master':'player',visibility:master?'gm':'public',actor:master?str(data.actor,60)||'Mestre':own.name,
+    ...(character?{characterId:character.id,diceColor:sheetAppearance(state,character).options.accent}:{}),kind:button&&(button.id==='dd-initiative'||/^iniciativa$/i.test(button.name?.trim()))?'initiative':'check',...result};
+}
+
 function mutate(state, action, data, access) {
   const {master}=access;
   validateActionAccess(state,action,data,access);
+  if(action==='investigationReceiptRead'){
+    const own=ownedCharacter(state,access);
+    if(!own)fail(403,'Escolha seu personagem.');
+    state.investigationReceipts=(state.investigationReceipts||[]).filter(r=>!(r.id===data.id&&r.characterId===own.id&&r.memberId===access.memberId));
+    return;
+  }
+  if(mutateSharing(state,action,data,ownedCharacter(state,access)))return;
+  if(mutateSessionLog(state,action,data,master))return;
   if(mutateNarration(state,action,data,access))return;
   if(mutateInventory(state,action,data,access)){
-    if(action==='itemDelete')removeSessionMaterial(state,'item',data.id);
+    if(action==='itemGrant')recordItemDelivery(state,state.characters.find(c=>c.id===data.characterId),[state.inventory.at(-1)],{from:'Mestre'});
     if(action==='itemSave'&&data.prepSession)prepareMaterial(state,data,access,'item',state.inventory.at(-1).id);
     return;
   }
@@ -211,6 +279,15 @@ function mutate(state, action, data, access) {
   if(mutateSheetHistory(state,action,data,access))return;
   if(mutateGmScreen(state,action,data,master))return;
   if(mutateScenes(state,action,data,master))return;
+  if(explorationActions.has(action)){
+    return withScene(state,data.sceneId,master,world=>{
+      mutateExploration(world,action,data,access);
+      if(world!==state){
+        if(world.inventory)state.inventory=world.inventory;
+        if(world.investigationReceipts)state.investigationReceipts=world.investigationReceipts;
+      }
+    });
+  }
   if(tableSceneActions.has(action)){
     const actor=ownedCharacter(state,access);
     withScene(state,data.sceneId,master,world=>mutateTable(world,action,data,master,master?'Mestre':actor?.name,actor?.id));
@@ -356,6 +433,39 @@ function mutate(state, action, data, access) {
       character.ownerId=access.memberId;
       break;
     }
+    case 'cinematicForget':
+      state.cinematicCues=(state.cinematicCues||[]).filter(c=>c.id!==data.id);
+      break;
+    case 'cinematicSave':
+    case 'cinematicStart': {
+      const {mediaId='',soundtrackId='',party='',intro,duration}=data;
+      if(mediaId&&!state.cinematicLibrary?.some(a=>a.id===mediaId&&!a.type.startsWith('audio/')))fail(404,'Mídia indisponível.');
+      if(soundtrackId&&!state.cinematicLibrary?.some(a=>a.id===soundtrackId&&a.type.startsWith('audio/')))fail(404,'Trilha indisponível.');
+      if(party&&!campaignParties(state).some(g=>g.id===party))fail(400,'Grupo indisponível.');
+      if(!Number.isInteger(intro)||intro<0||intro>30||!Number.isInteger(duration)||duration<1||duration>600)fail(400,'Confira os tempos de entrada e revelação.');
+      const text=str(data.text,240);
+      if(!mediaId&&!text)fail(400,'Escolha uma mídia ou escreva uma revelação.');
+      const style=cinematicStyle(data);
+      if(action==='cinematicSave'){
+        const name=str(data.name,80),cues=state.cinematicCues??=[];
+        if(!name)fail(400,'Dê um nome à cinemática para guardá-la.');
+        if(data.id&&!cues.some(c=>c.id===data.id))fail(409,'Esta cinemática foi excluída.');
+        if(!data.id&&cues.length>=60)fail(409,'A campanha comporta 60 cinemáticas preparadas.');
+        state.cinematicCues=updateList(cues,{id:data.id||uid(),name,text,mediaId,soundtrackId,party,intro,duration,...style});
+        break;
+      }
+      const startedAt=Date.now(),revealAt=startedAt+intro*1000;
+      state.cinematicRun={id:uid(),mediaId,soundtrackId,party,text,...style,startedAt,revealAt,endsAt:revealAt+cinematicDisplayMs(duration,text,style.captionSpeed)};
+      break;
+    }
+    case 'cinematicStop':
+      if(state.cinematicRun?.id===data.id)delete state.cinematicRun;
+      break;
+    case 'cinematicDelete':
+      if(state.cinematicRun&&[state.cinematicRun.mediaId,state.cinematicRun.soundtrackId].includes(data.id)&&state.cinematicRun.endsAt>Date.now())fail(409,'Encerre a exibição antes de excluir a mídia.');
+      if(state.cinematicCues?.some(c=>c.mediaId===data.id||c.soundtrackId===data.id))fail(409,'Remova esta mídia das cinemáticas preparadas antes de excluí-la.');
+      state.cinematicLibrary=(state.cinematicLibrary||[]).filter(a=>a.id!==data.id);
+      break;
     case 'partySave': {
       const parties=campaignParties(state);
       const current=data.id?parties.find(p=>p.id===data.id):null;
@@ -543,39 +653,25 @@ function mutate(state, action, data, access) {
     case 'soundDelete':
       changeAudio(state,action,data);
       break;
+    case 'checkCreate': createCheckRequest(state,data);break;
+    case 'checkClose':
+      state.checkRequests=(state.checkRequests||[]).filter(check=>check.id!==data.id);
+      break;
+    case 'checkRespond':
     case 'roll': {
-      const own=ownedCharacter(state,access);
-      if(!master&&data.characterId&&data.characterId!==own?.id) fail(403,'Você pode rolar apenas pela própria ficha.');
-      const character=master&&data.characterId ? findCharacter(state,data.characterId) : own;
-      const button=data.rollId?(character?.rollButtons||[]).find(item=>item.id===data.rollId):null;
-      if(data.rollId&&!button) fail(404,'Rolagem salva indisponível.');
-      if([data.rollId,data.attributeId,data.skillId].filter(Boolean).length>1)fail(400,'Escolha apenas uma rolagem da ficha.');
-      if((data.attributeId||data.skillId)&&!character)fail(400,'Escolha uma ficha para testar.');
-      const test=data.attributeId?sheetAttributeTest(state,character,data.attributeId,data.testDice):data.skillId?sheetSkillTest(state,character,data.skillId,data.testDice):null;
-      const resolved=resolveSheetFormula(button?sheetSavedRollFormula(character,button):test?.formula??data.formula,state,character);
-      let formula=resolved.formula;
-      if(data.mode&&data.mode!=='normal') {
-        if(!['advantage','disadvantage'].includes(data.mode)||!/^1?d20(?:[+-]|$)/.test(formula))fail(400,'Vantagem e desvantagem se aplicam a um teste com um d20.');
-        formula=formula.replace(/^1?d20/,'2d20'+(data.mode==='advantage'?'kh1':'kl1'));
+      let requestTarget;
+      if(action==='checkRespond'){
+        const check=state.checkRequests?.find(check=>check.id===data.id);
+        const own=ownedCharacter(state,access);
+        requestTarget=check?.targets.find(t=>t.characterId===own?.id&&t.memberId===access.memberId);
+        if(master||!requestTarget||check.closed)fail(403,'Pedido indisponível.');
+        if(requestTarget.result)break;
+        const inputKey={attribute:'attributeId',skill:'skillId',saved:'rollId'}[requestTarget.kind];
+        data={[inputKey]:requestTarget.testId,characterId:own.id,masteryId:data.masteryId};
       }
-      const mastery=data.masteryId?character?.masteries?.find(item=>item.id===data.masteryId):null;
-      if(data.masteryId) {
-        if(!mastery) fail(400,'Maestria indisponível.');
-        if(mastery.remaining<1) fail(409,'A maestria já foi usada nesta sessão.');
-        if(!resolved.bindings.some(field=>field.id===mastery.attributeId)) fail(400,'Esta maestria só pode ser usada em testes do atributo vinculado.');
-        formula+='+'+mastery.die;
-      }
-      const result=rollDice(formula);
-      if(data.mode&&data.mode!=='normal')result.mode=data.mode;
-      if(mastery) {mastery.remaining--;result.mastery={name:mastery.name,die:mastery.die};}
-      if(button) result.label=button.name;
-      else if(test)result.label=test.label;
-      if(resolved.bindings.length) {
-        result.expression=displaySheetFormula(resolved.template,state,character);
-        result.bindings=resolved.bindings;
-      }
-      state.rolls.unshift({id:uid(),at:Date.now(),rolledBy:master?'master':'player',visibility:master?'gm':'public',actor:master?str(data.actor,60)||'Mestre':own.name,
-        ...(character?{characterId:character.id,diceColor:sheetAppearance(state,character).options.accent}:{}),kind:button&&(button.id==='dd-initiative'||/^iniciativa$/i.test(button.name?.trim()))?'initiative':'check',...result});
+      const roll=makeSheetRoll(state,data,access);
+      if(requestTarget){requestTarget.result={...roll,visibility:'requested'};break;}
+      state.rolls.unshift(roll);
       const counts={public:0,gm:0};
       state.rolls=state.rolls.filter(roll=>++counts[roll.rolledBy==='player'&&roll.visibility==='public'?'public':'gm']<=40);
       break;
@@ -602,8 +698,24 @@ function randomDie(faces) {
   return buffer[0] % faces + 1;
 }
 
+function exploreDuringMove(state,character,params){
+  if(!character||!state.table?.exploration?.length||params.get('exploreScene')!==activeSceneId(state))return;
+  const token=state.tokens.find(t=>t.id===params.get('moving')&&!t.hidden&&!t.locked&&tokenCharacterId(state,t)===character.id);
+  if(!token)return;
+  const values=['x','y','rotation'].map(key=>params.get(key));
+  if(values.some(value=>!value?.trim()||!Number.isFinite(Number(value))))return;
+  const [x,y,rotation]=values.map(Number),table=normalizeTable(state),size=Number(token.size)||1;
+  if(x<0||y<0||x>table.grid.columns-size||y>table.grid.rows-size||rotation<0||rotation>=360)return;
+  let path;
+  if(params.has('path')){try{path=JSON.parse(params.get('path'));}catch{return;}}
+  const position=resolveTokenPath(token,{x,y},table,path);
+  const moving={...state,tokens:state.tokens.map(t=>t===token?{...t,...position,rotation}:t)};
+  return {points:explorationView(moving,character,false,table),ambient:ambientAt(moving,character,false)};
+}
+
 function projectedTable(scoped,access,own){
   const table=tableView(scoped,access.master);
+  if(scoped.table?.exploration)table.table.exploration=explorationView(scoped,own,access.master,table.table);
   if(table.tokens.some(t=>t.motion))table.table.hasPatrols=true;
   table.tokens=table.tokens.map(token=>({...token,visionSource:playerVisionSource(scoped,token)}));
   if (!access.master) {
@@ -652,12 +764,12 @@ function projectedTable(scoped,access,own){
 function view(row,access,sceneId) {
   const scoped=sceneProjection(row.state,access.master?sceneId:undefined);
   const state=publicState(scoped,access);
-  if(access.master)state.sceneLibrary=sceneSummary(row.state);
-  state.audio=audioView(row.state.audio,access.master);
+  if(access.master){state.sceneLibrary=sceneSummary(row.state);state.investigations=investigationInbox(row.state);}
+  state.audio={...audioView(row.state.audio,access.master),ambient:ambientAt(row.state,ownedCharacter(row.state,access),access.master)};
   const own=ownedCharacter(scoped,access);
   const table=projectedTable(scoped,access,own);
   Object.assign(state,table);
-  return {id:row.id,rev:row.rev,master:access.master,
+  return {id:row.id,rev:row.rev,checkVersion:checkVersion(state.checkRequests),master:access.master,
     role:access.master?'master':access.guest?'guest':'player',
     characterId:own?.id||null,needsCharacter:!access.master&&!own,
     serverTime:Date.now(),state,...(access.master?{invite:row.player}:{})};
@@ -667,7 +779,7 @@ const toolVersion=items=>rollVersion((items||[]).map(item=>({id:item.id+':'+item
 
 export function sceneView(row,access,sceneId){
   const visible=view(row,access,sceneId);
-  return {type:'scene',id:visible.id,rev:visible.rev,master:visible.master,characterId:visible.characterId,needsCharacter:visible.needsCharacter,serverTime:visible.serverTime,rollVersion:rollVersion(visible.state.rolls||[]),state:{scene:visible.state.scene,sceneId:visible.state.sceneId,activeSceneId:visible.state.activeSceneId,sessionName:visible.state.sessionName,...(visible.master?{sceneLibrary:visible.state.sceneLibrary}:{}),journalVersion:toolVersion(visible.state.journal),sheetTemplatesVersion:toolVersion(visible.state.sheetTemplates?.items),narrations:visible.state.narrations||[],rolls:visible.state.rolls||[],table:visible.state.table,tokens:visible.state.tokens,map:visible.state.map||null}};
+  return {type:'scene',checkVersion:checkVersion(visible.state.checkRequests),id:visible.id,rev:visible.rev,master:visible.master,characterId:visible.characterId,needsCharacter:visible.needsCharacter,serverTime:visible.serverTime,rollVersion:rollVersion(visible.state.rolls||[]),state:{checkRequests:visible.state.checkRequests,...(access.master?{investigations:visible.state.investigations}:{investigationReceipts:visible.state.investigationReceipts}),sessionClocks:visible.state.sessionLog.clocks,cinematic:visible.state.cinematic,scene:visible.state.scene,sceneId:visible.state.sceneId,activeSceneId:visible.state.activeSceneId,sessionName:visible.state.sessionName,...(visible.master?{sceneLibrary:visible.state.sceneLibrary}:{}),journalVersion:toolVersion(visible.state.journal),sheetTemplatesVersion:toolVersion(visible.state.sheetTemplates?.items),narrations:visible.state.narrations||[],rolls:visible.state.rolls||[],table:visible.state.table,tokens:visible.state.tokens,map:visible.state.map||null}};
 }
 
 async function update(store, row, operation,commit=null) {
@@ -680,7 +792,7 @@ async function update(store, row, operation,commit=null) {
   fail(409,'A mesa mudou durante a edição. Tente novamente.');
 }
 
-function campaignAssets(state){return [...itemPortraits(state),...sceneTokenPortraits(state),...sceneMaps(state),...(state.books||[]),...(state.audio?.clips||[]),...(state.characters||[]).map(c=>c.portrait)].filter(Boolean);}
+function campaignAssets(state){return [...(state.cinematicLibrary||[]),...itemPortraits(state),...sceneTokenPortraits(state),...sceneMaps(state),...(state.books||[]),...(state.audio?.clips||[]),...(state.characters||[]).map(c=>c.portrait)].filter(Boolean);}
 
 async function uploadItemPortrait(request,store,row,access){
   if(!access.master)fail(403,'Somente o mestre pode enviar o retrato de um item.');
@@ -702,7 +814,7 @@ async function uploadItemPortrait(request,store,row,access){
 }
 
 async function upload(request, store, row, kind,access) {
-  const max = ({pdf:24,map:8,sound:8,portrait:3,'token-portrait':3})[kind]*1024*1024;
+  const max = ({cinematic:32,pdf:24,map:8,sound:8,portrait:3,'token-portrait':3})[kind]*1024*1024;
   let tokenData;
   if(kind==='token-portrait'){
     try{tokenData=JSON.parse(decodeURIComponent(request.headers.get('X-Token-Data')||''));}catch{fail(400,'Dados do token inválidos.');}
@@ -726,7 +838,7 @@ async function upload(request, store, row, kind,access) {
   const type = (request.headers.get('Content-Type')||'').split(';')[0].toLowerCase();
   const blob = new Blob(chunks, {type});
   const valid = kind === 'pdf' ? type === 'application/pdf' && await blob.slice(0,5).text() === '%PDF-'
-    : (kind==='sound' ? soundTypes : imageTypes).includes(type) && size>0;
+    : (kind==='cinematic'?[...imageTypes,'video/mp4','video/webm',...soundTypes]:kind==='sound' ? soundTypes : imageTypes).includes(type) && size>0;
   if (!valid) fail(415,'Formato de arquivo inválido.');
   let name;
   try { name = decodeURIComponent(request.headers.get('X-File-Name') || ''); } catch { fail(400,'Nome de arquivo inválido.'); }
@@ -745,7 +857,11 @@ async function upload(request, store, row, kind,access) {
   try {
     let replacedAsset;
     const updated = await update(store,row,state=>{
-      if (kind==='pdf') {
+      if(kind==='cinematic'){
+        const library=state.cinematicLibrary??=[];
+        if(library.length>=60)fail(409,'A biblioteca comporta 60 mídias de cinemática.');
+        library.push(asset);
+      }else if (kind==='pdf') {
         if (state.books.length >= 30) fail(409,'Limite de 30 livros atingido.');
         state.books.push(asset);
       } else if (kind==='sound') {
@@ -815,7 +931,7 @@ export async function api(request,store) {
       await store.create(row);
       return rememberBrowserSession(request,json({...view(row,{master:true}),key:row.owner},201),row.id,row.owner);
     }
-    const path = /^\/api\/campaigns\/([\da-f-]{36})(?:\/(session|player-access|sound-pack|join|sync|events|preview|action|pdf|map|sound|portrait|token-portrait|asset|srd|backup|item-portrait)(?:\/([\da-f-]{36}))?)?$/.exec(pathname);
+    const path = /^\/api\/campaigns\/([\da-f-]{36})(?:\/(session|player-access|sound-pack|join|sync|events|preview|action|cinematic|pdf|map|sound|portrait|token-portrait|asset|srd|backup|item-portrait)(?:\/([\da-f-]{36}))?)?$/.exec(pathname);
     if (!path) fail(404,'Página não encontrada.');
     const [,id,route,assetId] = path;
     const row = await store.get(id);
@@ -909,15 +1025,19 @@ export async function api(request,store) {
       if(data.name!==row.state.name)fail(400,'Digite o nome da campanha para confirmar a exclusão.');
       if(!await store.remove(row))fail(409,'A campanha mudou. Atualize e tente novamente.');
       store.realtime?.closeCampaign(id);
-      const assets=[...itemPortraits(row.state),...sceneMaps(row.state),...sceneTokenPortraits(row.state),...row.state.books,...(row.state.audio?.clips||[]),...row.state.characters.map(c=>c.portrait)].filter(Boolean);
+      const assets=[...(row.state.cinematicLibrary||[]),...itemPortraits(row.state),...sceneMaps(row.state),...sceneTokenPortraits(row.state),...row.state.books,...(row.state.audio?.clips||[]),...row.state.characters.map(c=>c.portrait)].filter(Boolean);
       const cleanup=store.deleteCampaignAssets?[store.deleteCampaignAssets(id)]:assets.map(asset=>store.deleteAsset(id+'/'+asset.id));
       const results=await Promise.allSettled(cleanup);
       return json({deleted:id,cleanupPending:results.some(result=>result.status==='rejected')});
     }
     if (method === 'GET' && !route) return json(view(row,access,requestedScene));
     if (method==='GET'&&route==='sync') {
-      const rolls=rollView(row.state,master,ownedCharacter(row.state,access)),version=rollVersion(rolls);
-      const params=new URL(request.url).searchParams,changed=params.get('rollVersion')!==version;
+      const params=new URL(request.url).searchParams;
+      const character=ownedCharacter(row.state,access);
+      const moving=!master&&params.has('moving')&&exploreDuringMove(row.state,character,params);
+      if(params.get('motionOnly')==='1')return json({rev:row.rev,state:{movingPoints:moving?.points??null,ambient:moving?.ambient??null}});
+      const rolls=rollView(row.state,master,character),version=rollVersion(rolls);
+      const changed=params.get('rollVersion')!==version;
       let scene={};
       if(params.get('table')==='1'){
         // Between campaign revisions only moving tokens and their visible initiative entries can change.
@@ -927,15 +1047,21 @@ export async function api(request,store) {
           scene={patrolFrame:{sceneId:scoped.sceneId,tokens:projection.tokens.filter(t=>t.motion),combat:projection.table.combat}};
         }else scene=sceneView(row,access,requestedScene).state;
       }
-      return json({id:row.id,rev:row.rev,master,characterId:ownedCharacter(row.state,access)?.id||null,needsCharacter:!master&&!ownedCharacter(row.state,access),rollVersion:version,serverTime:Date.now(),state:{...(!master?{narrations:narrationView(row.state,access)}:{}),audio:audioView(row.state.audio,master,{includeLibrary:false}),...(changed?{rolls}:{}),...scene}});
+      const checks=scene.checkRequests??(params.get('checkRev')===String(row.rev)?null:checkRequestView(row.state,access));
+      delete scene.checkRequests;
+      const stamp=checks?checkVersion(checks):null;
+      return json({id:row.id,rev:row.rev,master,characterId:ownedCharacter(row.state,access)?.id||null,needsCharacter:!master&&!ownedCharacter(row.state,access),rollVersion:version,checkVersion:stamp,serverTime:Date.now(),state:{...(checks&&params.get('checks')!==stamp?{checkRequests:checks}:{}),cinematic:cinematicView(row.state,access),...(!master?{narrations:narrationView(row.state,access)}:{}),audio:{...audioView(row.state.audio,master,{includeLibrary:false}),ambient:moving?.ambient??ambientAt(row.state,ownedCharacter(row.state,access),master)},...(moving?{movingPoints:moving.points}:{}),...(changed?{rolls}:{}),...scene}});
     }
     if (method === 'GET' && route === 'asset') {
       const viewer=ownedCharacter(row.state,access);
       const rivals=new Set(row.state.characters.filter(c=>outsideParty(c,viewer)).map(c=>c.id));
       const visibleCharacters=master?row.state.characters:row.state.characters.filter(character=>!character.hidden&&!rivals.has(character.id));
       const tokenPortraits=master?sceneTokenPortraits(row.state):(row.state.tokens||[]).filter(token=>!token.hidden&&!rivals.has(tokenCharacterId(row.state,token))).map(token=>token.portrait);
+      const sharedImages=master?[]:sharingView(row.state,viewer).received.map(g=>g.material.portrait).filter(p=>p?.id);
       const itemImages=master?itemPortraits(row.state):itemPortraits({inventory:inventoryView(row.state,access),tokens:(row.state.tokens||[]).filter(t=>!t.hidden)});
-      const asset = [...itemImages,...tokenPortraits,...row.state.books,...(row.state.audio?.clips||[]),...visibleCharacters.map(character=>character.portrait),...(master?sceneMaps(row.state):[row.state.map])].find(item=>item?.id===assetId);
+      const visibleRun=cinematicView(row.state,access);
+      const cineAssets=master?row.state.cinematicLibrary||[]:(row.state.cinematicLibrary||[]).filter(a=>a.id===visibleRun?.media?.id||a.id===visibleRun?.soundtrackId);
+      const asset = [...cineAssets,...sharedImages,...itemImages,...tokenPortraits,...row.state.books,...(row.state.audio?.clips||[]),...visibleCharacters.map(character=>character.portrait),...(master?sceneMaps(row.state):[row.state.map])].find(item=>item?.id===assetId);
       if (!asset) fail(404,'Arquivo indisponível.');
       const body = await store.getAsset(id+'/'+asset.id);
       if (!body) fail(404,'Arquivo indisponível.');
@@ -947,7 +1073,7 @@ export async function api(request,store) {
       if(typeof action!=='string'||!action||action.length>80||data!==undefined&&(!data||typeof data!=='object'||Array.isArray(data)))fail(400,'Ação ou dados inválidos.');
       let deleted,removedMaps=[],removedPortraits=[],removedItemPortraits=[];
       const updated = await update(store,row,state=>{
-        const assets=action==='bookDelete' ? state.books : action==='soundDelete' ? state.audio?.clips : null;
+        const assets=action==='cinematicDelete'?state.cinematicLibrary:action==='bookDelete' ? state.books : action==='soundDelete' ? state.audio?.clips : null;
         deleted=assets?.find(asset=>asset.id===data?.id);
         if (['sheetPortraitDelete','characterDelete'].includes(action)) {
           deleted=state.characters.find(character=>character.id===data?.id)?.portrait;
@@ -967,7 +1093,7 @@ export async function api(request,store) {
       await Promise.all([...removedMaps,...removedPortraits,...removedItemPortraits].filter(asset=>!campaignAssets(updated.state).some(a=>a.id===asset.id)).map(asset=>store.deleteAsset(id+'/'+asset.id).catch(()=>{})));
       return json({...view(updated,access,data?.sceneId),...(action==='lootCollect'&&lootResult?.itemId?{pickup:lootResult}:{})});
     }
-    if (method === 'POST' && ['map','pdf','sound','portrait','token-portrait'].includes(route)) {
+    if (method === 'POST' && ['cinematic','map','pdf','sound','portrait','token-portrait'].includes(route)) {
       if (!master && route!=='portrait') fail(403,'Somente o mestre pode enviar arquivos.');
       return json(view(await upload(request,store,row,route,access),access,request.headers.get('X-Scene-Id')),201);
     }

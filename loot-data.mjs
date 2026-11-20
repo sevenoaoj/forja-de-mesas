@@ -1,7 +1,7 @@
 // Public map markers disclose a preview, never the prepared item's secret fields.
 export function publicItemToken(token,master=false){
- if(!master&&(token.patrol||token.realName)){
-  const {patrol,realName,...visible}=token;
+ if(!master&&(token.patrol||token.realName||token.conditionSchedule)){
+  const {patrol,realName,conditionSchedule,...visible}=token;
   if(realName&&visible.portrait)visible.portrait={...visible.portrait,name:'Retrato do token'};
   token=visible;
  }

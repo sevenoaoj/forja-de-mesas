@@ -1,10 +1,14 @@
+import {resolveTokenPath} from './token-motion.mjs';
 import {activeSceneId,sceneLibrary} from './scene-model.mjs';
 import {ownedCharacter,accessFor,authorizeAction} from './access.mjs';
 import {playerSight,normalizeTable,normalizeToken,tokenVisible} from './table-model.mjs';
 
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
 const encoder=new TextEncoder();
-const sceneKey=row=>JSON.stringify([activeSceneId(row.state),row.state.map?.id,normalizeTable(row.state).grid]);
+function sceneKey(row){
+ const {grid,walls}=normalizeTable(row.state);
+ return JSON.stringify([activeSceneId(row.state),row.state.map?.id,grid,walls]);
+}
 const validId=value=>typeof value==='string'&&/^[\w:-]{1,80}$/.test(value);
 // Process-local live scene channel. Persistent state always comes from the campaign store.
 export function createTableRealtime({sceneView,now=Date.now,setTimer=setInterval,clearTimer=clearInterval,previewTTL=1800,maxConnections=500}={}){
@@ -57,8 +61,14 @@ export function createTableRealtime({sceneView,now=Date.now,setTimer=setInterval
   for(const client of room.clients){
    const access=accessFor(row,client.key);if(!access){close(client);continue;}
    const identity=JSON.stringify([client.key,client.sceneId]);
-   if(!snapshots.has(identity))snapshots.set(identity,encode(sceneView(row,access,client.sceneId)));
-   sendBytes(client,snapshots.get(identity));
+   if(!snapshots.has(identity))snapshots.set(identity,{snapshot:sceneView(row,access,client.sceneId)});
+   const cached=snapshots.get(identity),snapshot=cached.snapshot;
+   if(snapshot.checkVersion&&client.checkVersion===snapshot.checkVersion){
+    if(!cached.delta){const {checkRequests,...state}=snapshot.state;cached.delta=encode({...snapshot,state});}
+    sendBytes(client,cached.delta);
+   }else{
+    cached.full??=encode(snapshot);sendBytes(client,cached.full);client.checkVersion=snapshot.checkVersion;
+   }
   }
   // A released preview restores the client's canonical position. Deliver the new
   // snapshot first, including when a drag returns to its original coordinates.
@@ -75,7 +85,7 @@ export function createTableRealtime({sceneView,now=Date.now,setTimer=setInterval
    const body=new ReadableStream({start(controller){
     client={controller,key,room,signal,sceneId:accessFor(row,key)?.master?sceneId:undefined,seen:new Set(),closed:false};client.abort=()=>close(client);room.clients.add(client);signal?.addEventListener('abort',client.abort,{once:true});
     if(signal?.aborted){close(client);return;}
-    send(client,{type:'ready',id:row.id,serverTime:now()});send(client,sceneView(row,accessFor(row,key),client.sceneId));
+    send(client,{type:'ready',id:row.id,serverTime:now()});const snapshot=sceneView(row,accessFor(row,key),client.sceneId);client.checkVersion=snapshot.checkVersion;send(client,snapshot);
     for(const preview of room.previews.values())if(preview.expires>now())distribute(room,preview);
    },cancel(){close(client);}},{highWaterMark:12_000_000,size:chunk=>chunk.byteLength});
    ensureTimer();return new Response(body,{headers:{'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-store, no-transform','X-Accel-Buffering':'no','Connection':'keep-alive'}});
@@ -98,7 +108,8 @@ export function createTableRealtime({sceneView,now=Date.now,setTimer=setInterval
    if(previous&&previous.dragId!==data.dragId){cancelPreview(room,previous);room.retired.set(previous.dragId,now()+5000);}
    if(data.phase==='cancel'){if(previous){cancelPreview(room,previous);room.previews.delete(data.id);}room.retired.set(data.dragId,now()+5000);release(room);return;}
    // Look up the bearer internally; it is never serialized to recipients.
-   const preview={type:'tokenPreview',id:data.id,x:data.x,y:data.y,...(data.rotation!==undefined?{rotation:data.rotation}:{}),dragId:data.dragId,seq:data.seq,phase:data.phase,at:now(),sceneId:activeSceneId(row.state),key,expires:now()+previewTTL};
+   const position=resolveTokenPath(token,data,table,data.path,table.walls.length>0&&data.phase==='end'&&table.grid.snap);
+   const preview={type:'tokenPreview',id:data.id,...position,...(data.rotation!==undefined?{rotation:data.rotation}:{}),dragId:data.dragId,seq:data.seq,phase:data.phase,at:now(),sceneId:activeSceneId(row.state),key,expires:now()+previewTTL};
    room.previews.set(data.id,preview);distribute(room,preview);ensureTimer();
   },publish,
   commitToken(row,id,dragId,rotationOnly=false){const room=rooms.get(row.id);if(!room)return;const preview=room.previews.get(id);if(rotationOnly){if(!validId(dragId))return;if(preview&&preview.dragId!==dragId){room.retired.set(dragId,now()+5000);return;}}if(preview){room.commits.push(preview);room.previews.delete(id);room.retired.set(preview.dragId,now()+5000);}if(validId(dragId))room.retired.set(dragId,now()+5000);},

@@ -377,3 +377,19 @@ test('loops persistem sem duplicação, respeitam volume da mesa e parada cancel
  const pending=campaignAudio(new Element(),()=>new Promise(resolve=>resolveClip=resolve),error=>errors.push(error));
  pending.sync(state(1,[]));pending.toggle();pending.sync(state(2,[loop]));pending.sync(state(3,[],1));resolveClip(new Response(new Uint8Array([1])));await flush();assert.equal(created.length,1);pending.dispose();
 });
+
+test('som do mapa perde agudos atrás da parede e volta à mesma reprodução ao abrir a porta',async()=>{
+ const sources=[];
+ AudioContext.prototype.decodeAudioData=async()=>({duration:2});
+ AudioContext.prototype.createBufferSource=()=>{const source=audioNode();sources.push(source);return source;};
+ AudioContext.prototype.createBiquadFilter=()=>({...audioNode(),Q:{value:0}});
+ const client=campaignAudio(new Element(),async()=>new Response(new Uint8Array([1])),assert.fail);
+ const data=row(1,null);client.sync(data);client.toggle();
+ const cue={id:'source',sound:'clip',volume:30,at:5000,muffled:true};
+ client.syncAmbient([cue]);await flush();
+ assert.equal(sources[0].wallFilter.type,'lowpass');assert.equal(sources[0].wallFilter.frequency.value,2400);
+ client.syncAmbient([{...cue,cutoffHz:7400}]);assert.equal(sources[0].wallFilter.frequency.value,7400);
+ client.syncAmbient([{...cue,muffled:false,volume:75}]);assert.equal(sources.length,1);
+ assert.equal(sources[0].wallFilter.frequency.value,20000);assert.equal(sources[0].effectGain.gain.value,.6);
+ client.dispose();
+});

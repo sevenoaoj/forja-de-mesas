@@ -206,3 +206,18 @@ test('visibilidade é independente por emissor, preservada na edição e exclusi
  await ok(await r.action('tableLightSet',{...props,id,scope:'global'}));
  assert.equal((await r.view(r.member)).state.table.lights[0].scope,undefined);
 });
+
+test('janela criada pelo mestre segura o token e deixa ver o outro lado do vão',async()=>{
+ const r=await room(),segment={kind:'window',x:4,y:0,toX:4,toY:7};
+ await ok(await r.action('tokenMove',{id:'lyra',x:1,y:1}));
+ assert.equal((await r.action('tableWallAdd',segment,r.member)).status,403);
+ const state=await ok(await r.action('tableWallAdd',segment));
+ const pane=state.state.table.walls.at(-1);
+ assert.equal((await r.view(r.member)).state.table.walls.at(-1).kind,'window');
+ const source=visionSector({...hero,x:1,y:1,rotation:90},grid);
+ assert.ok(pointInVision({x:5,y:1.5},source,[pane]));
+ assert.equal(pointInVision({x:5,y:1.5},source,[{...pane,kind:'wall'}]),false);
+ const moved=await ok(await r.action('tokenMove',{id:'lyra',x:7,y:3}));
+ assert.equal(moved.state.tokens.find(t=>t.id==='lyra').x,3);
+ assert.equal((await r.action('tableDoorSet',{id:pane.id,open:true})).status,400);
+});

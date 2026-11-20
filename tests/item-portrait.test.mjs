@@ -27,7 +27,7 @@ test('trocar imagem não apaga a usada por cópias ou snapshots; limpeza acontec
  const r=await room();let row=await good(await r.upload(),201),item=row.state.inventory[0],oldId=item.portrait.id;
  row=await good(await r.action('itemGrant',{id:item.id,version:item.version,characterId:'lyra',quantity:1}));const copy=row.state.inventory.find(i=>i.characterId);
  row=await good(await r.upload({...fields(item),name:'Poção nova'}),201);item=row.state.inventory.find(i=>i.id===item.id);assert.notEqual(item.portrait.id,oldId);assert.equal((await r.asset(oldId,r.one)).status,200);
- await good(await r.action('itemDelete',{id:copy.id,version:copy.version}));assert.equal(r.assets.has(r.created.id+'/'+oldId),false);
+ await good(await r.action('itemDelete',{id:copy.id,version:copy.version},r.one));assert.equal(r.assets.has(r.created.id+'/'+oldId),false);
  await good(await r.action('itemSave',{...fields(item),removePortrait:true}));assert.equal(itemPortraits(r.rows.get(r.created.id).state).length,0);assert.equal(r.assets.size,0);
 });
 test('imagem de recompensa continua após apagar catálogo e coletar item, com acesso privado ao portador',async()=>{

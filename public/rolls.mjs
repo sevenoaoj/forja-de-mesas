@@ -83,8 +83,8 @@ export function createDiceDisplay(root,{schedule=setTimeout,cancel=clearTimeout,
       if(key!==identity){stop();identity=key;revision=-1;seen=new Set();queue=[];}
       if(!key||!Array.isArray(row.state?.rolls)||row.rev<revision)return;
       const rolls=row.state.rolls.filter(roll=>row.master||roll.rolledBy==='player'&&roll.visibility==='public'),allowed=new Set(rolls.map(r=>r.id));
-      if(active&&!allowed.has(active.id))stop();
-      queue=queue.filter(r=>allowed.has(r.id));
+      if(active&&active.visibility!=='requested'&&!allowed.has(active.id))stop();
+      queue=queue.filter(r=>r.visibility==='requested'||allowed.has(r.id));
       if(revision<0){seen=allowed;revision=row.rev;return;}
       revision=row.rev;
       for(const roll of [...rolls].reverse()) {
@@ -94,6 +94,10 @@ export function createDiceDisplay(root,{schedule=setTimeout,cancel=clearTimeout,
       queue=queue.slice(-8);
       if(seen.size>300)seen=new Set([...seen].slice(-150));
       next();
+    },
+    showRequested(roll){
+      if(!enabled||seen.has(roll.id))return;
+      seen.add(roll.id);queue.push(roll);next();
     },
     setEnabled(value) {enabled=Boolean(value);try{localStorage.setItem('forja.diceEffects',String(enabled));}catch{}if(!enabled){queue=[];stop();}},
     clear() {queue=[];stop();},

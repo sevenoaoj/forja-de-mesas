@@ -15,7 +15,7 @@ test('catálogo privado, cópias independentes e filtragem de segredos e víncul
  const safe=publicState(s,alice).inventory;assert.equal(safe.length,1);assert.equal(safe[0].id,instance.id);assert.equal(safe[0].gmNotes,undefined);assert.equal(safe[0].sourceId,undefined);assert.equal(safe[0].journalId,'');assert.deepEqual(inventoryView(s,{guest:true}),[]);
  s.journal[0].audience='selected';s.journal[0].recipientIds=['a'];assert.equal(inventoryView(s,alice)[0].journalId,'j');assert.equal(inventoryView(s,bob)[0].journalId,'');
  mutateInventory(s,'itemSave',{id:template.id,version:1,name:'Poção melhorada',weight:2},master);assert.equal(s.inventory.find(e=>e.id===instance.id).name,'Poção');
- mutateInventory(s,'itemDelete',{id:template.id,version:2},master);assert.equal(inventoryView(s,alice).length,1);
+ mutateInventory(s,'itemDelete',{id:template.id,version:2},master);assert.equal(s.inventory.length,0);
 });
 test('portador gerencia apenas quantidade, equipamento e notas com conflito de versão',()=>{
  const s=seed(),e=grant(s,prepare(s));const before=JSON.stringify(s);
@@ -55,4 +55,14 @@ test('cor do item é validada, preservada nas cópias e legível no inventário'
  mutateInventory(s,'itemSave',{id:template.id,version:1,name:'Poção azul',accent:'#331199'},master);assert.equal(s.inventory.find(e=>e.id===copy.id).accent,'#12abef');
  mutateInventory(s,'itemSave',{id:template.id,version:2,name:'Poção azul'},master);assert.equal(s.inventory[0].accent,'#331199');
  const row={master:false,state:publicState(s,alice)};assert.match(renderInventory(row,ui,{scope:'all'}),/--item-accent:#12abef/);assert.match(itemDetails(row.state.inventory[0],row,ui),/--item-glow:18,171,239/);
+});
+
+test('consumível antigo tem um uso por unidade e a barra respeita os limites',()=>{
+ const s=seed(),template=prepare(s,{kind:'consumable'}),copy=grant(s,template);
+ delete copy.uses;delete copy.usesPerUnit;
+ assert.equal(inventoryView(s,alice)[0].uses,3);
+ const step=delta=>mutateInventory(s,'itemUse',{id:copy.id,version:s.inventory.at(-1).version,delta},alice);
+ assert.throws(()=>step(1),{status:409});step(-1);step(-1);step(-1);
+ assert.throws(()=>step(-1),{status:409});step(1);
+ assert.equal(inventoryView(s,alice)[0].uses,1);assert.equal(inventoryView(s,alice)[0].quantity,3);
 });

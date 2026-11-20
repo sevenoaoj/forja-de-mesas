@@ -390,3 +390,56 @@ test('nome verdadeiro de token independente fica privado no mapa, retrato e inic
  assert.equal((await r.view()).state.tokens.at(-1).realName,undefined);
  assert.equal((await r.view(false)).state.table.combat.entries[0].name,alias);
 });
+
+test('condições temporárias acompanham rodadas, próximo turno, retrocesso e sigilo da cena',async()=>{
+ const room=await mesa();
+ const apply=(id,name,mode,rounds,master=true)=>room.act('tokenCondition',{id,name,mode,rounds},master);
+ const timed=async(id,master=false)=>(await room.view(master)).state.tokens.find(token=>token.id===id)?.timedStatuses||[];
+ const step=direction=>room.act('combatNext',{direction});
+ assert.equal((await apply('lyra','Atordoado','turn')).status,409);
+ const entries=[{id:'a',tokenId:'lyra',name:'Lyra',value:15},{id:'b',tokenId:'dorian',name:'Dorian',value:3}];
+ await room.act('combatSet',{entries});
+ assert.equal((await apply('lyra','Queimando','rounds',2,false)).status,403);
+ assert.equal((await apply('lyra','Queimando','rounds',0)).status,400);
+ await apply('lyra','Ferido','manual');
+ await apply('lyra','Queimando','rounds',2);
+ await apply('lyra','Atordoado','turn');
+ await apply('dorian','Amedrontado','turn');
+ assert.deepEqual((await timed('lyra')).map(c=>c.remaining||c.mode),[2,'turn']);
+ await room.act('combatEndOwn',{entryId:'a',round:1},false);
+ assert.equal((await timed('dorian'))[0].ending,true);
+ await step(1);
+ assert.deepEqual(await timed('dorian'),[]);
+ assert.deepEqual((await timed('lyra')).map(c=>c.remaining||c.ending),[1,true]);
+ await step(1);
+ assert.deepEqual((await timed('lyra')).map(c=>c.name),['Queimando']);
+ await step(1);
+ assert.deepEqual(await timed('lyra'),[]);
+ await step(-1);await step(-1);
+ assert.equal((await timed('lyra')).length,2);
+ const lyra=(await room.view(false)).state.tokens.find(t=>t.id==='lyra');
+ assert.deepEqual(lyra.statuses,['Ferido']);assert.equal(lyra.conditionSchedule,undefined);
+ await room.act('tokenUpdate',{id:'lyra',hidden:true});
+ assert.deepEqual(await timed('lyra'),[]);assert.equal((await timed('lyra',true)).length,2);
+ await apply('lyra','Queimando','remove');
+ assert.deepEqual((await timed('lyra',true)).map(c=>c.name),['Atordoado']);
+ await room.act('combatSet',{entries:[]});
+ await room.act('combatSet',{entries});
+ assert.deepEqual(await timed('lyra',true),[]);
+});
+
+test('colisão contínua respeita tamanho, cantos, pontas e trajetos ao redor da parede',async()=>{
+ const {resolveTokenPath}=await import('../token-motion.mjs');
+ const wall={x:4,y:0,toX:4,toY:8};
+ const grid={columns:24,rows:20},token={x:1,y:1,size:1};
+ const move=(to,walls=[wall],piece=token,path=[],snap=false)=>resolveTokenPath(piece,to,{grid,walls},path,snap);
+ assert.deepEqual(move({x:18,y:4}),{x:3,y:4});
+ assert.deepEqual(move({x:18,y:4},[wall],{...token,size:2}),{x:2,y:4});
+ assert.deepEqual(move({x:0,y:1},[wall],{...token,x:12}),{x:4,y:1});
+ assert.deepEqual(move({x:12,y:12},[wall,{x:0,y:5,toX:8,toY:5}]),{x:3,y:4});
+ assert.deepEqual(move({x:7,y:1},[wall],token,[{x:1,y:10},{x:7,y:10}]),{x:7,y:1});
+ assert.deepEqual(move({x:8,y:1},[{...wall,x:4.8,toX:4.8}],token,[],true),{x:3.8,y:1});
+ const tip=move({x:5,y:8},[wall],{...token,y:7.7});
+ assert.ok(Math.hypot(tip.x+.5-4,tip.y+.5-8)>=.5-1e-8);
+ assert.deepEqual(move({x:1,y:1},[wall],{...token,x:3.4}),{x:1,y:1});
+});

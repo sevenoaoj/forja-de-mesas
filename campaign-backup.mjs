@@ -1,5 +1,8 @@
-import {campaignParties,stressRegionsFor} from './model.mjs';
+import {validateExploration} from './exploration-model.mjs';
+import {cinematicStyle,campaignParties,stressRegionsFor} from './model.mjs';
+import {validateSessionLog} from './session-log.mjs';
 import {itemPortraits} from './item-assets.mjs';
+import {validConditionTimer} from './table-model.mjs';
 import {sceneMaps,sceneTokenPortraits} from './scene-model.mjs';
 const encoder=new TextEncoder(),decoder=new TextDecoder('utf-8',{fatal:true});
 const magic=encoder.encode('FORJA-BACKUP/1\n');
@@ -9,9 +12,10 @@ const object=value=>Boolean(value&&typeof value==='object'&&!Array.isArray(value
 const uuid=value=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
 const hash=async bytes=>new Uint8Array(await crypto.subtle.digest('SHA-256',bytes));
 const same=(a,b)=>a.length===b.length&&a.every((v,i)=>v===b[i]);
-const mime=new Set(['application/pdf','image/png','image/jpeg','image/webp','image/gif','audio/mpeg','audio/wav','audio/ogg','audio/webm','audio/mp4','audio/x-wav','audio/flac','audio/wave','audio/aac','audio/x-flac','audio/x-m4a']);
+const mime=new Set(['video/mp4','video/webm','application/pdf','image/png','image/jpeg','image/webp','image/gif','audio/mpeg','audio/wav','audio/ogg','audio/webm','audio/mp4','audio/x-wav','audio/flac','audio/wave','audio/aac','audio/x-flac','audio/x-m4a']);
 function validateState(state){
  if(!object(state)||typeof state.name!=='string'||!state.name.trim()||state.name.length>100)fail(400,'O backup não contém uma campanha válida.');
+ validateSessionLog(state.sessionLog);
  for(const key of ['characters','fields','tokens','books','rolls','initiative'])if(!Array.isArray(state[key]))fail(400,'Estrutura da campanha inválida: '+key+'.');
  if(state.characters.length>100||state.books.length>30)fail(400,'O backup excede os limites da campanha.');
  for(const key of ['characters','fields','tokens']){
@@ -38,11 +42,36 @@ function validateState(state){
    if(!Number.isInteger(part?.limit)||part.limit<1||part.limit>99||!Number.isInteger(part.value)||part.value<0||part.value>part.limit)fail(400,'Região corporal inválida no backup.');
   }
  }
+ if(state.cinematicLibrary!==undefined&&(!Array.isArray(state.cinematicLibrary)||state.cinematicLibrary.length>60||state.cinematicLibrary.some(a=>!a||(!mime.has(a.type)||a.type==='application/pdf')||typeof a.name!=='string')))fail(400,'Biblioteca de cinemáticas inválida.');
+ if(state.cinematicCues!==undefined){
+  if(!Array.isArray(state.cinematicCues)||state.cinematicCues.length>60)fail(400,'Preparações de cinemática inválidas.');
+  const ids=new Set();
+  for(const cue of state.cinematicCues){
+   if(!uuid(cue?.id)||ids.has(cue.id)||typeof cue.name!=='string'||!cue.name.trim()||cue.name.length>80||typeof cue.text!=='string'||cue.text.length>240||typeof cue.party!=='string'||typeof cue.mediaId!=='string'||cue.mediaId&&!state.cinematicLibrary?.some(a=>a.id===cue.mediaId&&!a.type.startsWith('audio/'))||!Number.isInteger(cue.intro)||cue.intro<0||cue.intro>30||!Number.isInteger(cue.duration)||cue.duration<1||cue.duration>600)fail(400,'Preparação de cinemática inválida.');
+   if(cue.soundtrackId!==undefined&&(typeof cue.soundtrackId!=='string'||cue.soundtrackId&&!state.cinematicLibrary?.some(a=>a.id===cue.soundtrackId&&a.type.startsWith('audio/'))))fail(400,'Trilha da cinemática inválida.');
+   cinematicStyle(cue);
+   ids.add(cue.id);
+  }
+ }
  if(state.audio!==undefined&&(!object(state.audio)||!Array.isArray(state.audio.clips)||!Array.isArray(state.audio.cues)))fail(400,'Estrutura de áudio inválida.');
  if(state.inventory!==undefined&&!Array.isArray(state.inventory))fail(400,'Inventário inválido.');
  if(state.journal!==undefined&&!Array.isArray(state.journal))fail(400,'Diário inválido.');
  if(state.sheetTemplates!==undefined&&(!object(state.sheetTemplates)||!Array.isArray(state.sheetTemplates.items)))fail(400,'Modelos inválidos.');
  if(state.sceneLibrary!==undefined){const lib=state.sceneLibrary;if(!object(lib)||!Array.isArray(lib.scenes)||!Array.isArray(lib.sessions)||!lib.scenes.length||!lib.scenes.some(s=>s.id===lib.activeId))fail(400,'Organização das cenas inválida.');for(const scene of lib.scenes)if(!object(scene)||scene.tokens!==undefined&&!Array.isArray(scene.tokens))fail(400,'Cena inválida.');}
+ const worlds=[state,...(state.sceneLibrary?.scenes||[])];
+ const items=[...(state.inventory||[]),...worlds.flatMap(scene=>(scene.tokens||[]).filter(t=>t?.kind==='item').map(t=>t.loot?.item))];
+ for(const item of items){
+  if(item?.usesPerUnit===undefined&&item?.uses===undefined)continue;
+  const capacity=item.usesPerUnit,quantity=item.quantity??1;
+  if(item.kind!=='consumable'||!Number.isInteger(capacity)||capacity<1||capacity>9999||!Number.isInteger(quantity)||quantity<0||!Number.isInteger(item.uses)||item.uses<0||item.uses>quantity*capacity)fail(400,'Barra de usos inválida no backup.');
+ }
+ validateExploration(state);
+ for(const scene of [state,...(state.sceneLibrary?.scenes||[])]){
+  for(const token of scene.tokens||[]){
+   const saved=token?.conditionSchedule;if(saved===undefined)continue;
+   if(!Array.isArray(saved)||saved.length>24||!saved.every(validConditionTimer))fail(400,'Duração de condição inválida no backup.');
+  }
+ }
  // Data is consumed by existing editors: reject prototype keys and excessive nesting.
  let nodes=0;function walk(value,depth=0){if(++nodes>500000||depth>50)fail(400,'Estrutura do backup excessivamente complexa.');if(value&&typeof value==='object')for(const [key,child]of Object.entries(value)){if(['__proto__','constructor','prototype'].includes(key))fail(400,'O backup contém uma chave não permitida.');walk(child,depth+1);}}
  walk(state);
@@ -51,13 +80,13 @@ function validateState(state){
 
 }
 export function backupAssets(state){
- const items=[...itemPortraits(state),...sceneMaps(state),...sceneTokenPortraits(state),...state.books,...(state.audio?.clips||[]),...state.characters.map(c=>c.portrait)].filter(Boolean),byId=new Map();
+ const items=[...(state.cinematicLibrary||[]),...itemPortraits(state),...sceneMaps(state),...sceneTokenPortraits(state),...state.books,...(state.audio?.clips||[]),...state.characters.map(c=>c.portrait)].filter(Boolean),byId=new Map();
  let total=0;
  for(const item of items){if(!uuid(item.id)||!mime.has(item.type)||!Number.isSafeInteger(item.size)||item.size<=0||item.size>40*1024*1024)fail(400,'Referência de arquivo inválida no backup.');const old=byId.get(item.id);if(old&&(old.size!==item.size||old.type!==item.type))fail(400,'Referências de arquivo conflitantes.');if(!old){byId.set(item.id,{id:item.id,type:item.type,size:item.size});total+=item.size;}}
  if(total>90_000_000||byId.size>1200)fail(413,'O backup suporta até 90 MB de arquivos por campanha.');return [...byId.values()];
 }
 function portableState(source){
- const state=structuredClone(source);state.members=[];
+ const state=structuredClone(source);state.members=[];delete state.cinematicRun;delete state.checkRequests;delete state.materialShares;delete state.investigationReceipts;
  if(state.table?.lootEvents)state.table.lootEvents=[];for(const scene of state.sceneLibrary?.scenes||[])if(scene.table?.lootEvents)scene.table.lootEvents=[];
  for(const c of state.characters)delete c.ownerId;
  for(const item of state.sheetTemplates?.items||[])item.owner='gm';

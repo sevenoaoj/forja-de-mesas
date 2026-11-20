@@ -435,3 +435,131 @@ dialog::backdrop{background:#080710c9}
 [data-form=bodyStressConfig] label[hidden]{display:none}
 .stress-panel {container-type:inline-size}
 @container(min-width:40rem){.stress-list[data-mode=complex]{grid-template-columns:repeat(2,minmax(0,1fr))}.stress-layout:has(.stress-list[data-mode=complex]){grid-template-columns:minmax(14rem,.85fr) minmax(24rem,1.4fr)}}
+
+#cinematic-stage {position:fixed;inset:0;margin:0;padding:0;width:100%;height:100%;height:100dvh;max-width:none;max-height:none;border:0;border-radius:0;overflow:hidden;color:var(--cine-lettering);background:transparent}
+#cinematic-stage::backdrop {background:transparent;backdrop-filter:none}
+@property --cine-aperture {syntax:"<percentage>";inherits:false;initial-value:0%}
+@keyframes cine-encroach {from{--cine-aperture:76%}to{--cine-aperture:0%}}
+.cine-rift,.cine-reveal,.cine-reveal [data-cine-media] {position:absolute;inset:0;display:grid;place-items:center}
+.cine-rift {overflow:hidden;background:radial-gradient(ellipse at center,transparent var(--cine-aperture),color-mix(in srgb,var(--cine-accent) 23%,var(--cine-background)) calc(var(--cine-aperture) + 12%),var(--cine-background) calc(var(--cine-aperture) + 32%));animation:cine-encroach var(--entry) ease-in var(--elapsed) both;transition:opacity .7s}
+.cine-rift i {position:absolute;width:70vmax;height:70vmax;border:1.2vmax double var(--cine-accent);border-radius:42% 58% 62% 38% / 33% 51% 49% 67%;box-shadow:inset 0 0 6vmax color-mix(in srgb,var(--cine-accent) 55%,var(--cine-background)),0 0 5vmax var(--cine-background);animation:cine-collapse var(--entry) cubic-bezier(.55,.02,.85,.65) var(--elapsed) both}
+.cine-rift i:nth-child(2){width:89vmax;height:84vmax;rotate:57deg;border-color:color-mix(in srgb,var(--cine-accent) 65%,var(--cine-background))}
+.cine-rift i:nth-child(3){width:112vmax;height:106vmax;rotate:122deg;border-color:color-mix(in srgb,var(--cine-accent) 45%,var(--cine-background))}
+@keyframes cine-collapse {from{transform:scale(1.5) rotate(-28deg)}to{transform:scale(.035) rotate(32deg)}}
+.cine-reveal {visibility:hidden;opacity:0;background:var(--cine-background)}
+#cinematic-stage[data-phase=reveal] .cine-reveal{visibility:visible;opacity:1}
+#cinematic-stage[data-phase=reveal] .cine-rift{opacity:0}
+.cine-reveal img,.cine-reveal video{width:100%;height:100%;object-fit:contain}
+.cine-reveal h2{position:relative;margin:auto 0 7vh;padding:.35em .8em;max-width:88%;text-align:center;font:clamp(1.7rem,5vw,4rem)/1.15 var(--serif);text-shadow:0 2px 8px black;color:var(--cine-lettering);background:color-mix(in srgb,var(--cine-background) 82%,transparent);border-radius:.15em;overflow-wrap:anywhere}
+.cine-reveal [data-cine-media]:empty+h2{margin:auto}
+.cine-reveal h2:empty,.cine-reveal p:empty{display:none}
+.cine-reveal p{position:absolute;z-index:2;bottom:1rem;color:white;background:#141117}
+.cine-controls{position:absolute;top:max(.8rem,env(safe-area-inset-top));right:.8rem;display:flex;gap:.4rem}
+.cine-controls button[hidden]{display:none}
+@media(prefers-reduced-motion:reduce){.cine-rift,.cine-rift i{animation:none}.cine-reveal,.cine-rift{transition:none}}
+
+.cine-palette {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.7rem}
+.cine-palette input[type=color] {width:100%;height:40px;padding:3px}
+.cine-ink {display:none}
+#cinematic-stage:not([data-transition=rift]) .cine-rift {background:transparent;animation:none}
+#cinematic-stage:not([data-transition=rift]) .cine-rift i {display:none}
+[data-transition=ink] .cine-ink {display:block;position:absolute;inset:0;width:100%;height:100%}
+[data-transition=ink] .cine-rift::before {content:"";position:absolute;inset:0;background:linear-gradient(to bottom,color-mix(in srgb,var(--cine-accent) 34%,var(--cine-background)),transparent 16%);animation:cine-dissolve var(--entry) ease var(--elapsed) both}
+.cine-ink-flood {transform-box:view-box;animation:cine-ink-fill var(--entry) ease-in-out var(--elapsed) both}
+@keyframes cine-ink-fill {0%,28%{transform:translateY(-142%)}49%{transform:translateY(-118%)}92%,100%{transform:translateY(0)}}
+.cine-ink use {transform-origin:0 0;animation:cine-flow calc(var(--entry) * var(--tempo)) cubic-bezier(.44,.05,.65,1) var(--elapsed) both}
+@keyframes cine-flow {0%{transform:scaleY(0)}64%{transform:scaleY(calc(var(--length) * .42))}100%{transform:scaleY(var(--length))}}
+.cine-beads ellipse {animation:cine-bead calc(var(--entry) * var(--tempo)) ease-in var(--elapsed) both}
+@keyframes cine-bead {0%,83%{opacity:0;transform:translateY(-5%)}85%{opacity:.8}100%{opacity:0;transform:translateY(18%)}}
+[data-transition=curtain] .cine-rift::before,[data-transition=curtain] .cine-rift::after {content:"";position:absolute;inset:0 49.8% 0 0;background:repeating-linear-gradient(92deg,var(--cine-background),color-mix(in srgb,var(--cine-accent) 70%,var(--cine-background)) 8%,var(--cine-background) 17%);animation:cine-curtain var(--entry) ease-in-out var(--elapsed) both;--from:-101%}
+[data-transition=curtain] .cine-rift::after {inset:0 0 0 49.8%;--from:101%}
+@keyframes cine-curtain {from{transform:translateX(var(--from))}to{transform:translateX(0)}}
+[data-transition=mist] .cine-rift::before,[data-transition=mist] .cine-rift::after {content:"";position:absolute;inset:-40%;background:radial-gradient(ellipse at 30% 55%,var(--cine-accent),transparent 53%),radial-gradient(ellipse at 70% 40%,var(--cine-background) 15%,transparent 60%);animation:cine-cloud var(--entry) ease-out var(--elapsed) both;--from:-38%}
+[data-transition=mist] .cine-rift::after {--from:43%;rotate:165deg}
+@keyframes cine-cloud {from{transform:translateX(var(--from)) scale(.8);opacity:0}to{transform:scale(1.4);opacity:.95}}
+[data-transition=fade] .cine-rift::before {content:"";position:absolute;inset:0;background:radial-gradient(ellipse,color-mix(in srgb,var(--cine-accent) 35%,var(--cine-background)),var(--cine-background));animation:cine-melt-shade var(--entry) linear var(--elapsed) both}
+@keyframes cine-dissolve {from{opacity:0}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){#cinematic-stage .cine-rift *,#cinematic-stage .cine-rift::before,#cinematic-stage .cine-rift::after{animation:none}}
+
+.cine-composition {position:absolute;inset:0;display:grid;place-items:center;overflow:hidden}
+/* Size stills and animated GIFs against the available frame, independent of their intrinsic grid size. */
+.cine-composition:has([data-cine-media] > img) {grid-template: minmax(0,1fr) auto / minmax(0,1fr)}
+.cine-composition [data-cine-media]:has(> img) {position:relative;inset:auto;place-self:stretch;min-width:0;min-height:0}
+.cine-composition [data-cine-media] > img {position:absolute;inset:1%;width:98%;height:98%;object-position:center}
+.cine-composition [data-cine-media]:has(> img)+h2 {margin:0 auto max(.5rem,env(safe-area-inset-bottom));max-height:35dvh;overflow:auto}
+[data-phase=reveal] .cine-composition {animation:var(--cine-show,cine-dissolve) var(--reveal-span) cubic-bezier(.19,.65,.28,1) var(--reveal-elapsed) backwards}
+[data-reveal=emerge] {--cine-show:cine-emerge}
+@keyframes cine-emerge {from{transform:scale(1.09);opacity:0;filter:blur(8px)}to{transform:scale(1);opacity:1;filter:blur(0)}}
+[data-reveal=slit] {--cine-show:cine-slit}
+@keyframes cine-slit {0%{clip-path:ellipse(0% 0% at center)}24%{clip-path:ellipse(45% 1% at center)}100%{clip-path:ellipse(78% 78% at center)}}
+[data-reveal=slit][data-phase=reveal] .cine-reveal::after {content:"";position:absolute;left:0;right:0;top:50%;height:2px;background:linear-gradient(90deg,transparent,var(--cine-accent),transparent);box-shadow:0 0 .8rem var(--cine-accent);pointer-events:none;animation:cine-seam var(--reveal-span) ease-out var(--reveal-elapsed) both}
+@keyframes cine-seam {0%{opacity:0;transform:scaleX(.04)}23%{opacity:.9;transform:scaleX(.88)}60%,100%{opacity:0;transform:scaleX(1)}}
+[data-reveal=sweep] {--cine-show:cine-sweep}
+[data-reveal=sweep][data-phase=reveal] .cine-composition {mask-image:linear-gradient(107deg,black 34%,transparent 65%);mask-size:400% 100%;mask-position:left}
+@keyframes cine-sweep {from{mask-position:right}to{mask-position:left}}
+[data-reveal=sweep][data-phase=reveal] .cine-reveal::after {content:"";position:absolute;inset:-40% -30%;background:linear-gradient(107deg,transparent 46%,var(--cine-accent) 50%,transparent 54%);pointer-events:none;animation:cine-sweep-light var(--reveal-span) cubic-bezier(.19,.65,.28,1) var(--reveal-elapsed) both}
+@keyframes cine-sweep-light {0%{transform:translateX(-60%);opacity:0}20%{opacity:.28}100%{transform:translateX(60%);opacity:0}}
+@media(prefers-reduced-motion:reduce){#cinematic-stage .cine-composition,#cinematic-stage .cine-reveal::after{animation:none;mask-image:none}#cinematic-stage .cine-reveal::after{display:none}}
+
+@keyframes cine-melt-shade {0%,25%{opacity:0}68%{opacity:.26}100%{opacity:1}}
+@media (prefers-reduced-motion:no-preference) {
+  html.cine-melting body > :is(.layout,dialog[open],#dice-display,#notice):not(#cinematic-stage) {filter:url(#cine-melt)}
+  [data-phase=reveal] [data-cine-media][data-pulse] > * {animation:cine-breathe 3.8s ease-in-out var(--pulse-offset,0ms) infinite}
+  [data-phase=reveal] [data-cine-media][data-pulse] > img {animation:cine-image-breathe 5.8s cubic-bezier(.45,0,.55,1) var(--pulse-offset,0ms) infinite;will-change:transform}
+}
+@keyframes cine-image-breathe {0%,100%{transform:scale(1)}43%{transform:scale(1.014)}}
+@keyframes cine-breathe {0%,100%{transform:scale(1);filter:brightness(1)}50%{transform:scale(1.012);filter:brightness(1.035)}}
+
+@media (prefers-reduced-motion:no-preference) {
+  [data-phase=reveal] .cine-reveal h2 span {
+    animation:cine-letter .18s ease-out calc(var(--letter-delay) + var(--reveal-elapsed)) backwards;
+  }
+}
+@keyframes cine-letter {
+  from {opacity:0;text-shadow:0 0 .3em var(--cine-accent)}
+  55% {opacity:1;text-shadow:0 0 .12em var(--cine-accent)}
+  to {opacity:1;text-shadow:inherit}
+}
+
+.cine-element-canvas {position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#cinematic-stage:is([data-transition=fire],[data-transition=water],[data-transition=earth],[data-transition=air]) .cine-rift:has(.cine-element-canvas[hidden]) {background:var(--cine-background)}
+
+#check-inbox {padding:0 clamp(.75rem,3vw,2rem);max-width:52rem}
+.check-card {margin:.5rem 0;padding:.75rem 1rem;border:1px solid var(--line);border-inline-start:3px solid #ac87d2;border-radius:.65rem;background:var(--surface);overflow-wrap:anywhere}
+.check-card header {display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:.4rem}
+.check-card p,.check-card ul {margin:.45rem 0}
+.check-card select {margin-bottom:.5rem}
+
+.session-clocks,.session-recaps {margin-block:1rem}
+.clock-list {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,15rem),1fr));gap:.65rem}
+.clock-card {display:flex;flex-wrap:wrap;align-items:center;gap:.6rem;padding:.55rem;border:1px solid var(--line,#454052);border-radius:.6rem}
+.clock-card small,.recap-entry small {display:block;color:var(--muted)}
+.clock-face {width:2.6rem;aspect-ratio:1;border-radius:50%;flex:none;background:repeating-conic-gradient(transparent 0 calc(var(--divide) - 3deg),#191723 0 var(--divide)),conic-gradient(#eba55b var(--filled),#443d50 0)}
+@property --filled {syntax:'<percentage>';inherits:false;initial-value:0%}
+@media(prefers-reduced-motion:no-preference){.clock-face {transition:--filled .32s ease}}
+.recap-entry {padding:.75rem 0}.recap-entry p {white-space:pre-wrap;overflow-wrap:anywhere}
+
+#investigation-inbox:not([hidden]) {position:fixed;inset:auto;margin:0;z-index:65;right:max(.8rem,env(safe-area-inset-right));top:max(.8rem,env(safe-area-inset-top));width:min(22rem,calc(100vw - 1.6rem));max-height:35dvh;overflow:auto;display:grid;gap:.5rem;padding:1rem;border:1px solid #dda867;border-left:4px solid #efa95b;border-radius:.75rem;background:#292134;color:#fff2d8;box-shadow:0 8px 30px #0008}
+
+.investigation-rewards{list-style:none;padding:0;display:grid;gap:.5rem}
+.investigation-rewards li{display:flex;justify-content:space-between;align-items:baseline;gap:1rem;padding:.65rem .9rem;border:1px solid #756341;border-radius:.5rem;background:#302933}
+.investigation-rewards li span{color:#f5d798;white-space:nowrap}
+
+.item-uses{margin:.65rem 0;text-align:left}
+.item-uses>span,.item-uses>div{display:flex;align-items:center;justify-content:space-between;gap:.6rem}
+.item-uses>span{font-size:.85rem;margin-bottom:.3rem}
+.item-uses progress{width:100%;min-width:0;flex:1;height:.8rem;accent-color:var(--item-accent,#dfbb73)}
+.investigation-rewards li{display:grid;grid-template-columns:clamp(54px,13vw,90px) minmax(0,1fr) auto;align-items:center;text-align:left;border-color:var(--item-accent);background:linear-gradient(110deg,rgba(var(--item-glow),.16),transparent);overflow-wrap:anywhere}
+.reward-flight{position:fixed;z-index:2147483647;pointer-events:none;display:grid;place-items:center;width:44px;height:44px;border-radius:12px;background:#272436;color:#f4d892;box-shadow:0 0 12px #dfbb7380;overflow:hidden}
+.reward-flight img{width:100%;height:100%;object-fit:contain}
+@media(prefers-reduced-motion:no-preference){dialog[data-loot-reward=true] .item-art{animation:reward-portrait-in .45s ease-out both}}
+@keyframes reward-portrait-in{from{opacity:0;transform:translateY(8px) scale(.84)}to{opacity:1;transform:none}}
+
+.reward-backpack{position:fixed;right:1rem;bottom:1rem;z-index:2147483646;pointer-events:none;padding:10px;color:#f4d892;background:#272436;border-radius:12px}
+
+.theme-field{display:flex;align-items:center;gap:12px;margin:14px 0}
+.theme-field input{width:52px;height:36px;cursor:pointer;padding:2px}
+:root[data-theme-custom]{--primary:var(--theme-primary);--accent:color-mix(in srgb,var(--theme-secondary) 72%,white);--side:color-mix(in srgb,var(--theme-secondary) 7%,#101018);--line:color-mix(in srgb,var(--theme-secondary) 20%,#20202a)}
+[data-theme-custom] :is(.nav-btn[aria-current=page],.brand-mark,.campaign-icon,.profile-icon){background:color-mix(in srgb,var(--theme-secondary) 18%,#171720);border-color:var(--line);color:var(--accent)}
+[data-theme-custom] .btn.primary:not(.sheet-roll-button){color:var(--theme-ink);background:var(--primary)}
+[data-theme-custom] .btn.primary:not(.sheet-roll-button):hover{filter:brightness(1.1)}

@@ -17,6 +17,7 @@ export function visionSources(row,tokens=row.state.tokens||[],{preview=false,sel
  if(normalizeDarkness(row.state.table?.darkness).mode==='group')return visible.filter(token=>token.visionSource===true||row.characterId&&token.characterId===row.characterId);
  return visible.filter(token=>Boolean(row.characterId&&token.characterId===row.characterId));
 }
+export const blocksSight=wall=>!wall.open&&wall.kind!=='window';
 export function pointInVision(point,source,walls=[]){
  const dx=point.x-source.x,dy=point.y-source.y,distance=Math.hypot(dx,dy);
  if(distance>source.base){
@@ -26,14 +27,15 @@ export function pointInVision(point,source,walls=[]){
    if(Math.abs(((bearing-source.rotation+540)%360)-180)>source.angle/2+1e-8)return false;
   }
  }
- return !walls.some(w=>{
-   if(w.open)return false;
-   const ex=w.toX-w.x,ey=w.toY-w.y,det=dx*ey-dy*ex;
-   if(Math.abs(det)<1e-10)return false;
-   const ax=w.x-source.x,ay=w.y-source.y;
-   const along=(ax*ey-ay*ex)/det,across=(ax*dy-ay*dx)/det;
-   return along>1e-8&&along<1-1e-8&&across>=-1e-8&&across<=1+1e-8;
- });
+ return !walls.some(w=>blocksSight(w)&&wallBlocksRay(source,dx,dy,w));
+}
+export function wallBlocksRay(source,dx,dy,w){
+ if(w.open)return false;
+ const ex=w.toX-w.x,ey=w.toY-w.y,det=dx*ey-dy*ex;
+ if(Math.abs(det)<1e-10)return false;
+ const ax=w.x-source.x,ay=w.y-source.y;
+ const along=(ax*ey-ay*ex)/det,across=(ax*dy-ay*dx)/det;
+ return along>1e-8&&along<1-1e-8&&across>=-1e-8&&across<=1+1e-8;
 }
 export function tokenInVision(token,sources,grid,walls=[]){const size=Number(token.size)||1;return sources.some(source=>pointInVision({x:Number(token.x)+size/2,y:Number(token.y)+size/2},visionSector(source,grid),walls));}
 export function sectorPath(source){

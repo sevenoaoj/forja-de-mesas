@@ -92,3 +92,19 @@ test('nota longa mantém o Markdown completo ao importar, reimportar e editar',a
  assert.equal(s.journal[0].body,edited);
  assert.equal(s.journal[0].sourceEdited,true);
 });
+
+test('cofre do Obsidian preserva notas e o mestre escolhe a inclusão privada no diário',async()=>{
+ const {journalEntries}=await import('../public/journal.mjs');
+ const s=seed();mutateJournal(s,'journalImport',{files:[{path:'Cofre/Porto.md',body:'Docas'}]},master);
+ const listed=()=>journalEntries({master:true,state:{journal:journalView(s,master)}});
+ const [note]=s.journal;assert.equal(listed().length,0);
+ const membership=include=>({id:note.id,version:s.journal[0].version,include});
+ assert.throws(()=>mutateJournal(s,'journalMembership',membership(true),alice),{status:403});
+ mutateJournal(s,'journalMembership',membership(true),master);
+ assert.equal(listed()[0].id,note.id);assert.deepEqual(journalView(s,alice),[]);
+ mutateJournal(s,'journalMembership',membership(false),master);assert.equal(listed().length,0);assert.equal(s.journal[0].body,'Docas');
+ delete s.journal[0].inJournal;assert.equal(listed().length,0);
+ mutateJournal(s,'journalPublish',{id:note.id,version:s.journal[0].version,audience:'all'},master);
+ assert.equal(listed().length,1);assert.equal(journalView(s,alice)[0].id,note.id);
+ mutateJournal(s,'journalMembership',membership(false),master);assert.equal(listed().length,0);assert.equal(journalView(s,alice)[0].id,note.id);
+});

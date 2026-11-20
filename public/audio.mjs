@@ -159,21 +159,46 @@ export function campaignAudio(dock,fetchClip,report,control) {
     const source=trackSource(context.createBufferSource());
     if(local)previewSources.add(source);
     source.buffer=buffer;source.loop=loop;source.effectGain=target;
-    source.connect(target);source.start(scheduled(),loop?late%buffer.duration:late);
+    if(loop&&cue.id.startsWith('ambient:')&&context.createBiquadFilter){
+      const filter=context.createBiquadFilter();
+      filter.type='lowpass';filter.Q.value=.707;
+      filter.frequency.value=ambientCutoff(cue);
+      source.connect(filter).connect(target);source.wallFilter=filter;
+    }else source.connect(target);
+    source.start(scheduled(),loop?late%buffer.duration:late);
     return source;
   }
+  function ambientCutoff(cue){return Math.min(cue.muffled?(cue.cutoffHz??2400):20000,(context.sampleRate||44100)*.48);}
+  function smoothParam(param,value){
+    if(param.setTargetAtTime)param.setTargetAtTime(value,context.currentTime,.08);
+    else param.value=value;
+  }
+  function applyLoop(entry){
+    const source=entry.source;if(!source)return;
+    if(entry.ambient){
+      smoothParam(source.effectGain.gain,entry.level/100);
+      if(source.wallFilter)smoothParam(source.wallFilter.frequency,ambientCutoff(entry));
+    }else source.effectGain.gain.value=entry.level/100;
+  }
   function syncLoops(audio){
-    const loops=audio.soundboard?.loops||[],allowed=new Set(loops.map(c=>c.id));
+    const ambient=(audio.ambient||[]).map(c=>({...c,id:'ambient:'+c.id}));
+    const loops=[...(audio.soundboard?.loops||[]),...ambient],allowed=new Set(loops.map(c=>c.id));
     for(const [id,entry] of loopSources)if(!allowed.has(id)){try{entry.source?.stop();}catch{}loopSources.delete(id);}
     for(const id of failedLoops)if(!allowed.has(id))failedLoops.delete(id);
     if(!enabled)return;
     for(const cue of loops){
+      const level=(audio.soundboard?.volume??80)*(cue.id.startsWith('ambient:')?cue.volume/100:1);
       const existing=loopSources.get(cue.id);
-      if(existing){if(existing.source?.effectGain)existing.source.effectGain.gain.value=(audio.soundboard.volume??80)/100;continue;}
+      if(existing){
+        if(existing.level!==level||existing.muffled!==cue.muffled||existing.cutoffHz!==cue.cutoffHz){
+          existing.level=level;existing.muffled=cue.muffled;existing.cutoffHz=cue.cutoffHz;applyLoop(existing);
+        }
+        continue;
+      }
       if(failedLoops.has(cue.id))continue;
-      const entry={source:null};loopSources.set(cue.id,entry);
-      play({...cue,volume:audio.soundboard.volume??80},audio.clips||[],{loop:true}).then(source=>{
-        if(loopSources.get(cue.id)===entry)entry.source=source;
+      const entry={source:null,level,muffled:cue.muffled,cutoffHz:cue.cutoffHz,ambient:cue.id.startsWith('ambient:')};loopSources.set(cue.id,entry);
+      play({...cue,volume:level},entry.ambient?[{id:cue.sound}]:(audio.clips||[]),{loop:true}).then(source=>{
+        if(loopSources.get(cue.id)===entry){entry.source=source;applyLoop(entry);}
         else{try{source?.stop();}catch{}}
       }).catch(error=>{if(loopSources.get(cue.id)===entry){loopSources.delete(cue.id);failedLoops.add(cue.id);report(error.message||'Não foi possível repetir o efeito.');}});
     }
@@ -446,6 +471,7 @@ export function campaignAudio(dock,fetchClip,report,control) {
   }
 
   return {
+    syncAmbient(ambient){if(latest&&enabled)syncLoops({...latest.state.audio,ambient});},
     dispose() {
       clearTimeout(transitionTimer);clearTimeout(readyTimeout);clearTimeout(volumeTimer);
       generation++;stopEffects();visibility?.disconnect();player?.destroy();decoded.clear();
@@ -457,6 +483,7 @@ export function campaignAudio(dock,fetchClip,report,control) {
       await context.resume();
       return play({sound:id,at:serverNow(),volume:100},latest.state.audio?.clips||[],{local:true});
     },
+    get musicVolume() {return musicVolume;},
     get enabled() {return enabled;},
     get blocked() {return blocked;},
     get volume() {return volume;},

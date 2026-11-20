@@ -15,6 +15,9 @@ const files = {
   '/sound-catalog.mjs':['sound-catalog.mjs','text/javascript; charset=utf-8'],
   '/soundboard.css':['public/soundboard.css','text/css; charset=utf-8'],
   '/player-access.mjs':['public/player-access.mjs','text/javascript; charset=utf-8'],
+  '/cinematic-elements.mjs':['public/cinematic-elements.mjs','text/javascript; charset=utf-8'],
+  '/session-log-ui.mjs':['public/session-log-ui.mjs','text/javascript; charset=utf-8'],
+  '/cinematic.mjs':['public/cinematic.mjs','text/javascript; charset=utf-8'],
   '/narration.mjs':['public/narration.mjs','text/javascript; charset=utf-8'],
   '/narration-style.mjs':['narration-style.mjs','text/javascript; charset=utf-8'],
   '/sheet-inline.mjs':['public/sheet-inline.mjs','text/javascript; charset=utf-8'],
@@ -40,6 +43,7 @@ const files = {
   '/table-rolls.mjs':['public/table-rolls.mjs','text/javascript; charset=utf-8'],
   '/table-live.mjs':['public/table-live.mjs','text/javascript; charset=utf-8'],
   '/token-editor.mjs':['public/token-editor.mjs','text/javascript; charset=utf-8'],
+  '/token-motion.mjs':['token-motion.mjs','text/javascript; charset=utf-8'],
   '/token-icons.mjs':['token-icons.mjs','text/javascript; charset=utf-8'],
   '/FONT-AWESOME-LICENSE.txt':['public/FONT-AWESOME-LICENSE.txt','text/plain; charset=utf-8'],
   '/scenes.mjs':['public/scenes.mjs','text/javascript; charset=utf-8'],
@@ -82,6 +86,6 @@ await Promise.all([
     await rm(new URL('hosting.json',metadata),{force:true});
   }),
   writeFile(new URL('assets.mjs',output),'export default '+JSON.stringify(assets)+';\n'),
-  ...['item-assets.mjs','loot-data.mjs','loot-model.mjs','request-json.mjs','vision-model.mjs','inventory-model.mjs','soundboard-model.mjs','sound-catalog.mjs','sound-pack-import.mjs','zip-audio.mjs','campaign-backup.mjs','browser-session.mjs','sheet-template-model.mjs','sheet-history.mjs','journal-model.mjs','narration-model.mjs','narration-style.mjs','scene-model.mjs','token-icons.mjs','fog-geometry.mjs','table-realtime.mjs','sheet-layout.mjs','gm-screen-model.mjs','dnd.mjs','api.mjs','music-model.mjs','access.mjs','model.mjs','table-model.mjs','media.mjs','storage.mjs','worker.mjs'].map(file=>
+  ...['player-sharing.mjs','session-log.mjs','item-assets.mjs','loot-data.mjs','loot-model.mjs','request-json.mjs','vision-model.mjs','inventory-model.mjs','soundboard-model.mjs','sound-catalog.mjs','sound-pack-import.mjs','zip-audio.mjs','campaign-backup.mjs','browser-session.mjs','sheet-template-model.mjs','sheet-history.mjs','journal-model.mjs','narration-model.mjs','narration-style.mjs','exploration-model.mjs','scene-model.mjs','token-motion.mjs','token-icons.mjs','fog-geometry.mjs','table-realtime.mjs','sheet-layout.mjs','gm-screen-model.mjs','dnd.mjs','api.mjs','music-model.mjs','access.mjs','model.mjs','table-model.mjs','media.mjs','storage.mjs','worker.mjs'].map(file=>
     copyFile(new URL(file,import.meta.url),new URL(file==='worker.mjs'?'index.js':file,output)))
 ]);

@@ -96,3 +96,12 @@ test('dados de retenção preservam limites e rejeitam expressões fora da gram�
  assert.equal(parseDiceFormula('2d20kl1-1').terms[0].keep,'kl1');
  for(const formula of ['1d20kh1','51d20kh1','2d20kh2','2d20;alert(1)'])assert.throws(()=>parseDiceFormula(formula));
 });
+
+test('teste solicitado resolve o modificador de Inteligência de D&D no servidor',async()=>{
+ const r=await room(),built=await(await r.act('character',{name:'Maga',dnd:config()})).json(),id=built.state.characters.at(-1).id;
+ await r.call('/'+r.created.id+'/join','POST',r.created.invite,{key:'a'.repeat(64)});
+ await r.act('characterClaim',{id},false);
+ const check=(await(await r.act('checkCreate',{test:'attribute:inteligencia',characterIds:[id]})).json()).state.checkRequests[0];
+ const response=await r.act('checkRespond',{id:check.id},false);assert.equal(response.status,200);
+ assert.equal((await response.json()).state.checkRequests[0].targets[0].result.formula,'1d20+3');
+});

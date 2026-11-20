@@ -1,7 +1,7 @@
 import {playerVisionSource} from './model.mjs';
 import {withScene} from './scene-model.mjs';
 import {mutateTable,normalizeTable} from './table-model.mjs';
-import {commitInventory} from './inventory-model.mjs';
+import {chargeFields,commitInventory} from './inventory-model.mjs';
 import {pointRevealed} from './fog-geometry.mjs';
 import {visionSources,tokenInVision} from './vision-model.mjs';
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
@@ -36,7 +36,7 @@ export function mutateLoot(state,action,data,access){
     const tokens=world.tokens.map(t=>({...t,visionSource:playerVisionSource(draft,t)}));
     if((table.darkness.enabled||table.fog.enabled&&table.fog.mode==='war')&&!tokenInVision(token,visionSources({master:false,characterId:character.id,state:{...world,table}},tokens),table.grid,table.walls))fail(403,'Este item está fora do campo de visão.');
    }
-   const copy={...structuredClone(token.loot.item),id:crypto.randomUUID(),sourceId:token.loot.item.id,version:1,characterId:character.id,quantity:token.loot.quantity,equipped:false,notes:''};
+   const copy={...structuredClone(token.loot.item),id:crypto.randomUUID(),sourceId:token.loot.item.id,...chargeFields(token.loot.item,token.loot.quantity),version:1,characterId:character.id,quantity:token.loot.quantity,equipped:false,notes:''};
    commitInventory(draft,[...(draft.inventory||[]),copy]);
    world.tokens=world.tokens.filter(t=>t.id!==token.id);
    const event={id:crypto.randomUUID(),tokenId:token.id,at:Date.now(),x,y,toX:nearby?Number(nearby.x)+Number(nearby.size||1)/2:x,toY:nearby?Number(nearby.y)+Number(nearby.size||1)/2:y,public:!token.hidden&&!character.hidden};

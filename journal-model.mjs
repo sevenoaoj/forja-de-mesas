@@ -1,18 +1,19 @@
 import {outsideParty} from './model.mjs';
+const discoveryKey=c=>c&&(c.party?'party:'+c.party:'character:'+c.id);
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
 const clean=(value,max)=>typeof value==='string'?value.trim().slice(0,max):'';
 export const journalKinds={note:'Anotação',item:'Inventário',clue:'Pista',character:'Personagem',place:'Local',quest:'Missão'};
 export const journalBudgetBytes=512*1024;
 const commit=(state,entries)=>{if(new TextEncoder().encode(JSON.stringify(entries)).length>journalBudgetBytes)fail(413,'O diário excede 512 KB. Reduza documentos ou remova anotações antigas.');state.journal=entries;};
-export const journalActions=new Set(['journalImport','journalSave','journalDelete','journalPublish','journalStatus']);
+export const journalActions=new Set(['journalImport','journalMembership','journalSave','journalDelete','journalPublish','journalStatus']);
 export function journalView(state,access){
  const entries=Array.isArray(state.journal)?state.journal:[];
- if(access.master)return structuredClone(entries);
+ if(access.master)return structuredClone(entries).map(e=>e.sourcePath?{...e,inJournal:e.inJournal??(e.audience!=='private'||Boolean(e.discoveredBy?.length))}:e);
  if(!access.memberId||access.guest)return [];
  const own=new Set((state.characters||[]).filter(c=>!c.hidden&&c.ownerId===access.memberId).map(c=>c.id));
  const viewer=(state.characters||[]).find(c=>own.has(c.id));
  const unknownAuthors=new Set((state.characters||[]).filter(c=>outsideParty(c,viewer)&&(!viewer?.party||!c.partyRevealed)&&c.ownerId).map(c=>c.ownerId));
- return entries.filter(e=>e.authorId===access.memberId||e.audience==='all'||e.audience==='selected'&&e.recipientIds?.some(id=>own.has(id))).map(e=>({id:e.id,version:e.version,title:e.title,kind:e.kind,body:e.body,status:e.status,updatedAt:e.updatedAt,authorName:unknownAuthors.has(e.authorId)?'???':e.authorName||'Mestre',canEdit:e.authorId===access.memberId,...(e.authorId===access.memberId?{audience:e.audience,recipientIds:e.recipientIds}:{} )}));
+ return entries.filter(e=>(e.discoveredBy?.includes(discoveryKey(viewer))||viewer&&e.discoveredBy?.includes('character:'+viewer.id))||e.authorId===access.memberId||e.audience==='all'||e.audience==='selected'&&e.recipientIds?.some(id=>own.has(id))).map(e=>({id:e.id,version:e.version,title:e.title,kind:e.kind,body:e.body,status:e.status,updatedAt:e.updatedAt,authorName:unknownAuthors.has(e.authorId)?'???':e.authorName||'Mestre',canEdit:e.authorId===access.memberId,...(e.authorId===access.memberId?{audience:e.audience,recipientIds:e.recipientIds}:{} )}));
 }
 function sharing(state,data){
  const audience=data.audience??'private';
@@ -33,14 +34,14 @@ export function mutateJournal(state,action,data={},access={}){
    if(typeof path!=='string'||path.length>512||!path.toLowerCase().endsWith('.md')||path.split('/').some(p=>!p||p.startsWith('.'))||/[\\\x00-\x1f]/.test(path))fail(400,'Caminho de nota inválido.');
    const index=entries.findIndex(e=>e.sourcePath===path),old=entries[index];
    if(paths.has(path)&&file.version===undefined)continue;
-   if(file.version!==undefined&&(!old||old.version!==file.version||old.audience!=='private'||old.sourceEdited===true||old.sourceEdited===undefined&&old.version>1))
+   if(file.version!==undefined&&(!old||old.version!==file.version||old.audience!=='private'||old.discoveredBy?.length||old.sourceEdited===true||old.sourceEdited===undefined&&old.version>1))
     fail(409,'A nota mudou. Selecione novamente o cofre para revisar a importação.');
    const title=path.split('/').at(-1).slice(0,-3);
    if(!title.trim()||title.length>120)fail(400,'O título da nota '+path+' deve ter de 1 a 120 caracteres.');
    if(typeof file.body!=='string')fail(400,'Conteúdo Markdown inválido.');
    if(old){entries[index]={...old,body:file.body,version:old.version+1,sourceEdited:false,updatedAt:new Date().toISOString()};continue;}
    paths.add(path);
-   entries.push({id:crypto.randomUUID(),version:1,title,kind:'note',body:file.body,gmNotes:'',sourcePath:path,sourceEdited:false,audience:'private',recipientIds:[],status:'active',updatedAt:new Date().toISOString()});
+   entries.push({id:crypto.randomUUID(),version:1,title,kind:'note',body:file.body,gmNotes:'',sourcePath:path,sourceEdited:false,inJournal:false,audience:'private',recipientIds:[],status:'active',updatedAt:new Date().toISOString()});
   }
   if(entries.length>200)fail(409,'O diário comporta até 200 documentos. Selecione menos notas.');
   commit(state,entries);return true;
@@ -57,13 +58,18 @@ export function mutateJournal(state,action,data={},access={}){
   const status=data.status??'active';if(!['active','completed'].includes(status))fail(400,'Estado de missão inválido.');
   const author=state.characters?.find(c=>!c.hidden&&c.ownerId===access.memberId);
   const body=typeof data.body==='string'?data.body:'';
-  const entry={...(old?.characterIds?{characterIds:old.characterIds}:{}),...(old?.sourcePath?{sourcePath:old.sourcePath,sourceEdited:old.sourceEdited===true||old.sourceEdited===undefined&&old.version>1||body!==old.body}:{}),id:old?.id||crypto.randomUUID(),version:(old?.version||0)+1,title,kind,body,gmNotes:access.master?clean(data.gmNotes,8000):old?.gmNotes||'',...sharing(state,data),...(old?.authorId?{authorId:old.authorId,authorName:old.authorName}:!access.master?{authorId:access.memberId,authorName:author.name}:{}),status:kind==='quest'?status:'active',updatedAt:new Date().toISOString()};
+  const entry={...(old?.discoveredBy?{discoveredBy:old.discoveredBy}:{}),...(old?.characterIds?{characterIds:old.characterIds}:{}),...(old?.sourcePath?{sourcePath:old.sourcePath,inJournal:old.inJournal===true||old.audience!=='private'||data.audience==='all'||data.audience==='selected',sourceEdited:old.sourceEdited===true||old.sourceEdited===undefined&&old.version>1||body!==old.body}:{}),id:old?.id||crypto.randomUUID(),version:(old?.version||0)+1,title,kind,body,gmNotes:access.master?clean(data.gmNotes,8000):old?.gmNotes||'',...sharing(state,data),...(old?.authorId?{authorId:old.authorId,authorName:old.authorName}:!access.master?{authorId:access.memberId,authorName:author.name}:{}),status:kind==='quest'?status:'active',updatedAt:new Date().toISOString()};
   commit(state,old?entries.map(e=>e===old?entry:e):[...entries,entry]);
  }else{
   if(!old)fail(404,'Documento indisponível.');
-  if(action==='journalDelete')commit(state,entries.filter(e=>e!==old));
+  if(action==='journalMembership'){
+   if(!access.master||!old.sourcePath)fail(403,'O mestre organiza as notas importadas.');
+   if(typeof data.include!=='boolean')fail(400,'Escolha onde a nota deve aparecer.');
+   commit(state,entries.map(e=>e===old?{...e,inJournal:data.include,version:e.version+1}:e));
+  }else if(action==='journalDelete')commit(state,entries.filter(e=>e!==old));
   else{
    const change=action==='journalPublish'?sharing(state,data):{status:data.status};
+   if(old.sourcePath&&action==='journalPublish'&&(old.audience!=='private'||change.audience!=='private'))change.inJournal=true;
    if(action==='journalStatus'&&(old.kind!=='quest'||!['active','completed'].includes(data.status)))fail(400,'Selecione uma missão e um estado válido.');
    commit(state,entries.map(e=>e===old?{...e,...change,version:e.version+1,updatedAt:new Date().toISOString()}:e));
   }

@@ -3,7 +3,7 @@ import {ownedCharacter,requireOwnCharacter} from './access.mjs';
 import {validateSheetAppearance,sheetAppearance} from './sheet-layout.mjs';
 
 export const sheetHistoryLimits=Object.freeze({entries:20,snapshotBytes:64*1024,characterBytes:96*1024,campaignBytes:384*1024});
-export const sheetHistoryActions=new Set(['character','sheetValue','schema','sheetFields','sheetCounter','sheetEntry','sheetMastery','sheetMasteryRefresh','sheetAppearance','dndAdd','dndRest','dndCast','roll','sheetTemplateApply']);
+export const sheetHistoryActions=new Set(['character','sheetValue','schema','sheetFields','sheetCounter','sheetEntry','sheetMastery','sheetMasteryRefresh','sheetAppearance','dndAdd','dndRest','dndCast','roll','checkRespond','sheetTemplateApply']);
 export const isSheetHistoryRelevant=action=>sheetHistoryActions.has(action);
 const editable=['name','concept','color','skills','abilities','rollButtons','masteries','dnd','preset','appearance'];
 const clone=value=>structuredClone(value);
@@ -21,10 +21,10 @@ function snapshot(state,character){
 function stable(value){if(Array.isArray(value))return value.map(stable);if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,stable(value[key])]));return value;}
 const equal=(a,b)=>JSON.stringify(stable(a))===JSON.stringify(stable(b));
 export function captureSheetChanges(state,action,data={},access={}){
- if(!isSheetHistoryRelevant(action)||action==='roll'&&!data.masteryId)return [];
+ if(!isSheetHistoryRelevant(action)||['roll','checkRespond'].includes(action)&&!data.masteryId)return [];
  let characters;
  if(action==='schema'||action==='sheetMasteryRefresh'&&!data.id)characters=state.characters;
- else if(action==='roll')characters=[access.master?state.characters.find(c=>c.id===data.characterId):ownedCharacter(state,access)].filter(Boolean);
+ else if(action==='roll'||action==='checkRespond')characters=[access.master?state.characters.find(c=>c.id===data.characterId):ownedCharacter(state,access)].filter(Boolean);
  else characters=state.characters.filter(c=>c.id===(action==='sheetTemplateApply'?data.characterId:data.id));
  return characters.map(character=>({id:character.id,before:snapshot(state,character),actor:access.master?'Mestre':character.name}));
 }

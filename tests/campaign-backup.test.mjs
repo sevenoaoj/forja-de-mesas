@@ -69,3 +69,48 @@ test('transporte em streams funciona com uploads do storage hospedado e cabeçal
 });
 
 test('backup preserva catálogo, cópias, retratos e vínculos do inventário',async()=>{const r=await fixture();const response=await r.restore(await r.archive());assert.equal(response.status,201);const restored=await response.json();assert.deepEqual(r.rows.get(restored.id).state.inventory,r.state.inventory);});
+
+test('backup leva o vídeo e a preparação sem retransmitir a cinemática restaurada',async()=>{
+ const r=await fixture(),id=crypto.randomUUID();
+ const clip={id,name:'Portal.webm',type:'video/webm',size:4};
+ r.state.cinematicLibrary=[clip];
+ r.state.cinematicCues=[{id:crypto.randomUUID(),name:'Final',text:'',mediaId:id,party:'',intro:5,duration:12}];
+ r.state.cinematicRun={id:crypto.randomUUID(),mediaId:id,endsAt:Date.now()+30000};
+ r.assets.set(r.created.id+'/'+id,new Blob(['cine'],{type:clip.type}));
+ const response=await r.restore(await r.archive());assert.equal(response.status,201);
+ const copy=await response.json();
+ assert.equal(copy.state.cinematic,null);
+ assert.deepEqual(copy.state.cinematicCues,r.state.cinematicCues);
+ assert.equal(await r.assets.get(copy.id+'/'+id).text(),'cine');
+});
+
+test('backup restaura o prazo das condições e rejeita contadores inválidos em cenas preparadas',async()=>{
+ const r=await fixture(),act=(action,data)=>r.call('/'+r.created.id+'/action',{method:'POST',key:r.created.key,body:JSON.stringify({action,data})});
+ await act('combatSet',{entries:[{id:'a',tokenId:'lyra',name:'Lyra',value:10}]});
+ assert.equal((await act('tokenCondition',{id:'lyra',name:'Marcado',mode:'rounds',rounds:2})).status,200);
+ await act('combatNext',{direction:1});
+ const bytes=await r.archive(),copy=await(await r.restore(bytes)).json();
+ const token=copy.state.tokens.find(t=>t.id==='lyra');
+ assert.deepEqual(token.timedStatuses,[{name:'Marcado',mode:'rounds',remaining:1,total:2}]);
+ const malformed=await rewriteHeader(bytes,b=>{
+  b.state.sceneLibrary.scenes.at(-1).tokens=[{id:'npc',conditionSchedule:[{mode:'rounds',endRound:-1}]}];
+ });
+ assert.equal((await r.restore(malformed)).status,400);
+});
+
+test('backup conserva a passagem e as descobertas por grupo, mas limpa pedidos vinculados aos acessos antigos',async()=>{
+ const r=await fixture(),state=r.state;
+ const audience='character:lyra',scene=state.sceneLibrary.scenes.at(-1);
+ state.journal[0].discoveredBy=[audience];
+ const pointId=crypto.randomUUID();
+ scene.table={...scene.table,exploration:[{id:pointId,kind:'clue',noteId:'clue',x:2,y:3,radius:2,mode:'approve',label:'Marca',pending:[]}]};
+ state.sessionLog={clocks:[{id:'perigo',title:'A torre vai ruir',value:3,segments:4,version:2,audience:'all'}],recaps:[{id:'recap',version:1,title:'A torre',body:'Examinar a marca.',sessionName:'Sessão 2',sessionId:scene.sessionId,sceneId:scene.id,at:Date.now(),audience:'gm',notes:['clue'],items:['owned']}]};
+ state.checkRequests=[{id:'pedido',targets:[{memberId:'member-one'}]}];
+ const bytes=await r.archive(),restored=await r.restore(bytes);assert.equal(restored.status,201,await restored.clone().text());
+ const raw=r.rows.get((await restored.json()).id).state;
+ assert.deepEqual(raw.sessionLog,state.sessionLog);assert.equal(raw.checkRequests,undefined);
+ assert.deepEqual(raw.sceneLibrary.scenes.at(-1).table.exploration,scene.table.exploration);
+ assert.deepEqual(raw.journal[0].discoveredBy,[audience]);
+ const corrupted=await rewriteHeader(bytes,b=>{b.state.sceneLibrary.scenes.at(-1).table.exploration[0].pending='texto';});
+ assert.equal((await r.restore(corrupted)).status,400);
+});

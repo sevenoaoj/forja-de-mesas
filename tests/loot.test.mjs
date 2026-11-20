@@ -83,3 +83,171 @@ test('prévia pública não revela descrição e formulário de colocação esca
  const preview=lootPreview(token,{master:false,characterId:'hero',state:{characters:[{id:'hero',access:'full'}]}},ui);assert.ok(!preview.includes('Spoiler'));assert.ok(!preview.includes('Segredo'));assert.ok(!preview.includes('javascript:'));assert.match(preview,/&lt;img&gt;/);
  const form=lootPlacement({master:true,state:{table:{grid:{columns:10,rows:10}},characters:[],inventory:[{id:'a',name:'<Nome>',version:'1" onclick="evil()'}]}},ui);assert.match(form,/&lt;Nome&gt;/);assert.match(form,/data-version="1&quot; onclick=&quot;evil\(\)"/);assert.ok(!form.includes(' onclick="'));
 });
+
+test('investigação exige proximidade e autorização, esconde o diário e as decisões de grupos rivais',async()=>{
+ const r=await room();
+ const group=(await good(await r.action('partySave',{name:'Os navegantes'}))).state.parties.at(-1);
+ await good(await r.action('characterParty',{id:'lyra',party:group.id,revealed:false}));
+ const note=(await good(await r.action('journalSave',{title:'O código da porta',kind:'clue',body:'Fale com Rita',gmNotes:'Traição futura',audience:'private'}))).state.journal.at(-1);
+ await good(await r.action('tokenMove',{id:'lyra',x:1,y:1}));
+ const add={kind:'clue',noteId:note.id,label:'Inscrição',mode:'approve',x:1.5,y:1.5,radius:1.5};
+ const point=(await good(await r.action('explorePlace',add))).state.table.exploration.at(-1);
+ assert.equal((await r.action('explorePlace',add,r.one)).status,403);
+ const nearby=(await r.view(r.one)).state.table.exploration[0];assert.equal(nearby.noteId,undefined);
+ assert.deepEqual((await r.view(r.two)).state.table.exploration,[]);
+ assert.equal((await r.action('exploreInvestigate',{id:point.id},r.two)).status,403);
+ await good(await r.action('exploreInvestigate',{id:point.id},r.one));
+ let master=await r.view();const pending=master.state.table.exploration[0].pending;
+ assert.equal(pending.length,1);assert.equal(pending[0].audience,'party:'+group.id);
+ assert.equal((await r.action('exploreDecide',{id:point.id,audience:pending[0].audience,grant:true},r.one)).status,403);
+ await good(await r.action('exploreDecide',{id:point.id,audience:pending[0].audience,grant:true}));
+ const discovered=(await r.view(r.one)).state.journal.find(n=>n.id===note.id);
+ assert.equal(discovered.body,'Fale com Rita');assert.equal(discovered.gmNotes,undefined);
+ assert.equal((await r.view(r.two)).state.journal.some(n=>n.id===note.id),false);
+ const rival=await r.view(r.two);assert.ok(!JSON.stringify(rival.state.table.exploration).includes(note.id));
+ await good(await r.action('characterParty',{id:'dorian',party:group.id,revealed:false}));assert.equal((await r.view(r.two)).state.journal.some(n=>n.id===note.id),true);
+ await good(await r.action('characterParty',{id:'dorian',party:'',revealed:false}));assert.equal((await r.view(r.two)).state.journal.some(n=>n.id===note.id),false);
+});
+test('som localizado usa o token próprio, alcance, volume atenuado e portas da cena ativa',async()=>{
+ const r=await room();const raw=r.rows.get(r.created.id);raw.state.audio={cues:[],clips:[]};raw.state.audio.clips=[{id:'audio-fonte',name:'Fonte',type:'audio/wav',size:40}];
+ await good(await r.action('tokenMove',{id:'lyra',x:1,y:1}));await good(await r.action('tokenMove',{id:'dorian',x:12,y:9}));
+ const point=(await good(await r.action('explorePlace',{kind:'sound',clipId:'audio-fonte',x:3.5,y:1.5,radius:5}))).state.table.exploration.at(-1);
+ const volume=async key=>(await good(await r.call(r.base+'/sync','GET',key))).state.audio.ambient;
+ const clear=await volume(r.one);assert.equal(clear.length,1);assert.equal(clear[0].volume,36);assert.equal(clear[0].x,undefined);assert.deepEqual(await volume(r.two),[]);
+ const wall=(await good(await r.action('tableWallAdd',{kind:'door',x:2,y:0,toX:2,toY:3}))).state.table.walls.at(-1);
+ const dimmed=await volume(r.one);assert.ok(dimmed[0].volume<clear[0].volume);assert.equal(dimmed[0].muffled,true);
+ assert.equal(dimmed[0].cutoffHz,7400);assert.equal(dimmed[0].volume,Math.round(clear[0].volume*.82));
+ // Keep source and listener fixed; only the distance to the blocking surface changes.
+ const second=(await good(await r.action('tableWallAdd',{kind:'door',x:3,y:0,toX:3,toY:3}))).state.table.walls.at(-1);
+ const farther=await volume(r.one);assert.ok(farther[0].cutoffHz<dimmed[0].cutoffHz);assert.ok(farther[0].volume<dimmed[0].volume);
+ await good(await r.action('tableDoorSet',{id:second.id,open:true}));assert.deepEqual(await volume(r.one),dimmed);
+ assert.equal((await r.action('soundOcclusion',{id:point.id,muffle:false},r.one)).status,403);
+ await good(await r.action('soundOcclusion',{id:point.id,muffle:false}));assert.equal((await volume(r.one))[0].muffled,false);
+ await good(await r.action('soundOcclusion',{id:point.id,muffle:true}));
+ await good(await r.action('tableDoorSet',{id:wall.id,open:true}));assert.deepEqual(await volume(r.one),clear);
+ await good(await r.action('exploreRemove',{id:point.id}));assert.deepEqual(await volume(r.one),[]);
+});
+
+test('investigação integra rolagem, escolha da nota, dados físicos, entrega única e revelação sem pedido',async()=>{
+ const r=await room(),group=(await good(await r.action('partySave',{name:'Patrulha'}))).state.parties.at(-1).id;
+ for(const id of ['lyra','dorian'])await good(await r.action('characterParty',{id,party:group,revealed:false}));
+ const note=async title=>(await good(await r.action('journalSave',{title,kind:'clue',body:title,audience:'private'}))).state.journal.at(-1);
+ const clue=await note('Livro'),other=await note('Marca');await good(await r.action('tokenMove',{id:'lyra',x:1,y:1}));
+ const p=(await good(await r.action('explorePlace',{kind:'clue',noteId:clue.id,label:'Mesa',mode:'auto',x:1.5,y:1.5,radius:2,test:'attribute:forca',dc:10,itemId:r.item.id,quantity:2}))).state.table.exploration[0];
+ const investigation=await good(await r.action('exploreInvestigate',{id:p.id},r.one));
+ assert.equal(investigation.investigationRoll,undefined);assert.equal(investigation.state.checkRequests.length,0);assert.equal(investigation.state.investigations,undefined);
+ const gm=await r.view(),request=gm.state.table.exploration[0].pending[0];assert.equal(gm.state.investigations.length,1);
+ assert.equal(request.roll,undefined);
+ const repeat=await good(await r.action('exploreInvestigate',{id:p.id},r.one));assert.equal(repeat.investigationRoll,undefined);assert.equal((await r.view()).state.table.exploration[0].pending[0].id,request.id);
+ const d={id:p.id,requestId:request.id,audience:request.audience,grant:true,scope:'individual',noteId:other.id,total:15};
+ assert.equal((await r.action('exploreDecide',d,r.one)).status,403);
+ const outs=await Promise.all([r.action('exploreDecide',d),r.action('exploreDecide',d)]);
+ assert.deepEqual(outs.map(o=>o.status).sort(),[200,409]);assert.equal((await r.view()).state.investigations.length,0);
+ assert.equal((await r.view(r.one)).state.inventory[0].quantity,2);assert.equal((await r.view(r.two)).state.journal.length,0);
+ await good(await r.action('exploreReveal',{id:p.id,characterId:'lyra',scope:'group',total:20}));
+ assert.equal((await r.view(r.one)).state.inventory.length,1);assert.equal((await r.view(r.two)).state.journal[0].id,clue.id);
+ await good(await r.action('exploreReveal',{id:p.id,characterId:'dorian',scope:'individual',noteId:other.id}));
+ assert.equal((await r.view(r.two)).state.inventory.length,0);
+});
+
+test('empréstimo temporário de leitura e transferência entre aliados conservam quantidade e privacidade',async()=>{
+ const r=await room();
+ await good(await r.action('itemGrant',{id:r.item.id,version:r.item.version,characterId:'lyra',quantity:3}));
+ const item=(await r.view(r.one)).state.inventory[0];
+ const share={id:item.id,kind:'item',version:item.version,target:'group',minutes:5};
+ await good(await r.action('materialShare',share,r.one));
+ let b=await r.view(r.two);assert.equal(b.state.inventory.length,0);assert.equal(b.state.sharing.received[0].material.name,r.item.name);assert.equal(b.state.sharing.received[0].material.gmNotes,undefined);
+ assert.equal((await r.action('materialShare',share,r.two)).status,403);
+ const n=(await good(await r.action('journalSave',{title:'Meu plano',body:'Texto secreto',kind:'note',audience:'private'},r.one))).state.journal[0];
+ await good(await r.action('materialShare',{...share,kind:'note',id:n.id,version:n.version,target:'dorian'},r.one));
+ b=await r.view(r.two);assert.equal(b.state.sharing.received.length,2);assert.equal(b.state.journal.length,0);
+ const gid=b.state.sharing.received.find(g=>g.kind==='note').id;
+ await good(await r.action('shareRevoke',{id:gid},r.one));assert.equal((await r.view(r.two)).state.sharing.received.length,1);
+ const transfer={id:item.id,version:item.version,target:'dorian',quantity:2};
+ const results=await Promise.all([r.action('playerTransfer',transfer,r.one),r.action('playerTransfer',transfer,r.one)]);
+ assert.deepEqual(results.map(x=>x.status).sort(),[200,409]);
+ assert.equal((await r.view(r.two)).state.inventory[0].quantity,2);assert.equal((await r.view(r.one)).state.inventory[0].quantity,1);
+ const raw=r.rows.get(r.created.id);raw.state.materialShares[0].until=Date.now()-1;
+ assert.equal((await r.view(r.two)).state.sharing.received.length,0);
+ const rival=(await good(await r.action('partySave',{name:'Opostos'}))).state.parties.at(-1).id;
+ await good(await r.action('characterParty',{id:'dorian',party:rival,revealed:false}));
+ assert.notEqual((await r.action('playerTransfer',{...transfer,version:item.version+1,quantity:1},r.one)).status,200);
+});
+
+test('durante o arraste o jogador vê e ouve pontos próximos sem mover o token salvo',async()=>{
+ const r=await room();
+ const raw=r.rows.get(r.created.id);raw.state.audio={cues:[],clips:[{id:'audio-fonte',name:'Fonte',type:'audio/wav',size:40}]};
+ await good(await r.action('tokenMove',{id:'lyra',x:1,y:1}));
+ const note=(await good(await r.action('journalSave',{title:'Segredo',body:'Privado',kind:'clue',audience:'private'}))).state.journal.at(-1);
+ for(const point of [{kind:'sound',clipId:'audio-fonte'},{kind:'clue',mode:'approve',label:'Examinar',noteId:note.id}]){
+  await good(await r.action('explorePlace',{...point,x:7.5,y:4.5,radius:2}));
+ }
+ const before=await r.view(r.one);
+ const sync=async(key,x)=>(await good(await r.call(r.base+'/sync?moving=lyra&rotation=0&exploreScene='+before.state.sceneId+'&x='+x+'&y=4','GET',key))).state;
+ assert.deepEqual(before.state.table.exploration,[]);
+ const preview=await good(await r.call(r.base+'/sync?motionOnly=1&moving=lyra&rotation=0&exploreScene='+before.state.sceneId+'&x=7&y=4','GET',r.one));
+ assert.deepEqual(Object.keys(preview.state).sort(),['ambient','movingPoints']);
+ assert.deepEqual(preview.state.movingPoints.map(p=>p.kind),['sound','clue']);
+ const near=await sync(r.one,7);
+ assert.deepEqual(near.movingPoints.map(p=>p.kind),['sound','clue']);
+ assert.equal(near.movingPoints[0].clipId,undefined);assert.equal(near.movingPoints[1].noteId,undefined);
+ assert.equal(near.audio.ambient[0].volume,100);
+ assert.equal((await sync(r.two,7)).movingPoints,undefined);
+ assert.deepEqual((await sync(r.one,1)).movingPoints,[]);
+ assert.equal((await r.view(r.one)).rev,before.rev);
+ const wall=(await good(await r.action('tableWallAdd',{kind:'door',x:7,y:3,toX:7,toY:6}))).state.table.walls.at(-1);
+ assert.deepEqual((await sync(r.one,6)).movingPoints,[]);
+ await good(await r.action('tableDoorSet',{id:wall.id,open:true}));
+ assert.equal((await sync(r.one,6)).movingPoints.length,2);
+});
+
+test('ponto independente revela texto e entrega recompensas cumulativas por mínimo, uma vez cada',async()=>{
+ const r=await room();await good(await r.action('tokenMove',{id:'lyra',x:1,y:1}));
+ const extra=(await good(await r.action('itemSave',{name:'Anel',kind:'gear'}))).state.inventory.at(-1);
+ const rewards=[{itemId:r.item.id,dc:8,quantity:2},{itemId:extra.id,dc:14,quantity:1}];
+ const point=(await good(await r.action('explorePlace',{kind:'clue',mode:'auto',label:'Gaveta',description:'Um fundo falso.',x:1.5,y:1.5,radius:2,rewards}))).state.table.exploration.at(-1);
+ assert.equal(point.mode,'approve');
+ const asked=await good(await r.action('exploreInvestigate',{id:point.id},r.one));
+ assert.equal(asked.state.table.exploration[0].description,undefined);
+ const reveal=total=>r.action('exploreReveal',{id:point.id,characterId:'lyra',scope:'individual',total});
+ await good(await reveal(8));
+ let view=await r.view(r.one);assert.equal(view.state.table.exploration[0].description,'Um fundo falso.');assert.equal(view.state.journal.length,0);
+ assert.deepEqual(view.state.inventory.map(i=>i.quantity),[2]);
+ await good(await reveal(14));await good(await reveal(20));
+ view=await r.view(r.one);assert.deepEqual(view.state.inventory.map(i=>i.quantity),[2,1]);assert.equal(view.state.table.exploration[0].rules,undefined);
+});
+
+test('investigação usa o total informado pelo mestre e envia um único recibo privado com todos os itens entregues',async()=>{
+ const r=await room();await good(await r.action('tokenMove',{id:'lyra',x:1,y:1}));
+ const extra=(await good(await r.action('itemSave',{name:'Anel',kind:'gear'}))).state.inventory.at(-1);
+ const rewards=[{itemId:r.item.id,dc:-999,quantity:3},{itemId:extra.id,dc:-999,quantity:1}];
+ const p=(await good(await r.action('explorePlace',{kind:'clue',mode:'approve',label:'Baú',test:'attribute:forca',rewards,x:1.5,y:1.5,radius:2}))).state.table.exploration.at(-1);
+ const asked=await good(await r.action('exploreInvestigate',{id:p.id},r.one));assert.equal(asked.investigationRoll,undefined);
+ const req=(await r.view()).state.table.exploration.at(-1).pending[0];
+ await good(await r.action('exploreDecide',{id:p.id,requestId:req.id,audience:req.audience,grant:true,total:14}));
+ const [receipt]=(await r.view(r.one)).state.investigationReceipts;
+ assert.deepEqual(receipt.items.map(({name,quantity})=>({name,quantity})),[{name:r.item.name,quantity:3},{name:'Anel',quantity:1}]);assert.equal(receipt.location,'Baú');
+ assert.equal((await r.view()).state.investigationReceipts,undefined);assert.deepEqual((await r.view(r.two)).state.investigationReceipts,[]);
+ await good(await r.action('investigationReceiptRead',{id:receipt.id},r.two));
+ assert.equal((await r.view(r.one)).state.investigationReceipts.length,1);
+ await good(await r.action('investigationReceiptRead',{id:receipt.id},r.one));
+ assert.deepEqual((await r.view(r.one)).state.investigationReceipts,[]);assert.equal((await r.view(r.one)).state.inventory.length,2);
+});
+
+test('usos acompanham as unidades nas entregas, descartes individuais e exclusão global pelo mestre',async()=>{
+ const r=await room(),cat=(await good(await r.action('itemSave',{name:'Elixir',kind:'consumable',usesPerUnit:3}))).state.inventory.at(-1);
+ const grant=await good(await r.action('itemGrant',{id:cat.id,version:1,quantity:3,characterId:'lyra'}));
+ const copy=grant.state.inventory.at(-1);
+ const use=()=>r.action('itemUse',{id:copy.id,version:1,delta:-1},r.one);
+ assert.deepEqual((await Promise.all([use(),use()])).map(r=>r.status).sort(),[200,409]);
+ assert.equal((await r.action('itemUse',{id:copy.id,version:2,delta:1},r.two)).status,403);
+ await good(await r.action('playerTransfer',{id:copy.id,version:2,target:'dorian',quantity:1},r.one));
+ const own=(await r.view(r.one)).state.inventory[0],ally=(await r.view(r.two)).state.inventory[0];
+ assert.deepEqual([own.quantity,own.uses,ally.quantity,ally.uses],[2,5,1,3]);
+ await good(await r.action('itemDelete',{id:own.id,version:own.version},r.one));
+ assert.equal((await r.view(r.one)).state.inventory.length,0);assert.equal((await r.view(r.two)).state.inventory.length,1);
+ await good(await r.action('itemGrant',{id:cat.id,version:1,quantity:1,characterId:'lyra'}));
+ await good(await r.action('itemDelete',{id:ally.id,version:ally.version}));
+ assert.equal((await r.view(r.one)).state.inventory.length,0);assert.equal((await r.view(r.two)).state.inventory.length,0);
+ assert.deepEqual((await r.view()).state.inventory.map(i=>i.id),[r.item.id]);
+});

@@ -3,7 +3,7 @@ import {lightShape,renderDarkness,updateDarkness,renderVisionCones,updateVisionC
 import {tokenIconSvg} from './token-icons.mjs';
 import {renderTableRollPanel,renderTableRollContent,renderFreeRollPreview,tableRollPreview,tableRollTabs} from './table-rolls.mjs';
 import {renderRollHistory} from './rolls.mjs';
-import {normalizeTable,pingNames,mapPixelsPerCell} from './table-model.mjs';
+import {slideToken,conditionSummary,normalizeTable,pingNames,mapPixelsPerCell} from './table-model.mjs';
 import {colors,sheetFields,sheetValue,skillValues,displaySheetFormula,rollFormulaLimit,sheetTestBase,sheetAttributeTest,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
 
 const escape = value => String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -13,6 +13,8 @@ const icons = {
   measure:'<path d="m3 15 12-12 6 6L9 21zM8 10l3 3m1-7 3 3M4 14l3 3"/>',
   ping:'<circle cx="12" cy="10" r="3"/><path d="M19 10c0 6-7 11-7 11S5 16 5 10a7 7 0 1 1 14 0z"/>',
   draw:'<path d="m4 16 12-12 4 4L8 20H4zM13 7l4 4"/>',
+  clue:'<circle cx="10" cy="10" r="6"/><path d="m14.5 14.5 6 6"/>',
+  sound:'<path d="M3 9h4l5-4v14l-5-4H3z M15 8q4 4 0 8m3-11q7 7 0 14"/>',
   lights:'<circle cx="12" cy="12" r="4"/><path d="M12 1v4m0 14v4M1 12h4m14 0h4M4 4l3 3m10 10 3 3M4 20l3-3M17 7l3-3"/>',
   walls:'<path d="M2 5h20v14H2zM2 12h20M9 5v7m7 0v7"/>',
   fog:'<path d="M5 16a5 5 0 0 1-1-10 7 7 0 0 1 13-1 5 5 0 1 1 2 10M3 19h18M7 22h10"/>',
@@ -70,7 +72,7 @@ export function renderAtmosphere({weather,tone,level,toneOpacity=100}){
   return '<div style="--tone-opacity:'+strength+'" class="vtt-atmosphere" data-weather="'+escape(weather)+'" data-tone="'+escape(tone)+'" data-level="'+escape(level)+'" aria-hidden="true"><span class="vtt-tone"></span>'+lightning+particles+ripples+'</div>';
 }
 
-export function createTabletop({action,openCharacter,openLoot=()=>{},report,requestAsset,realtime=()=>{}}) {
+export function createTabletop({action,openCharacter,openLoot=()=>{},placePoint=()=>{},explorationChanged=()=>{},report,requestAsset,realtime=()=>{}}) {
   let row;
   let table;
   let root;
@@ -200,13 +202,21 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     return combat?.entries?.[combat.active];
   }
 
+  function conditionBadges(token){
+    const timed=(token.timedStatuses||[]).map(c=>{
+      const fraction=c.mode==='turn'?(c.ending ? .5 : 1):c.remaining/c.total;
+      const label=c.mode==='turn'?(c.ending?'até o fim deste turno':'até o fim do próximo turno'):c.remaining+' de '+c.total+' rodadas';
+      return '<span class="vtt-condition" title="'+escape(c.name+' · '+label)+'"><i aria-hidden="true" style="--remaining:'+Math.round(fraction*100)+'%"></i>'+escape(c.name)+(c.mode==='rounds'?' · '+c.remaining:'')+'</span>';
+    });
+    return [...timed,...(token.statuses||[]).map(name=>'<span>'+escape(name)+'</span>')].slice(0,3).join('');
+  }
   function tokenMarkup(token) {
     const {grid}=table;
     const size=Number(token.size)||1;
-    const status=(token.statuses||[]).slice(0,3).map(value=>'<span>'+escape(value)+'</span>').join('');
+    const status=conditionBadges(token);
     return '<button type="button" class="vtt-token '+escape(token.color||'violet')+(token.hidden?' is-hidden':'')+(token.locked?' is-locked':'')+(selected===token.id?' is-selected':'')+(activeCombatant()?.tokenId===token.id?' is-active-turn':'')+(token.kind==='item'?' is-item':'')+(!tokenShown(token)?' is-out-of-vision':'')+'" '+
       'data-table-token="'+escape(token.id)+'" style="--vtt-facing:'+normalizeRotation(token.rotation)+'deg;left:'+token.x/grid.columns*100+'%;top:'+token.y/grid.rows*100+'%;width:'+size/grid.columns*100+'%;height:'+size/grid.rows*100+'%" '+
-      'aria-label="'+escape(token.name)+(token.locked?' · Bloqueado':'')+(token.hidden?' · Oculto':'')+'" title="'+escape(token.name)+'">'+
+      'aria-label="'+escape([token.name,conditionSummary(token)].filter(Boolean).join(' · '))+(token.locked?' · Bloqueado':'')+(token.hidden?' · Oculto':'')+'" title="'+escape(token.name)+'">'+
       '<span '+(token.kind==='item'?'hidden ':'')+'class="vtt-token-facing" aria-hidden="true"></span><span class="vtt-token-face"><span class="vtt-token-letter">'+(tokenIconSvg(token.icon)||escape(token.name?.[0]?.toUpperCase()||'✦'))+'</span>'+
       (tokenPortrait(token)?'<img alt="" hidden data-table-token-image="'+escape(tokenPortrait(token))+'">':'')+
       (token.kind==='item'&&!tokenPortrait(token)&&/^https?:\/\//i.test(token.loot?.item?.portrait||'')?'<img alt="" hidden data-loot-portrait src="'+escape(token.loot.item.portrait)+'" referrerpolicy="no-referrer" decoding="async">':'')+'</span><span class="vtt-token-label">'+escape(token.name)+'</span>'+
@@ -260,6 +270,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
   function wallLine(w){
     const color=w.kind==='door'?(w.open?'#77efd4':'#ffd17b'):'#c6b6ff';
     const line='x1="'+w.x+'" y1="'+w.y+'" x2="'+w.toX+'" y2="'+w.toY+'" vector-effect="non-scaling-stroke" stroke-linecap="round"';
+    if(w.kind==='window')return '<line '+line+' stroke="#82daec" stroke-width="6"/><line '+line+' stroke="#184860" stroke-width="3"/><line '+line+' stroke="#d7faff" stroke-width="1" stroke-dasharray="7 4"/>';
     return '<line '+line+' stroke="#151122" stroke-width="6"/><line '+line+' stroke="'+color+'" stroke-width="3" '+(w.open?'stroke-dasharray="3 6"':'')+'/>';
   }
 
@@ -281,6 +292,36 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
   }
   function wallPoint(p){const hit=wallPick(p,true);return hit?{x:hit.x,y:hit.y}:p;}
 
+  let movingPoints=null;
+  function explorationMotion(){
+    if(row?.master||!root||!row?.characterId)return;
+    if(gesture?.kind==='token'&&gesture.moved)return {moving:gesture.item.id,...gesture.previewPosition,...(gesture.path?.length?{path:JSON.stringify(gesture.path)}:{}),rotation:rotationTarget(gesture.item.id),exploreScene:row.state.sceneId,dragId:gesture.dragId};
+    if(localPlacement)return {moving:localPlacement.id,...localPlacement.position,...(localPlacement.path?.length?{path:JSON.stringify(localPlacement.path)}:{}),rotation:rotationTarget(localPlacement.id),exploreScene:row.state.sceneId,dragId:localPlacement.dragId};
+    for(const token of row.state.tokens){
+      const remote=remoteMoves.get(token.id);
+      if(token.characterId===row.characterId&&remote?.active&&remote.position)return {moving:token.id,...remote.position,rotation:remote.rotation??token.rotation??0,exploreScene:row.state.sceneId,dragId:remote.dragId};
+    }
+  }
+  function syncPoints(points=null){
+    if(movingPoints===points)return;
+    const old=movingPoints??table.exploration??[];
+    movingPoints=points;
+    if(JSON.stringify(old)===JSON.stringify(points??table.exploration??[]))return;
+    const markers=root?.querySelector('.vtt-points'),list=root?.querySelector('[data-point-list]');
+    if(markers)markers.innerHTML=pointMarkers();
+    if(list)list.innerHTML=pointsList();
+  }
+  function pointLabel(p){
+    return p.kind==='sound'?(row.state.audio?.clips||[]).find(c=>c.id===p.clipId)?.name||'Som local':p.label;
+  }
+  function pointMarkers(){
+    return (movingPoints??table.exploration??[]).map(p=>'<button type="button" class="vtt-point" data-act="exploreOpen" data-id="'+escape(p.id)+'" title="'+escape(pointLabel(p))+'" aria-label="'+escape(pointLabel(p))+'" style="left:'+p.x/table.grid.columns*100+'%;top:'+p.y/table.grid.rows*100+'%">'+icon(p.kind==='sound'?'sound':'clue')+'</button>').join('');
+  }
+  function pointsList(){
+    const points=movingPoints??table.exploration??[];
+    if(!points.length)return '';
+    return '<section class="vtt-side-section"><h2>'+ (row.master?'Pontos da cena':'Pontos por perto')+'</h2><div class="actions">'+points.map(p=>button(pointLabel(p)+(p.found?' · descoberta':p.pending?.length?' · '+p.pending.length+' pedido(s)':p.pending===true?' · aguardando':''),'exploreOpen',p.id,p.kind==='sound'?'sound':'clue')).join('')+'</div></section>';
+  }
   function sceneMarkup() {
     const {columns,rows,visible}=table.grid;
     const drawings=table.drawings.map(item=>drawingShape(item)).join('');
@@ -288,7 +329,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       '<div class="vtt-map" aria-hidden="true"></div>'+renderAtmosphere(table.atmosphere)+
       '<div class="vtt-grid'+(visible?'':' is-off')+'" aria-hidden="true"></div>'+
       '<svg class="vtt-drawings" viewBox="0 0 '+columns+' '+rows+'" preserveAspectRatio="none" aria-hidden="true">'+drawings+'</svg>'+
-      '<div class="vtt-token-layer">'+(row.state.tokens||[]).map(tokenMarkup).join('')+'</div><div class="vtt-loot-effects" aria-hidden="true"></div><div class="vtt-darkness-host">'+renderDarkness(row,table,row.state.tokens||[],{selected,preview:playerPreview})+'</div>'+fogMarkup()+'<div class="vtt-vision-cones-host">'+renderVisionCones(row,table,row.state.tokens||[],{selected,preview:playerPreview,showCones})+'</div>'+
+      '<div class="vtt-token-layer">'+(row.state.tokens||[]).map(tokenMarkup).join('')+'</div><div class="vtt-points">'+pointMarkers()+'</div><div class="vtt-loot-effects" aria-hidden="true"></div><div class="vtt-darkness-host">'+renderDarkness(row,table,row.state.tokens||[],{selected,preview:playerPreview})+'</div>'+fogMarkup()+'<div class="vtt-vision-cones-host">'+renderVisionCones(row,table,row.state.tokens||[],{selected,preview:playerPreview,showCones})+'</div>'+
       (row.master?'<svg class="vtt-light-markers" viewBox="0 0 '+columns+' '+rows+'" preserveAspectRatio="none" aria-hidden="true">'+lightMarkers()+'</svg>':'')+
       (row.master?'<svg class="vtt-walls" viewBox="0 0 '+columns+' '+rows+'" preserveAspectRatio="none" aria-hidden="true">'+table.walls.map(wallLine).join('')+'</svg>':'')+
       '<svg class="vtt-preview" viewBox="0 0 '+columns+' '+rows+'" preserveAspectRatio="none" aria-hidden="true"></svg>'+
@@ -298,10 +339,10 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
   function tokenList(snapshot=visualTokens(),visibility) {
     const sources=visibility?null:visionSources(row,snapshot,{selected,preview:playerPreview});
     const tokens=snapshot.filter(token=>visibility?visibility.get(token.id):tokenShown(token,snapshot,sources));
-    const key=JSON.stringify([selected,tokens.map(t=>[t.id,t.name,t.color,t.icon,t.hidden,t.locked,t.statuses])]);if(key===tokenListKey)return tokenListMarkup;tokenListKey=key;
+    const key=JSON.stringify([selected,tokens.map(t=>[t.id,t.name,t.color,t.icon,t.hidden,t.locked,t.statuses,t.timedStatuses])]);if(key===tokenListKey)return tokenListMarkup;tokenListKey=key;
     return tokenListMarkup=tokens.length?'<ul class="vtt-token-list">'+tokens.map(token=>'<li><button type="button" data-table-select="'+escape(token.id)+'" class="'+(selected===token.id?'selected':'')+'">'+
       '<span class="vtt-token-swatch '+escape(token.color||'violet')+'">'+(tokenIconSvg(token.icon)||escape(token.name?.[0]||'✦'))+'</span><span><b>'+escape(token.name)+'</b>'+
-      '<small>'+escape((token.statuses||[]).join(' · ')||(token.hidden?'Oculto':token.locked?'Bloqueado':'Na cena'))+'</small></span></button></li>').join('')+'</ul>':'<p class="vtt-empty">Nenhum token visível nesta cena.</p>';
+      '<small>'+escape(conditionSummary(token)||(token.hidden?'Oculto':token.locked?'Bloqueado':'Na cena'))+'</small></span></button></li>').join('')+'</ul>':'<p class="vtt-empty">Nenhum token visível nesta cena.</p>';
   }
 
   function myCombatTurn(){
@@ -395,16 +436,16 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       [['up','↑','cima'],['left','←','esquerda'],['down','↓','baixo'],['right','→','direita']].map(([direction,symbol,label])=>
         '<button type="button" class="btn" data-table-move="'+direction+'" aria-label="Mover '+escape(token.name)+' para '+label+'">'+symbol+'</button>'
       ).join('')+'</div>':'';
-    return '<div class="vtt-selection"><div><strong>'+escape(token.name)+'</strong>'+(row.master&&token.realName?'<small>Nome verdadeiro · '+escape(token.realName)+'</small>':'')+'<small>'+escape((row.master?(token.hidden?'Oculto dos jogadores · ':'Compartilhado com a mesa · '):'')+((token.statuses||[]).join(' · ')||'Sem condições'))+'</small></div><div class="actions">'+
+    return '<div class="vtt-selection"><div><strong>'+escape(token.name)+'</strong>'+(row.master&&token.realName?'<small>Nome verdadeiro · '+escape(token.realName)+'</small>':'')+'<small>'+escape((row.master?(token.hidden?'Oculto dos jogadores · ':'Compartilhado com a mesa · '):'')+(conditionSummary(token)||'Sem condições'))+'</small></div><div class="actions">'+
       (row.master&&row.state.characters?.some(c=>c.id===token.characterId&&c.party)?button('Identidade entre grupos','characterParty',token.characterId):'')+
       (row.state.characters?.some(character=>character.id===token.characterId&&character.access!=='summary')?'<button type="button" class="btn small" data-table-character="'+escape(token.characterId)+'">Abrir ficha</button>':'')+
-      (row.master?'<button type="button" class="btn small" data-table-action="tokenVisibility" aria-pressed="'+Boolean(token.hidden)+'">'+(token.hidden?'Mostrar aos jogadores':'Ocultar dos jogadores')+'</button>'+button('Editar token','tableTokenEdit',token.id)+(row.state.characters?.some(character=>character.id===token.characterId&&character.claimed&&!character.hidden)?button('Mensagem privada','tableTokenMessage',token.id):''):'')+'</div>'+routeControls(token)+movePad+(movable?'<div class="vtt-rotation-controls" role="group" aria-label="Direção do token"><button type="button" class="btn small" data-table-action="rotateLeft" aria-label="Girar 15 graus à esquerda">Q ↶</button><span>Direção <output data-facing-value>'+Math.round(normalizeRotation(token.rotation))+'°</output></span><button type="button" class="btn small" data-table-action="rotateRight" aria-label="Girar 15 graus à direita">E ↷</button><small>Q/E para girar · Ao arrastar, use a roda</small></div>':'')+(row.master&&table.darkness.enabled?'<button type="button" class="btn small" data-table-action="visionPreview" aria-pressed="'+playerPreview+'">'+(playerPreview?'Voltar à visão do mestre':table.darkness.mode==='group'?'Prévia da visão compartilhada':'Ver pela visão deste token')+'</button>':'')+'</div>';
+      (row.master?'<button type="button" class="btn small" data-table-action="tokenVisibility" aria-pressed="'+Boolean(token.hidden)+'">'+(token.hidden?'Mostrar aos jogadores':'Ocultar dos jogadores')+'</button>'+button('Condições','tableConditions',token.id)+button('Editar token','tableTokenEdit',token.id)+(row.state.characters?.some(character=>character.id===token.characterId&&character.claimed&&!character.hidden)?button('Mensagem privada','tableTokenMessage',token.id):''):'')+'</div>'+routeControls(token)+movePad+(movable?'<div class="vtt-rotation-controls" role="group" aria-label="Direção do token"><button type="button" class="btn small" data-table-action="rotateLeft" aria-label="Girar 15 graus à esquerda">Q ↶</button><span>Direção <output data-facing-value>'+Math.round(normalizeRotation(token.rotation))+'°</output></span><button type="button" class="btn small" data-table-action="rotateRight" aria-label="Girar 15 graus à direita">E ↷</button><small>Q/E para girar · Ao arrastar, use a roda</small></div>':'')+(row.master&&table.darkness.enabled?'<button type="button" class="btn small" data-table-action="visionPreview" aria-pressed="'+playerPreview+'">'+(playerPreview?'Voltar à visão do mestre':table.darkness.mode==='group'?'Prévia da visão compartilhada':'Ver pela visão deste token')+'</button>':'')+'</div>';
   }
 
   function drawingOptions() {
     if (!row.master) return '';
     return '<div class="vtt-light-options" '+(tool==='lights'?'':'hidden')+'><label><input data-light-enabled type="checkbox" '+(table.darkness.enabled?'checked':'')+'> Escuridão ativa</label><label>Escuridão ambiente <output data-light-level-output>'+table.darkness.level+'%</output><input data-light-level type="range" min="0" max="100" value="'+table.darkness.level+'"></label><label>Emissores <select data-light-mode><option value="draw">Colocar ou ajustar</option><option value="delete" '+(lightMode==='delete'?'selected':'')+'>Apagar</option></select></label><label>Formato <select data-light-angle>'+[[0,'Atual (nova luz circular)'],[360,'Circular'],[35,'Facho estreito · 35°'],[90,'Cone amplo · 90°'],[180,'Meia-luz · 180°']].map(([n,label])=>'<option value="'+n+'" '+(n===lightAngle?'selected':'')+'>'+label+'</option>').join('')+'</select></label><label>Visibilidade <select data-light-scope>'+[['','Manter atual (nova luz global)'],['global','Global · além do alcance de visão'],['local','Local · dentro do campo de visão']].map(([value,label])=>'<option value="'+value+'" '+(value===lightScope?'selected':'')+'>'+label+'</option>').join('')+'</select></label><label>Cor <input data-light-color type="color" value="'+lightColor+'"></label></div>'+
-      '<div class="vtt-wall-options" '+(tool==='walls'?'':'hidden')+'><label>Barreiras de visão <select data-wall-mode>'+[['wall','Desenhar parede'],['door','Desenhar porta fechada'],['toggle','Abrir ou fechar porta'],['delete','Excluir segmento']].map(([value,label])=>'<option value="'+value+'" '+(wallMode===value?'selected':'')+'>'+label+'</option>').join('')+'</select></label><small>Ative a escuridão para aplicar as barreiras à visão.</small></div>'+
+      '<div class="vtt-wall-options" '+(tool==='walls'?'':'hidden')+'><label>Tipo de barreira <select data-wall-mode>'+[['wall','Desenhar parede'],['door','Desenhar porta fechada'],['window','Desenhar janela'],['toggle','Abrir ou fechar porta'],['delete','Excluir segmento']].map(([value,label])=>'<option value="'+value+'" '+(wallMode===value?'selected':'')+'>'+label+'</option>').join('')+'</select></label><small>Janelas bloqueiam tokens e deixam passar visão e luz.</small></div>'+
       '<div class="vtt-drawing-options" '+(tool==='draw'?'':'hidden')+'><label>Traço<select data-table-shape><option value="freehand" '+(shape==='freehand'?'selected':'')+'>Desenho livre</option><option value="line" '+(shape==='line'?'selected':'')+'>Linha</option><option value="rectangle" '+(shape==='rectangle'?'selected':'')+'>Retângulo</option><option value="circle" '+(shape==='circle'?'selected':'')+'>Elipse</option></select></label><label>Cor<input type="color" value="'+drawingColor+'" data-table-color></label><button type="button" class="btn small danger" data-table-action="drawingUndo">Desfazer último</button><button type="button" class="btn small danger" data-table-action="tableDrawingClear">Limpar desenhos</button></div>'+
       '<div class="vtt-fog-options" '+(tool==='fog'?'':'hidden')+'><label>Formato<select data-fog-shape><option value="brush" '+(fogShape==='brush'?'selected':'')+'>Pincel livre</option><option value="rectangle" '+(fogShape==='rectangle'?'selected':'')+'>Retângulo na grade</option></select></label><label data-fog-brush-options '+(fogShape==='brush'?'':'hidden')+'>Diâmetro do pincel <output data-fog-brush-size>'+fogBrushPixels+' px</output><input type="range" data-fog-brush min="10" max="300" step="5" value="'+fogBrushPixels+'"></label><label>No toque<select data-table-fog><option value="reveal" '+(fogOperation==='reveal'?'selected':'')+'>Revelar</option><option value="hide" '+(fogOperation==='hide'?'selected':'')+'>Ocultar</option></select></label><button type="button" class="btn small" data-table-action="fogToggle">'+(table.fog.enabled?'Desativar névoa':'Ativar névoa')+'</button><button type="button" class="btn small danger" data-table-action="fogReset">Cobrir tudo</button><button type="button" class="btn small" data-table-action="fogRevealAll">Revelar tudo</button><button type="button" class="btn small" data-table-action="fogUndo" '+(table.fog.history.length?'':'disabled')+'>Desfazer névoa</button><button type="button" class="btn small" data-table-action="fogPreview" aria-pressed="'+playerPreview+'">'+(playerPreview?'Voltar à visão do mestre':'Prévia dos jogadores')+'</button><label>Opacidade para o mestre<input type="range" min="20" max="90" value="'+Math.round(fogOpacity*100)+'" data-fog-opacity></label><p class="vtt-fog-legend"><span>Verde revela</span><span>Laranja oculta</span> · Mouse: esquerdo revela, direito oculta · Esc cancela</p></div>';
   }
@@ -426,16 +467,16 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     if (!(row.state.tokens||[]).some(token=>token.id===selected)) selected='';
     return '<section class="vtt"><div class="vtt-heading"><div><p class="vtt-eyebrow" data-table-campaign-name>'+escape(row.state.name)+'</p><h1>Mesa virtual</h1><p class="subtitle" data-table-scene-name>'+escape([row.state.sessionName,row.state.scene].filter(Boolean).join(' · ')||'Cena atual')+'</p></div><div class="actions">'+'<button type="button" class="btn small" data-table-focus-rolls>'+icon('dice')+'Dados da ficha</button>'+(row.master?button('Ambiente','tableAtmosphere','','darkness')+button('Enviar mapa','upload','map','image')+button('Novo token','tableTokenAdd','','plus')+button('Colocar item','lootPlace','','plus'):'')+'</div></div>'+
       '<div class="vtt-layout"><div class="vtt-scene-column"><section class="vtt-stage"><div class="vtt-toolbar" role="toolbar" aria-label="Ferramentas da mesa"><div class="vtt-tools">'+
-      toolButton('select','Selecionar')+toolButton('pan','Mover visão')+toolButton('measure','Medir')+toolButton('ping','Apontar')+(row.master?toolButton('draw','Desenhar')+toolButton('fog','Névoa')+toolButton('walls','Paredes e portas')+toolButton('lights','Iluminação'):'')+'</div>'+
+      toolButton('select','Selecionar')+toolButton('pan','Mover visão')+toolButton('measure','Medir')+toolButton('ping','Apontar')+(row.master?toolButton('draw','Desenhar')+toolButton('fog','Névoa')+toolButton('walls','Paredes, portas e janelas')+toolButton('lights','Iluminação')+toolButton('clue','Colocar pista')+toolButton('sound','Colocar som'):'')+'</div>'+
       '<div class="vtt-view-controls"><span class="vtt-connection" data-table-connection role="status" aria-live="polite">Conectando…</span><button class="vtt-tool" type="button" data-table-zoom="out" aria-label="Diminuir zoom" title="Diminuir zoom">'+icon('zoomOut')+'</button><span data-table-zoom-label>'+Math.round(zoom*100)+'%</span><button class="vtt-tool" type="button" data-table-zoom="in" aria-label="Aumentar zoom" title="Aumentar zoom">'+icon('zoomIn')+'</button><button class="vtt-tool" type="button" data-table-zoom="fit" aria-label="Ajustar mapa à tela" title="Ajustar mapa à tela">'+icon('fit')+'</button>'+(row.master?'<button class="vtt-tool" type="button" data-table-action="darknessToggle" aria-pressed="'+table.darkness.enabled+'" title="'+(table.darkness.enabled?'Desativar escuridão':'Ativar escuridão')+'" aria-label="'+(table.darkness.enabled?'Desativar escuridão':'Ativar escuridão')+'">'+icon('darkness')+'</button>':'')+(row.master?'<button type="button" class="vtt-tool vtt-vision-sharing" data-table-action="visionShare" aria-pressed="'+(table.darkness.mode==='group')+'" title="Compartilhar visão entre jogadores">'+icon('sharedVision')+'<span data-vision-share-label>'+(table.darkness.mode==='teams'?'Visão: por grupos':table.darkness.mode==='group'?'Visão: compartilhada':'Visão: individual')+'</span></button><button type="button" class="vtt-tool vtt-cones-control" data-table-action="visionCones" aria-pressed="'+showCones+'" title="Mostrar cones de todos os tokens, só para o mestre" '+(!table.darkness.enabled||playerPreview?'disabled':'')+'>'+icon('cones')+'<span>Cones</span></button>':'')+(row.master?'<button class="vtt-tool" type="button" data-act="tableSettings" aria-label="Configurar grade" title="Configurar grade">'+icon('settings')+'</button>':'')+'</div></div><div class="vtt-measure-options" '+(tool==='measure'?'':'hidden')+'><label>Régua <select data-measure-mode><option value="direct">Linha direta</option><option value="path" '+(measureMode==='path'?'selected':'')+'>Percurso por pontos</option></select></label><button type="button" class="btn small" data-table-action="measureUndo" '+(measureMode==='path'?'':'hidden')+'>Desfazer ponto</button><button type="button" class="btn small" data-table-action="measureClear">Limpar medida</button></div><div class="vtt-ping-options" '+(tool==='ping'?'':'hidden')+'><label>Sinal no mapa <select data-ping-signal>'+Object.entries(pingNames).map(([key,label])=>'<option value="'+key+'" '+(key===pingSignal?'selected':'')+'>'+label+'</option>').join('')+'</select></label></div>'+drawingOptions()+
       '<div class="vtt-viewport" tabindex="0" role="region" aria-label="Mapa interativo. Use as ferramentas para medir, apontar e movimentar tokens.">'+sceneMarkup()+
       (!row.state.map?'<p class="vtt-map-hint">'+(row.master?'Envie um mapa ou use a grade para começar.':'A cena está pronta para os tokens.')+'</p>':'')+'</div>'+
       '<div class="vtt-statusbar"><span data-table-help role="status" aria-live="polite">'+help()+'</span><span>'+table.grid.columns+' × '+table.grid.rows+' células · '+table.grid.size+' '+escape(table.grid.unit)+' / célula'+(table.fog.enabled?' · Névoa ativa':'')+'</span></div><p class="vtt-vision-hint" data-vision-hint '+(table.darkness.enabled?'':'hidden')+'>'+(row.master?'Escuridão ativa · selecione um token para inspecionar seu campo de visão.':'Escuridão ativa · sua visão acompanha seus tokens. Use os controles de direção após selecionar seu token.')+'</p><div data-table-selection>'+selectedMarkup()+'</div></section><section class="vtt-roll-feed" data-table-roll-history aria-label="Histórico de rolagens">'+historyMarkup+'</section></div>'+
-      '<aside class="vtt-inspector">'+rollPanelMarkup()+'<section class="vtt-side-section"><div class="vtt-side-heading"><h2>Tokens</h2><span class="vtt-count" data-table-token-count>'+ (row.state.tokens||[]).length+'</span></div>'+'<div data-table-token-list>'+tokenList()+'</div></section>'+combatMarkup()+'</aside></div></section>';
+      '<aside class="vtt-inspector">'+rollPanelMarkup()+'<div data-point-list>'+pointsList()+'</div><section class="vtt-side-section"><div class="vtt-side-heading"><h2>Tokens</h2><span class="vtt-count" data-table-token-count>'+ (row.state.tokens||[]).length+'</span></div>'+'<div data-table-token-list>'+tokenList()+'</div></section>'+combatMarkup()+'</aside></div></section>';
   }
 
   function help() {
-    return ({lights:lightMode==='delete'?'Toque no centro da luz para removê-la':'Toque para colocar uma luz ou arraste para apontar e definir o alcance · Comece no centro de uma luz para ajustá-la',walls:['wall','door'].includes(wallMode)?'Arraste de uma ponta à outra · Pontas próximas se conectam · Esc cancela':wallMode==='toggle'?'Toque na porta para abrir ou fechar':'Toque no segmento que deseja excluir',select:'Arraste tokens · Dois dedos movem e ampliam · Setas movem a seleção',pan:'Arraste o mapa para mudar a visão',measure:measureMode==='path'?'Toque no mapa para marcar cada ponto do percurso':'Arraste entre dois pontos para medir',ping:'Clique no mapa para apontar para o grupo',draw:shape==='freehand'?'Desenhe livremente · Esc cancela':'Arraste para desenhar uma forma',fog:(fogShape==='brush'?'Pincel livre · ':'Retângulo na grade · ')+'Mouse: esquerdo revela · direito oculta · No toque, escolha a operação · Esc cancela'})[tool]+' · Botão do meio: mover câmera';
+    return ({clue:'Toque no mapa para vincular uma anotação',sound:'Toque no mapa para colocar um emissor de som',lights:lightMode==='delete'?'Toque no centro da luz para removê-la':'Toque para colocar uma luz ou arraste para apontar e definir o alcance · Comece no centro de uma luz para ajustá-la',walls:['wall','door','window'].includes(wallMode)?'Arraste de uma ponta à outra · Pontas próximas se conectam · Esc cancela':wallMode==='toggle'?'Toque na porta para abrir ou fechar':'Toque no segmento que deseja excluir',select:'Arraste tokens · Dois dedos movem e ampliam · Setas movem a seleção',pan:'Arraste o mapa para mudar a visão',measure:measureMode==='path'?'Toque no mapa para marcar cada ponto do percurso':'Arraste entre dois pontos para medir',ping:'Clique no mapa para apontar para o grupo',draw:shape==='freehand'?'Desenhe livremente · Esc cancela':'Arraste para desenhar uma forma',fog:(fogShape==='brush'?'Pincel livre · ':'Retângulo na grade · ')+'Mouse: esquerdo revela · direito oculta · No toque, escolha a operação · Esc cancela'})[tool]+' · Botão do meio: mover câmera';
   }
 
   function updateTransform() {
@@ -560,7 +601,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     const start=gesture.start;
     if(gesture.kind==='lights'&&lightMode==='draw'){
       preview.innerHTML=lightShape(lampAt(gesture,end))+' fill="'+lightColor+'" fill-opacity=".24" stroke="'+lightColor+'" stroke-width="2" vector-effect="non-scaling-stroke"/>';
-    }else if(gesture.kind==='walls'&&['wall','door'].includes(wallMode)){
+    }else if(gesture.kind==='walls'&&['wall','door','window'].includes(wallMode)){
       const tip=wallPoint(end);
       preview.innerHTML=wallLine({kind:wallMode,...start,toX:tip.x,toY:tip.y});
     }else if (gesture.kind==='measure') {
@@ -587,7 +628,8 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     return {x,y,width:clamp(Math.ceil(Math.max(start.x,end.x))-x,1,table.grid.columns-x),height:clamp(Math.ceil(Math.max(start.y,end.y))-y,1,table.grid.rows-y)};
   }
 
-  function resetGesture() {
+  function resetGesture(keepPoints=false) {
+    if(!keepPoints)syncPoints();
     queueVision();
     gesture=null;
     if(viewport)delete viewport.dataset.panning;
@@ -650,6 +692,8 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     viewport.focus({preventScroll:true});
     const token=event.target.closest('[data-table-token]');
     const start=point(event);
+    if(event.target.closest('[data-act="exploreOpen"]'))return;
+    if(row.master&&['clue','sound'].includes(tool)){placePoint(tool,start,row.state.sceneId);return;}
     if(routeDraft&&row.master&&row.state.tokens.some(t=>t.id===routeDraft.id)){
       if(routeDraft.points.length>=48){report('Use até 48 pontos.');return;}
       const size=routeDraft.size;
@@ -695,7 +739,18 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       const size=Number(gesture.item.size)||1;
       let x=clamp(gesture.item.x+end.x-gesture.start.x,0,table.grid.columns-size);
       let y=clamp(gesture.item.y+end.y-gesture.start.y,0,table.grid.rows-size);
-      gesture.previewPosition={x,y};
+      const previous=gesture.previewPosition||gesture.item;
+      const path=gesture.path??=[];
+      const next=slideToken(previous,{x,y},size,table);
+      if(table.walls.length){
+        const direct=slideToken(path.at(-1)||gesture.item,next,size,table);
+        if(Math.hypot(direct.x-next.x,direct.y-next.y)>1e-6){
+          if(path.length>=64)return;
+          path.push({x:previous.x,y:previous.y});
+        }
+      }
+      x=next.x;y=next.y;
+      gesture.previewPosition=next;
       if(table.fog.enabled&&table.fog.mode==='war'){
         const trail=gesture.trail??=[];
         const last=trail.at(-1)||gesture.item;
@@ -704,11 +759,12 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
           gesture.trail.push({x,y,rotation:displayedRotation(gesture.item)});
         }
       }
-      gesture.position=table.grid.snap?{x:Math.round(x),y:Math.round(y)}:{x,y};
+      gesture.position=table.grid.snap?slideToken(next,{x:Math.round(x),y:Math.round(y)},size,table):next;
       gesture.moved=Math.abs(end.x-gesture.start.x)+Math.abs(end.y-gesture.start.y)>.03;
       gesture.token.style.left=x/table.grid.columns*100+'%';
       gesture.token.style.top=y/table.grid.rows*100+'%';queueVision();
       if(gesture.moved)sendTokenPreview(gesture,'move');
+      else if(!row.master){syncPoints();explorationChanged();}
     } else {
       if(gesture.kind==='draw'&&gesture.shape==='freehand'||gesture.kind==='fog'&&gesture.fogShape==='brush')addFreehandPoint(gesture,end);
       updatePreview(end);
@@ -734,7 +790,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       }else measurement=[active.start,end];
       paintMeasurement(measurement);gesture=null;
     }else{
-      resetGesture();
+      resetGesture(active.kind==='token'&&active.moved);
       if(active.kind==='pan'&&tool==='measure')paintMeasurement(measurement);
     }
     if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
@@ -742,15 +798,15 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       focusAfterMove=active.item.id;
       active.token.style.left=active.position.x/table.grid.columns*100+'%';active.token.style.top=active.position.y/table.grid.rows*100+'%';
       sendTokenPreview(active,'end');
-      localPlacement={id:active.item.id,position:active.position,dragId:active.dragId};queueVision();
-      perform('tokenMove',{id:active.item.id,...active.position,dragId:active.dragId,...(active.trail?.length?{trail:active.trail}:{})}).finally(()=>{focusAfterMove='';localPlacement=null;queueVision();});
+      localPlacement={id:active.item.id,position:active.position,path:active.path,dragId:active.dragId};queueVision();
+      perform('tokenMove',{id:active.item.id,...(table.walls.length?active.previewPosition:active.position),dragId:active.dragId,...(active.path?.length?{path:active.path}:{}),...(active.trail?.length?{trail:active.trail}:{})}).finally(()=>{focusAfterMove='';localPlacement=null;syncPoints();queueVision();});
     }
     if(active.kind==='lights'&&row.master){
       if(lightMode==='delete'){if(active.light)perform('tableLightDelete',{id:active.light.id});}
       else perform('tableLightSet',{...lampAt(active,point(event)),id:active.light?.id,color:lightColor});
     }
     if(active.kind==='walls' &&row.master){
-      if(['wall','door'].includes(wallMode)){
+      if(['wall','door','window'].includes(wallMode)){
         const tip=wallPoint(point(event));
         if(Math.hypot(tip.x-active.start.x,tip.y-active.start.y)>.02)perform('tableWallAdd',{kind:wallMode,...active.start,toX:tip.x,toY:tip.y});
       }else{
@@ -1029,9 +1085,10 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
   }
 
   function sendTokenPreview(active,phase) {
-    const position=phase==='move'?active.previewPosition:phase==='end'?active.position:active.item;
+    const position=phase==='move'?active.previewPosition:phase==='end'?(table.walls.length?active.previewPosition:active.position):active.item;
     if(!position)return;
-    try{const task=realtime({type:'tokenPreview',id:active.item.id,x:position.x,y:position.y,...(Number.isFinite(active.rotation)?{rotation:active.rotation}:{}),dragId:active.dragId,seq:++active.seq,phase});task?.catch?.(()=>{});}catch{}
+    if(!row.master&&phase!=='cancel')explorationChanged();
+    try{const task=realtime({type:'tokenPreview',id:active.item.id,x:position.x,y:position.y,...(active.path?.length?{path:[...active.path]}:{}),...(Number.isFinite(active.rotation)?{rotation:active.rotation}:{}),dragId:active.dragId,seq:++active.seq,phase});task?.catch?.(()=>{});}catch{}
   }
 
   function clearRemoteMoves() {
@@ -1066,7 +1123,13 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       node.style.left=clamp(event.x,0,table.grid.columns-size)/table.grid.columns*100+'%';
       node.style.top=clamp(event.y,0,table.grid.rows-size)/table.grid.rows*100+'%';
     }
-    move.position={x:clamp(event.x,0,table.grid.columns-(Number(item.size)||1)),y:clamp(event.y,0,table.grid.rows-(Number(item.size)||1))};if(move.position.x===move.from.x&&move.position.y===move.from.y)move.duration=0;queueVision();
+    move.position={x:clamp(event.x,0,table.grid.columns-(Number(item.size)||1)),y:clamp(event.y,0,table.grid.rows-(Number(item.size)||1))};if(move.position.x===move.from.x&&move.position.y===move.from.y)move.duration=0;
+    if(move.duration&&table.walls.length){
+      const reachable=slideToken(move.from,move.position,Number(item.size)||1,table);
+      if(Math.hypot(reachable.x-move.position.x,reachable.y-move.position.y)>1e-6)move.duration=0;
+    }
+    queueVision();
+    if(!row.master&&item.characterId===row.characterId)explorationChanged();
     move.timer=setTimeout(()=>{move.active=false;node.classList.toggle('is-remote-moving',false);if(!(gesture?.kind==='token'&&gesture.item.id===event.id))restoreToken(event.id);},event.phase==='move'?1800:500);
   }
 
@@ -1084,7 +1147,7 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     for(const token of currentTokens)if(oldRotations.has(token.id)&&oldRotations.get(token.id)!==(token.rotation||0)&&rotationPreview?.id!==token.id)animateRotation(token.id,token.rotation);
     if(gesture?.kind==='token'){
       const fresh=currentTokens.find(item=>item.id===gesture.item.id);
-      if(!fresh||!row.master&&(fresh.locked||fresh.hidden||fresh.canMove===false))cancelPointer();
+      if(!fresh||JSON.stringify(oldTable.walls)!==JSON.stringify(table.walls)||!row.master&&(fresh.locked||fresh.hidden||fresh.canMove===false))cancelPointer();
     }
     const layer=root.querySelector('.vtt-token-layer');
     for(const node of root.querySelectorAll('[data-table-token]')){
@@ -1097,11 +1160,11 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
       const size=Number(item.size)||1;node.style.width=size/table.grid.columns*100+'%';node.style.height=size/table.grid.rows*100+'%';
       for(const color of colors)node.classList.toggle(color,(item.color||'violet')===color);
       const letter=node.querySelector?.('.vtt-token-letter');if(letter){const symbol=tokenIconSvg(item.icon);if(symbol)letter.innerHTML=symbol;else letter.textContent=item.name?.[0]?.toUpperCase()||'✦';}
-      const statusMarkup=(item.statuses||[]).slice(0,3).map(value=>'<span>'+escape(value)+'</span>').join(''),status=node.querySelector?.('.vtt-token-status');
+      const statusMarkup=conditionBadges(item),status=node.querySelector?.('.vtt-token-status');
       if(status)status.innerHTML=statusMarkup;else if(statusMarkup)node.insertAdjacentHTML?.('beforeend','<span class="vtt-token-status">'+statusMarkup+'</span>');
       const portrait=tokenPortrait(item),image=node.querySelector?.('[data-table-token-image]');
       if(portrait){if(image&&image.dataset.tableTokenImage!==portrait){image.dataset.tableTokenImage=portrait;image.hidden=true;node.classList.toggle('has-portrait',false);}else if(!image)node.querySelector?.('.vtt-token-face')?.insertAdjacentHTML?.('beforeend','<img alt="" hidden data-table-token-image="'+escape(portrait)+'">');}else{image?.remove?.();if(!node.querySelector?.('[data-loot-portrait]'))node.classList.toggle('has-portrait',false);}
-      node.setAttribute('aria-label',item.name+(item.locked?' · Bloqueado':'')+(item.hidden?' · Oculto':''));node.setAttribute('title',item.name);
+      node.setAttribute('aria-label',[item.name,conditionSummary(item)].filter(Boolean).join(' · ')+(item.locked?' · Bloqueado':'')+(item.hidden?' · Oculto':''));node.setAttribute('title',item.name);
       const label=node.querySelector?.('.vtt-token-label');if(label)label.textContent=item.name;
     }
     const existing=new Set([...root.querySelectorAll('[data-table-token]')].map(node=>node.dataset.tableToken));
@@ -1130,6 +1193,10 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
     const darknessToggle=root.querySelector('[data-table-action="darknessToggle"]');if(darknessToggle){darknessToggle.setAttribute('aria-pressed',String(table.darkness.enabled));darknessToggle.setAttribute('title',table.darkness.enabled?'Desativar escuridão':'Ativar escuridão');darknessToggle.setAttribute('aria-label',table.darkness.enabled?'Desativar escuridão':'Ativar escuridão');}
     const fogToggle=root.querySelector('[data-table-action="fogToggle"]');if(fogToggle)fogToggle.textContent=table.fog.enabled?'Desativar névoa':'Ativar névoa';
     const fogUndo=root.querySelector('[data-table-action="fogUndo"]');if(fogUndo)fogUndo.disabled=!table.fog.history.length;
+    if(JSON.stringify(oldTable.exploration)!==JSON.stringify(table.exploration)||oldTable.grid.columns!==table.grid.columns||oldTable.grid.rows!==table.grid.rows){
+      const markers=root.querySelector('.vtt-points'),points=root.querySelector('[data-point-list]');
+      if(markers)markers.innerHTML=pointMarkers();if(points)points.innerHTML=pointsList();
+    }
     const count=root.querySelector('[data-table-token-count]');if(count)count.textContent=String(currentTokens.length);
     const name=root.querySelector('[data-table-campaign-name]');if(name)name.textContent=row.state.name;
     const scene=root.querySelector('[data-table-scene-name]');if(scene)scene.textContent=[row.state.sessionName,row.state.scene].filter(Boolean).join(' · ')||'Cena atual';
@@ -1217,11 +1284,12 @@ export function createTabletop({action,openCharacter,openLoot=()=>{},report,requ
   }
 
   function dispose() {
+    movingPoints=null;
     routeDraft=null;
     if(gesture?.kind==='token')sendTokenPreview(gesture,'cancel');
     visionGeneration++;if(visionFrame!==null)globalThis.cancelAnimationFrame?.(visionFrame);visionFrame=null;visionPending=false;pendingRotation=null;rotationAnimations.clear();drawnRotations.clear();
     events?.abort();resize?.disconnect();for(const timer of pingTimers)clearTimeout(timer);pingTimers.clear();clearRemoteMoves();gesture=null;touches.clear();rotationPreview=null;localPlacement=null;root=null;viewport=null;world=null;
   }
 
-  return {render,mount,syncRolls,syncScene,receiveRealtime,resetRealtime,setConnectionStatus,isInteracting:()=>Boolean(gesture)||busy||rotationSending,dispose};
+  return {explorationMotion,syncPoints,render,mount,syncRolls,syncScene,receiveRealtime,resetRealtime,setConnectionStatus,isInteracting:()=>Boolean(gesture)||busy||rotationSending,dispose};
 }

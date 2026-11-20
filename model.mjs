@@ -202,6 +202,21 @@ export function sheetSkillTest(state,character,id,base){
  const values=skillValues(character,skill,state),linked=sheetFields(state,character).find(field=>field.id===skill.attribute&&field.type==='number');
  return {label:'Perícia · '+skill.name,formula:testBase(character,base)+(linked?'+@{'+linked.id+(character.dnd&&/^dd-(str|dex|con|int|wis|cha)$/.test(linked.id)?'|mod':'')+'}':signedTerm(values.base))+signedTerm(values.bonus)+signedTerm(values.other)};
 }
+// Requests match equivalent tests across sheets by name, then retain each sheet's own field ID.
+export function sheetRequestOptions(state,character){
+ return [
+  ...sheetTestAttributes(state,character).map(f=>({kind:'attribute',id:f.id,name:f.label})),
+  ...(character.skills||[]).map(s=>({kind:'skill',id:s.id,name:s.name})),
+  ...(character.rollButtons||[]).map(b=>({kind:'saved',id:b.id,name:b.name}))
+ ].map(option=>({...option,key:option.kind+':'+normalizedName(option.name)}));
+}
+export function requestedTest(state,character,target){
+ if(target.kind==='attribute')return sheetAttributeTest(state,character,target.testId);
+ if(target.kind==='skill')return sheetSkillTest(state,character,target.testId);
+ const saved=character.rollButtons?.find(b=>b.id===target.testId);
+ if(!saved)formulaError('A rolagem pedida foi removida da ficha.');
+ return {label:saved.name,formula:sheetSavedRollFormula(character,saved)};
+}
 export function sheetSavedRollFormula(character,button){
  if(!button?.dndSpell)return button?.formula||'';
  const spell=dndCatalog.find(entry=>entry.id===button.dndSpell.spellId);
@@ -224,4 +239,35 @@ export function stressRegionsFor(mode){
 export function bodyStressWithHead(stress){
   if(!stress||stress.regions.head)return stress;
   return {...stress,mode:'simple',regions:{...stress.regions,head:{value:0,limit:3}}};
+}
+
+export const cinematicTransitions=Object.freeze({rift:'Invasão de anéis',ink:'Tinta escorrendo',curtain:'Cortinas',mist:'Bruma',fade:'Dissolver',fire:'Fogo · Chamas ascendentes',water:'Água · Onda crescente',earth:'Terra · Muralha de pedra',air:'Ar · Vórtice de vento'});
+export const cinematicReveals=Object.freeze({fade:'Aparecer suavemente',emerge:'Emergir do escuro',slit:'Fenda de luz',sweep:'Varredura luminosa'});
+export const captionSpeeds=Object.freeze({dramatic:'Dramática · 4 letras/s',slow:'Lenta · 8 letras/s',normal:'Moderada · 14 letras/s',fast:'Rápida · 24 letras/s'});
+const captionRates={dramatic:4,slow:8,normal:14,fast:24};
+export function cinematicCaption(text,speed='slow'){
+  const letters=typeof Intl.Segmenter==='function'
+    ?Array.from(new Intl.Segmenter('pt-BR',{granularity:'grapheme'}).segment(text||''),part=>part.segment)
+    :Array.from(text||'');
+  let elapsed=0;
+  return letters.map(letter=>{
+    const delay=elapsed;
+    elapsed+=(/[.!?…]/u.test(letter)?3:/[,;:]/u.test(letter)?2:1)*1000/captionRates[speed];
+    return {letter,delay};
+  });
+}
+export function cinematicDisplayMs(duration,text,speed){
+  const last=cinematicCaption(text,speed).at(-1);
+  return Math.max(duration*1000,last?Math.ceil(last.delay)+1000:0);
+}
+export function cinematicStyle({transition='rift',reveal='fade',revealSeconds=.7,captionSpeed='slow',accent='#9b6555',background='#080709',lettering='#f4eadf'}={}){
+  if(typeof transition!=='string'||!Object.hasOwn(cinematicTransitions,transition))
+    throw Object.assign(new Error('Transição de cinemática inválida.'),{status:400});
+  if(![accent,background,lettering].every(color=>typeof color==='string'&&/^#[0-9a-f]{6}$/i.test(color)))
+    throw Object.assign(new Error('Escolha cores válidas para a cinemática.'),{status:400});
+  if(typeof reveal!=='string'||!Object.hasOwn(cinematicReveals,reveal)||!Number.isFinite(revealSeconds)||revealSeconds<0||revealSeconds>5)
+    throw Object.assign(new Error('Escolha uma revelação e uma duração de até 5 segundos.'),{status:400});
+  if(typeof captionSpeed!=='string'||!Object.hasOwn(captionSpeeds,captionSpeed))
+    throw Object.assign(new Error('Velocidade da legenda inválida.'),{status:400});
+  return {transition,reveal,revealSeconds,captionSpeed,accent,background,lettering};
 }

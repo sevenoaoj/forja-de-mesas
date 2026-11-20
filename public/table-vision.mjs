@@ -1,5 +1,5 @@
 import {characterColorHex} from '../model.mjs';
-import {recordExploration,exploredRowsPath,explorationRows,visionSector,sectorPath,visionSources,tokenInVision,normalizeRotation} from '../vision-model.mjs';
+import {blocksSight,recordExploration,exploredRowsPath,explorationRows,visionSector,sectorPath,visionSources,tokenInVision,normalizeRotation} from '../vision-model.mjs';
 export {visionSources,tokenInVision,normalizeRotation};
 const localPath=source=>sectorPath({...source,x:0,y:0,rotation:0});
 const placement=source=>'translate('+source.x+' '+source.y+')';
@@ -9,7 +9,7 @@ const turn=source=>'rotate('+source.rotation+')';
 function shadowPath(source,walls,grid){
  const far=Math.hypot(grid.columns,grid.rows)+2,paths=[];
  for(const wall of walls){
-  if(wall.open)continue;
+  if(!blocksSight(wall))continue;
   let ax=wall.x-source.x,ay=wall.y-source.y,bx=wall.toX-source.x,by=wall.toY-source.y;
   const cross=ax*by-ay*bx;
   if(Math.abs(cross)<1e-10)continue;
@@ -90,7 +90,7 @@ export function renderDarkness(row,table,tokens,{selected='',preview=false}={}){
  const id='vision-'+String(row.id||'table').replace(/[^a-z0-9_-]/gi,'');
  const playerView=!row.master||preview;
  const restrictLocal=!war&&playerView&&table.lights?.some(l=>l.scope==='local');
- const restrictGlobal=!war&&playerView&&table.walls?.some(w=>!w.open)&&table.lights?.some(l=>l.scope!=='local');
+ const restrictGlobal=!war&&playerView&&table.walls?.some(blocksSight)&&table.lights?.some(l=>l.scope!=='local');
  const light=sceneLighting(id,table,restrictLocal,restrictGlobal);
  const bounds='x="0" y="0" width="'+columns+'" height="'+rows+'"';
  const opening=()=>'<svg class="vtt-darkness" viewBox="0 0 '+columns+' '+rows+'" preserveAspectRatio="none" stroke="none" stroke-width="0" aria-hidden="true">';

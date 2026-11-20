@@ -53,7 +53,7 @@ async function fixture(t){
 }
 test('conexão autorizada recebe snapshot imediato filtrado e fecha ao desconectar',async t=>{
  const f=await fixture(t);await f.act('tokenUpdate',{id:'dorian',hidden:true});const p=await f.listen(f.a),gm=await f.listen(f.created.key);
- assert.equal(p.events[0].type,'ready');const scene=p.events.find(e=>e.type==='scene');assert.deepEqual(Object.keys(scene.state).sort(),['activeSceneId','journalVersion','map','narrations','rolls','scene','sceneId','sessionName','sheetTemplatesVersion','table','tokens']);assert.ok(!scene.state.tokens.some(token=>token.id==='dorian'));assert.equal(scene.state.tokens[0].canMove,true);assert.equal(scene.state.characters,undefined);assert.ok(gm.events.find(e=>e.type==='scene').state.tokens.some(token=>token.id==='dorian'));
+ assert.equal(p.events[0].type,'ready');const scene=p.events.find(e=>e.type==='scene');assert.deepEqual(Object.keys(scene.state).sort(),['activeSceneId','checkRequests','cinematic','investigationReceipts','journalVersion','map','narrations','rolls','scene','sceneId','sessionClocks','sessionName','sheetTemplatesVersion','table','tokens']);assert.ok(!scene.state.tokens.some(token=>token.id==='dorian'));assert.equal(scene.state.tokens[0].canMove,true);assert.equal(scene.state.characters,undefined);assert.ok(gm.events.find(e=>e.type==='scene').state.tokens.some(token=>token.id==='dorian'));
  assert.equal((await f.call(f.base+'/events','GET','invalid')).status,403);assert.equal(f.hub.connectionCount,2);p.abort.abort();await p.pumping;assert.equal(f.hub.connectionCount,1);
 });
 test('dois jogadores recebem prévias simultâneas sem gravações e finais persistem separadamente',async t=>{
@@ -189,4 +189,17 @@ test('confirmação atrasada de giro aposenta só o giro e mantém o arraste mai
  assert.equal(other.events.some(e=>e.type==='tokenPreview'&&e.dragId==='walking'&&e.phase==='cancel'),false);
  const before=other.events.length;await f.preview('lyra',4,4,f.a,{dragId:'old-turn',rotation:30,seq:2});await flush();assert.equal(other.events.length,before);
  await f.preview('lyra',6,4,f.a,{dragId:'walking',rotation:45,seq:2});await flush();assert.equal(other.events.at(-1).x,6);
+});
+
+test('porta limita a prévia transmitida e a posição gravada até ser aberta',async t=>{
+ const f=await fixture(t),stream=await f.listen(f.b);
+ await f.act('tokenMove',{id:'lyra',x:1,y:1});
+ const added=await f.act('tableWallAdd',{kind:'door',x:4,y:0,toX:4,toY:7});
+ const door=(await added.json()).state.table.walls.at(-1);
+ assert.equal((await f.preview('lyra',8,4)).status,200);await flush();
+ const preview=stream.events.filter(e=>e.type==='tokenPreview').at(-1);
+ assert.deepEqual([preview.x,preview.y],[3,4]);
+ const move=async()=>{const result=await f.act('tokenMove',{id:'lyra',x:8,y:4},f.a);assert.equal(result.status,200);return (await result.json()).state.tokens.find(t=>t.id==='lyra');};
+ assert.equal((await move()).x,3);
+ await f.act('tableDoorSet',{id:door.id,open:true});assert.equal((await move()).x,8);
 });
