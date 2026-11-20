@@ -42,6 +42,7 @@ const files = {
   '/app.mjs':['public/app.mjs','text/javascript; charset=utf-8'],
   '/table-rolls.mjs':['public/table-rolls.mjs','text/javascript; charset=utf-8'],
   '/table-live.mjs':['public/table-live.mjs','text/javascript; charset=utf-8'],
+  '/token-voice.mjs':['public/token-voice.mjs','text/javascript; charset=utf-8'],
   '/token-editor.mjs':['public/token-editor.mjs','text/javascript; charset=utf-8'],
   '/token-motion.mjs':['token-motion.mjs','text/javascript; charset=utf-8'],
   '/token-icons.mjs':['token-icons.mjs','text/javascript; charset=utf-8'],

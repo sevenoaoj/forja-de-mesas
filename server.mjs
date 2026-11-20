@@ -93,6 +93,7 @@ const staticFiles = new Map([
   ['/scenes.mjs',['scenes.mjs','text/javascript; charset=utf-8']],
   ['/table.mjs',['table.mjs','text/javascript; charset=utf-8']],
   ['/table-live.mjs',['table-live.mjs','text/javascript; charset=utf-8']],
+  ['/token-voice.mjs',['token-voice.mjs','text/javascript; charset=utf-8']],
   ['/fog-geometry.mjs',['../fog-geometry.mjs','text/javascript; charset=utf-8']],
   ['/scene-model.mjs',['../scene-model.mjs','text/javascript; charset=utf-8']],
   ['/table-model.mjs',['../table-model.mjs','text/javascript; charset=utf-8']],

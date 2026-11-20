@@ -203,3 +203,34 @@ test('porta limita a prévia transmitida e a posição gravada até ser aberta',
  assert.equal((await move()).x,3);
  await f.act('tableDoorSet',{id:door.id,open:true});assert.equal((await move()).x,8);
 });
+
+test('fala anuncia só os tokens visíveis do personagem vinculado sem alterar a campanha',async t=>{
+ const f=await fixture(t),other=await f.listen(f.b),gm=await f.listen(f.created.key);
+ const voice=(key,active,extra={})=>f.call(f.base+'/voice','POST',key,{active,sceneId:'scene-initial',...extra});
+ const rev=f.row().rev;
+ assert.equal((await voice(f.created.invite,true)).status,403);
+ assert.equal((await voice(f.a,true,{characterId:'dorian'})).status,403);
+ assert.equal((await voice(f.a,true,{tokenId:'dorian'})).status,403);
+ assert.equal((await voice(f.a,true)).status,200);
+ await voice(f.a,false);await flush();
+ assert.equal(f.row().rev,rev);
+ assert.deepEqual(other.events.filter(e=>e.type==='voice').map(e=>[e.ids,e.active]),[[['lyra'],true],[['lyra'],false]]);
+ await f.act('tokenUpdate',{id:'lyra',hidden:true});
+ await voice(f.a,true);await flush();
+ assert.equal(other.events.filter(e=>e.type==='voice').length,2);
+ assert.equal(gm.events.filter(e=>e.type==='voice').length,3);
+});
+
+test('mestre fala por um token da cena e a mesa respeita sua visibilidade',async t=>{
+ const f=await fixture(t),gm=await f.listen(f.created.key),player=await f.listen(f.b);
+ const voice=(key,tokenId)=>f.call(f.base+'/voice','POST',key,{active:true,tokenId,sceneId:'scene-initial'});
+ assert.equal((await voice(f.a,'mira')).status,403);
+ assert.equal((await voice(f.created.key,'ausente')).status,400);
+ assert.equal((await voice(f.created.key,'mira')).status,200);
+ await flush();
+ assert.deepEqual(player.events.filter(e=>e.type==='voice').map(e=>e.ids),[['mira']]);
+ await f.act('tokenUpdate',{id:'mira',hidden:true});
+ await voice(f.created.key,'mira');await flush();
+ assert.equal(player.events.filter(e=>e.type==='voice').length,1);
+ assert.equal(gm.events.filter(e=>e.type==='voice').length,2);
+});

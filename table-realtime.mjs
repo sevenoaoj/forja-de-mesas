@@ -50,6 +50,17 @@ export function createTableRealtime({sceneView,now=Date.now,setTimer=setInterval
   }
  }
  function ensureTimer(){if(rooms.size&&timer===undefined){timer=setTimer(tick,250);timer?.unref?.();}}
+ function rememberVoiceTokens(client,snapshot){
+  client.voiceScene=snapshot.state?.sceneId;
+  client.voiceTokens=new Map();
+  client.voiceTokenIds=new Set();
+  for(const token of snapshot.state?.tokens||[]){
+   client.voiceTokenIds.add(token.id);
+   if(!token.characterId)continue;
+   const ids=client.voiceTokens.get(token.characterId)||[];
+   ids.push(token.id);client.voiceTokens.set(token.characterId,ids);
+  }
+ }
  function publish(row){
   const room=rooms.get(row.id);if(!room)return;
   if(room.row&&room.row.rev>row.rev){if(!room.commits.length)return;row=room.row;}
@@ -63,6 +74,7 @@ export function createTableRealtime({sceneView,now=Date.now,setTimer=setInterval
    const identity=JSON.stringify([client.key,client.sceneId]);
    if(!snapshots.has(identity))snapshots.set(identity,{snapshot:sceneView(row,access,client.sceneId)});
    const cached=snapshots.get(identity),snapshot=cached.snapshot;
+   rememberVoiceTokens(client,snapshot);
    if(snapshot.checkVersion&&client.checkVersion===snapshot.checkVersion){
     if(!cached.delta){const {checkRequests,...state}=snapshot.state;cached.delta=encode({...snapshot,state});}
     sendBytes(client,cached.delta);
@@ -85,10 +97,23 @@ export function createTableRealtime({sceneView,now=Date.now,setTimer=setInterval
    const body=new ReadableStream({start(controller){
     client={controller,key,room,signal,sceneId:accessFor(row,key)?.master?sceneId:undefined,seen:new Set(),closed:false};client.abort=()=>close(client);room.clients.add(client);signal?.addEventListener('abort',client.abort,{once:true});
     if(signal?.aborted){close(client);return;}
-    send(client,{type:'ready',id:row.id,serverTime:now()});const snapshot=sceneView(row,accessFor(row,key),client.sceneId);client.checkVersion=snapshot.checkVersion;send(client,snapshot);
+    send(client,{type:'ready',id:row.id,serverTime:now()});const snapshot=sceneView(row,accessFor(row,key),client.sceneId);client.checkVersion=snapshot.checkVersion;rememberVoiceTokens(client,snapshot);send(client,snapshot);
     for(const preview of room.previews.values())if(preview.expires>now())distribute(room,preview);
    },cancel(){close(client);}},{highWaterMark:12_000_000,size:chunk=>chunk.byteLength});
    ensureTimer();return new Response(body,{headers:{'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-store, no-transform','X-Accel-Buffering':'no','Connection':'keep-alive'}});
+  },
+  voice(row,access,active,tokenId){
+   const room=rooms.get(row.id);if(!room)return;
+   const state=room.row?.rev>=row.rev?room.row.state:row.state;
+   const own=ownedCharacter(state,access);
+   if(access.master?!state.tokens.some(t=>t.id===tokenId&&t.kind!=='item'):!own)return;
+   const rateKey='voice:'+(own?.id||'master'),rate=room.rates.get(rateKey);
+   if(rate&&rate.until>now()&&rate.count>=10)fail(429,'Muitas alterações de fala.');
+   room.rates.set(rateKey,rate&&rate.until>now()?{...rate,count:rate.count+1}:{until:now()+1000,count:1});
+   for(const client of room.clients){
+    const ids=access.master?(client.voiceTokenIds.has(tokenId)?[tokenId]:[]):client.voiceTokens?.get(own.id);
+    if(ids?.length&&client.voiceScene===activeSceneId(state))send(client,{type:'voice',sceneId:client.voiceScene,ids,active});
+   }
   },
   preview(row,access,data){
    const key=access.master?row.owner:row.state.members.find(member=>member.id===access.memberId)?.key;

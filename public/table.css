@@ -407,3 +407,8 @@ dialog[data-loot-reward=true]{border-color:#dfbb73;box-shadow:0 0 55px #d2a65630
 
 .map-fade-curtain{position:absolute;inset:0;z-index:18;overflow:hidden;background:#101018;pointer-events:none}
 .map-fade-curtain>.map-fade-old{position:absolute;inset:0;width:100%;height:100%;margin:0;pointer-events:none}
+.mic-token {margin-bottom: .65rem}
+.mic-token[aria-pressed=true] {border-color:var(--accent); color:var(--accent)}
+.vtt-token.is-speaking .vtt-token-face {box-shadow: 0 0 0 calc(.8px * var(--vtt-label-scale,1)) #a7f3d0; animation: token-speaking .38s ease-in-out infinite alternate}
+@keyframes token-speaking {from {translate:0 0} to {translate:0 -5%; scale:1.035}}
+@media (prefers-reduced-motion: reduce) {.vtt-token.is-speaking .vtt-token-face {animation:none}}

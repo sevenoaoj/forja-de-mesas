@@ -88,3 +88,69 @@
 .resource-style-controls input[type=checkbox]{width:18px;height:18px}
 @media(max-width:420px){.resource-style-controls{grid-template-columns:minmax(0,1fr)}}
 @media(prefers-reduced-motion:reduce){.resource-meter.is-critical:after{animation:none;opacity:.65}.resource-fill{transition:none!important;animation:none!important}}
+
+/* Sheet configuration dialogs share spacing, field groups and keyboard focus. */
+#dialog[data-sheet-editor] {
+  width: min(46rem, calc(100vw - 1.5rem));
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--line));
+}
+[data-sheet-editor] #dialog-content {padding: clamp(1rem, 3vw, 1.75rem)}
+[data-sheet-editor] .dialog-head {
+  margin-bottom: 1.25rem; padding-bottom: 1rem;
+  border-bottom: 1px solid var(--line); align-items: center;
+}
+[data-sheet-editor] .dialog-head h2 {margin: 0; line-height: 1.12}
+[data-sheet-editor] form.stack {gap: 1rem}
+[data-sheet-editor] form > p {margin: 0; color: var(--muted); line-height: 1.5}
+[data-sheet-editor] form > label:has(> input[type=hidden]:only-child) {display: none}
+[data-sheet-editor] fieldset, .settings-group, .schema-card, .character-section {
+  min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: .75rem;
+}
+[data-sheet-editor] fieldset {padding: 1rem}
+[data-sheet-editor] legend {color: var(--accent); padding-inline: .4rem}
+[data-sheet-editor] :is(summary, button, input, select, textarea):focus-visible {outline: 2px solid var(--accent); outline-offset: 2px}
+[data-sheet-editor] .form-grid {gap: .9rem 1rem}
+[data-sheet-editor] form > .actions:has(> [type=submit]) {border-top: 1px solid var(--line); padding-top: 1rem; justify-content: flex-end}
+.settings-group {margin-top: .75rem; padding: 1rem}
+.settings-group h3 {margin: 0 0 .75rem; font-size: .95rem; color: var(--accent)}
+.settings-group > div {display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: .5rem}
+.settings-group .settings-link {justify-content: space-between; text-align: start; min-height: 2.75rem}
+.settings-link::after {content: '›'; color: var(--accent)}
+#schema-rows {gap: .45rem; min-width: 0}
+#schema-rows:empty::before {content: 'Nenhum campo individual. Use os botões abaixo para adicionar.'; color: var(--muted); padding: 1rem; border: 1px dashed var(--line); border-radius: .75rem}
+[data-form=schema] #schema-rows:empty::before {content: 'Modelo vazio. Adicione o primeiro campo abaixo.'}
+.schema-card > summary, .character-section > summary {
+  display: flex; align-items: center; gap: .8rem; min-height: 3rem; padding: .65rem .9rem;
+  cursor: pointer; list-style: none; border-radius: inherit;
+}
+.schema-card summary::-webkit-details-marker, .character-section summary::-webkit-details-marker {display: none}
+.schema-card summary::after, .character-section summary::after {
+  content: ''; width: .45rem; height: .45rem; border: solid var(--accent); border-width: 0 2px 2px 0;
+  transform: rotate(45deg); flex: none; margin-inline: .3rem;
+}
+.schema-card[open] summary::after, .character-section[open] summary::after {transform: rotate(225deg)}
+.schema-card[open], .character-section[open] {border-color: color-mix(in srgb, var(--accent) 48%, var(--line))}
+.schema-mark {display: grid; place-items: center; width: 2.25rem; height: 2.25rem; flex: none; border-radius: .55rem; background: color-mix(in srgb,var(--accent) 15%,var(--bg)); color: var(--accent); font-weight: 700}
+.schema-caption {display: grid; gap: .12rem; flex: 1; min-width: 0; overflow-wrap: anywhere}
+.schema-caption small, .character-section small {color: var(--muted); font-weight: 400}
+.schema-value {max-width: 25%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums}
+.schema-body, .character-section > div {display: grid; gap: 1rem; padding: 1rem; border-top: 1px solid var(--line)}
+.schema-body .danger {margin-inline-start: auto}
+.character-section > summary {font-weight: 700}
+.character-section summary small {margin-inline-start: auto}
+@media (max-width: 540px) {
+  [data-sheet-editor] .form-grid, .settings-group > div {grid-template-columns: minmax(0,1fr)}
+  [data-sheet-editor] .btn {min-height: 2.75rem}
+  [data-sheet-editor] :is(select,input:not([type=checkbox],[type=radio],[type=hidden]),textarea) {max-width: 100%; font-size: 1rem}
+  [data-sheet-editor] form > .actions:has(> [type=submit]) > [type=submit] {width: 100%}
+}
+.schema-card:first-child [data-act=fieldMove][data-id=up],
+.schema-card:last-child [data-act=fieldMove][data-id=down] {display: none}
+.sheet-layout-editor {background: var(--surface); border-color: var(--line)}
+.mosaic-edit-heading {padding: 1rem 0}
+.mosaic-edit-heading strong {color: var(--text); font-size: 1.1rem}
+.sheet-layout-editor .mosaic-editor-sections > details {background: var(--bg); border-color: var(--line)}
+.sheet-layout-editor .mosaic-editor-sections > details[open] {border-color: color-mix(in srgb,var(--accent) 48%,var(--line))}
+.sheet-layout-editor summary {min-height: 2.75rem; align-content: center}
+.injury-preview {width: 5rem; height: 5rem; object-fit: contain; border-radius: .75rem; background: var(--bg)}

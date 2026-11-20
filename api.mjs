@@ -17,12 +17,12 @@ import {validateSheetAppearance,sheetAppearance} from './sheet-layout.mjs';
 import {mutateSessionLog} from './session-log.mjs';
 import {mutateGmScreen,gmScreenActions,gmBoard} from './gm-screen-model.mjs';
 import {dndCharacter,dndFields,dndAdd,dndDerived,dndCatalog,dndSpellFormula,dndBook} from './dnd.mjs';
-import {sheetRequestOptions,cinematicStyle,cinematicDisplayMs,campaignParties,tokenCharacterId,outsideParty,stressRegionsFor,bodyStressWithHead,newCampaign,characterType,isPlayerCharacter,playerVisionSource, colors, characterColorHex, rollFormulaLimit, sheetFields, sheetValue,parseDiceFormula,resolveSheetFormula,displaySheetFormula,sheetPreset,sheetAttributeTest,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
+import {injuredPortrait,requestedTest,sheetRequestOptions,cinematicStyle,cinematicDisplayMs,campaignParties,tokenCharacterId,outsideParty,stressRegionsFor,bodyStressWithHead,newCampaign,characterType,isPlayerCharacter,playerVisionSource, colors, characterColorHex, rollFormulaLimit, sheetFields, sheetValue,parseDiceFormula,resolveSheetFormula,displaySheetFormula,sheetPreset,sheetAttributeTest,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
 import {emptyAudio,soundPresets,audioDelay} from './media.mjs';
 import {musicActions,changeMusic,musicCommand,audioView} from './music-model.mjs';
 import {investigationInbox,explorationActions,mutateExploration,explorationView,ambientAt} from './exploration-model.mjs';
 import {normalizeTable,playerSight,mutateTable,tableView,tableSceneActions} from './table-model.mjs';
-import {checkVersion,checkRequestView,cinematicView,accessFor,ownedCharacter,requireOwnCharacter,authorizeAction,publicState,rollView,rollVersion} from './access.mjs';
+import {canAssist,checkVersion,checkRequestView,cinematicView,accessFor,ownedCharacter,requireOwnCharacter,authorizeAction,publicState,rollView,rollVersion} from './access.mjs';
 
 const json = (value, status = 200) => Response.json(value, {status, headers:{'Cache-Control':'no-store'}});
 const fail = (status, message) => { throw Object.assign(new Error(message), {status}); };
@@ -36,7 +36,7 @@ function emblemData(value){
  if(typeof value!=='string'||value.length>28000||!/^data:image\/png;base64,iVBORw0KGgo[A-Za-z0-9+/]+=*$/.test(value))fail(400,'Emblema PNG inválido.');
  return value;
 }
-const privateActions = new Set(['regionTravelDecision','mediaCheckStart','campaignSheetTheme','checkCreate','checkClose','cinematicSave','cinematicForget','cinematicStart','cinematicStop','cinematicDelete','partySave','partyDelete','characterParty','gmResourceChange','bodyStressConfig','settings','schema','notes','initiative','tokenAdd','tokenDelete','bookDelete','track','soundPlay','soundDelete','characterType','characterVisibility','characterRelease','sheetMasteryRefresh',...musicActions,...soundboardActions,...gmScreenActions]);
+const privateActions = new Set(['assistDecide','checkPhysical','regionTravelDecision','mediaCheckStart','campaignSheetTheme','checkCreate','checkClose','cinematicSave','cinematicForget','cinematicStart','cinematicStop','cinematicDelete','partySave','partyDelete','characterParty','gmResourceChange','bodyStressConfig','settings','schema','notes','initiative','tokenAdd','tokenDelete','bookDelete','track','soundPlay','soundDelete','characterType','characterVisibility','characterRelease','sheetMasteryRefresh',...musicActions,...soundboardActions,...gmScreenActions]);
 const updateList = (list, entry) => list.some(item => item.id === entry.id)
   ? list.map(item => item.id === entry.id ? entry : item) : [...list, entry];
 const validTypes = new Set(['text','number','counter','long','check']);
@@ -66,6 +66,12 @@ function findCharacter(state,id) {
   const character=state.characters.find(item=>item.id===id);
   if (!character) fail(404,'Ficha indisponível.');
   return character;
+}
+
+function injuryRule(state,character,resource,threshold){
+  if(!sheetFields(state,character).some(f=>f.type==='counter'&&f.id===resource))fail(400,'Escolha um recurso de vida da ficha.');
+  if(threshold==null||String(threshold).trim()===''||!Number.isInteger(Number(threshold))||threshold<0||threshold>100)fail(400,'Escolha uma porcentagem de 0 a 100.');
+  return {resource,threshold:Number(threshold)};
 }
 
 function sheetAction(state,action,data) {
@@ -106,6 +112,12 @@ function sheetAction(state,action,data) {
     if (!limit || !Number.isFinite(max) || max<0) fail(400,'Defina o valor máximo na edição da ficha.');
     const next=Math.min(max,Math.max(0,(Number(value)||0)+data.step));
     character.values[field.id]=next+'/'+limit;
+    return;
+  }
+  if(action==='injurySettings'){
+    if(data.remove===true){delete character.injury;return;}
+    if(!character.injury?.image)fail(400,'Envie um retrato de pouca vida.');
+    Object.assign(character.injury,injuryRule(state,character,data.resource,data.threshold));
     return;
   }
   if (action==='sheetPortraitDelete') {
@@ -218,11 +230,11 @@ function createCheckRequest(state,data){
   });
   const checks=state.checkRequests??=[];
   if(checks.length>=30)fail(409,'Encerre um pedido anterior para abrir espaço.');
-  const request={id:uid(),label,targets,dc,showDc:data.showDc===true,closed:false};
+  const request={id:uid(),label,targets,dc,...(data.allowHelp===true?{allowHelp:true}:{}),showDc:data.showDc===true,closed:false};
   checks.unshift(request);return request.id;
 }
 
-function makeSheetRoll(state,data,access){
+function makeSheetRoll(state,data,access,help){
   const {master}=access;
   const own=ownedCharacter(state,access);
   if(!master&&data.characterId&&data.characterId!==own?.id) fail(403,'Você pode rolar apenas pela própria ficha.');
@@ -245,7 +257,9 @@ function makeSheetRoll(state,data,access){
     if(!resolved.bindings.some(field=>field.id===mastery.attributeId)) fail(400,'Esta maestria só pode ser usada em testes do atributo vinculado.');
     formula+='+'+mastery.die;
   }
+  if(help&&help.effect!=='advantage')formula+='+'+help.effect;
   const result=rollDice(formula);
+  if(help)result.help={name:help.name,effect:help.effect};
   if(data.mode&&data.mode!=='normal')result.mode=data.mode;
   if(mastery) {mastery.remaining--;result.mastery={name:mastery.name,die:mastery.die};}
   if(button) result.label=button.name;
@@ -673,6 +687,7 @@ function mutate(state, action, data, access) {
     case 'sheetMastery':
     case 'sheetCounter':
     case 'sheetFields':
+    case 'injurySettings':
     case 'sheetPortraitDelete':
     case 'sheetEntry':
       sheetAction(state,action,data);
@@ -723,6 +738,34 @@ function mutate(state, action, data, access) {
       changeAudio(state,action,data);
       break;
     case 'checkCreate': createCheckRequest(state,data);break;
+    case 'assistOffer':
+    case 'assistDecide':
+    case 'checkPhysical': {
+      const check=state.checkRequests?.find(c=>c.id===data.id&&!c.closed&&c.allowHelp);
+      const t=check?.targets.find(t=>t.characterId===data.target);
+      if(!t||t.result)fail(409,'Este teste não está disponível para ajuda.');
+      if(action==='assistOffer'){
+        const helper=ownedCharacter(state,access);
+        if(!canAssist(state,helper,t))fail(403,'Você só pode ajudar outro personagem aliado.');
+        if(t.help)fail(409,'Já existe uma oferta para este teste.');
+        const reason=str(data.reason,240);if(!reason)fail(400,'Descreva como vai ajudar.');
+        t.help={id:uid(),helper:helper.id,name:helper.name,reason};break;
+      }
+      if(action==='checkPhysical'){
+        if(t.help&&!t.help.effect)fail(409,'Decida sobre a ajuda antes de registrar o resultado.');
+        if(!Number.isInteger(data.total)||Math.abs(data.total)>100000)fail(400,'Informe o total final dos dados físicos.');
+        t.result={id:uid(),total:data.total,formula:'Dados físicos',physical:true,...(t.help?{help:{name:t.help.name,effect:t.help.effect}}:{})};break;
+      }
+      if(!t.help||t.help.id!==data.offer||t.help.effect)fail(409,'A oferta já mudou.');
+      if(data.effect==='decline'){delete t.help;break;}
+      if(!canAssist(state,state.characters.find(c=>c.id===t.help.helper),t))fail(409,'O aliado não está disponível.');
+      if(!/^(?:[1-9]|10|1d(?:4|6|8|10|12|20)|advantage)$/.test(data.effect))fail(400,'Escolha um efeito válido.');
+      if(data.effect==='advantage'){
+        const c=findCharacter(state,t.characterId),formula=resolveSheetFormula(requestedTest(state,c,t).formula,state,c).formula;
+        if(!/^1?d20(?:[+-]|$)/.test(formula))fail(400,'Vantagem exige um teste com d20.');
+      }
+      t.help.effect=data.effect;break;
+    }
     case 'checkClose':
       state.checkRequests=(state.checkRequests||[]).filter(check=>check.id!==data.id);
       break;
@@ -735,11 +778,15 @@ function mutate(state, action, data, access) {
         requestTarget=check?.targets.find(t=>t.characterId===own?.id&&t.memberId===access.memberId);
         if(master||!requestTarget||check.closed)fail(403,'Pedido indisponível.');
         if(requestTarget.result)break;
+        if(requestTarget.help&&!requestTarget.help.effect)fail(409,'Aguarde a decisão do mestre sobre a ajuda.');
         const inputKey={attribute:'attributeId',skill:'skillId',saved:'rollId'}[requestTarget.kind];
-        data={[inputKey]:requestTarget.testId,characterId:own.id,masteryId:data.masteryId};
+        data={[inputKey]:requestTarget.testId,characterId:own.id,masteryId:data.masteryId,mode:requestTarget.help?.effect==='advantage'?'advantage':undefined};
       }
-      const roll=makeSheetRoll(state,data,access);
-      if(requestTarget){requestTarget.result={...roll,visibility:'requested'};break;}
+      const roll=makeSheetRoll(state,data,access,requestTarget?.help);
+      if(requestTarget){
+        if(requestTarget.help)roll.label=(roll.label||'Teste')+' · ajuda de '+requestTarget.help.name;
+        requestTarget.result={...roll,visibility:'requested'};break;
+      }
       state.rolls.unshift(roll);
       const counts={public:0,gm:0};
       state.rolls=state.rolls.filter(roll=>++counts[roll.rolledBy==='player'&&roll.visibility==='public'?'public':'gm']<=40);
@@ -827,6 +874,11 @@ function projectedTable(scoped,access,own){
       canMove:Boolean(own&&token.characterId===own.id&&!token.locked&&!token.hidden)
     }));
   }
+  const linked=new Map(scoped.characters.map(c=>[c.id,c]));
+  for(const token of table.tokens){
+    const c=linked.get(token.characterId);
+    if(c)token.linkedPortrait=(injuredPortrait(scoped,c)||token.portrait||c.portrait)?.id||null;
+  }
   return table;
 }
 
@@ -863,7 +915,7 @@ async function update(store, row, operation,commit=null) {
   fail(409,'A mesa mudou durante a edição. Tente novamente.');
 }
 
-function campaignAssets(state){return [...(state.cinematicLibrary||[]),...itemPortraits(state),...sceneTokenPortraits(state),...sceneMaps(state),...(state.books||[]),...(state.audio?.clips||[]),...(state.characters||[]).map(c=>c.portrait)].filter(Boolean);}
+function campaignAssets(state){return [...(state.cinematicLibrary||[]),...itemPortraits(state),...sceneTokenPortraits(state),...sceneMaps(state),...(state.books||[]),...(state.audio?.clips||[]),...(state.characters||[]).flatMap(c=>[c.portrait,c.injury?.image])].filter(Boolean);}
 
 async function uploadItemPortrait(request,store,row,access){
   if(!access.master)fail(403,'Somente o mestre pode enviar o retrato de um item.');
@@ -950,8 +1002,10 @@ async function upload(request, store, row, kind,access) {
         });
       } else if (kind==='portrait') {
         const character=requireOwnCharacter(state,access,characterId);
-        replacedAsset=character.portrait?.id;
-        character.portrait=asset;
+        if(request.headers.get('X-Portrait-Variant')==='injury'){
+          const rule=injuryRule(state,character,decodeURIComponent(request.headers.get('X-Life-Resource')||''),request.headers.get('X-Life-Threshold'));
+          replacedAsset=character.injury?.image?.id;character.injury={...rule,image:asset};
+        }else{replacedAsset=character.portrait?.id;character.portrait=asset;}
       } else {
         withScene(state,request.headers.get('X-Scene-Id'),true,world=>{
           replacedAsset=world.map?.id;world.map=asset;
@@ -1002,7 +1056,7 @@ export async function api(request,store) {
       await store.create(row);
       return rememberBrowserSession(request,json({...view(row,{master:true}),key:row.owner},201),row.id,row.owner);
     }
-    const path = /^\/api\/campaigns\/([\da-f-]{36})(?:\/(session|player-access|sound-pack|join|sync|events|preview|action|cinematic|pdf|map|sound|portrait|token-portrait|asset|srd|backup|item-portrait)(?:\/([\da-f-]{36}))?)?$/.exec(pathname);
+    const path = /^\/api\/campaigns\/([\da-f-]{36})(?:\/(session|player-access|sound-pack|join|sync|events|voice|preview|action|cinematic|pdf|map|sound|portrait|token-portrait|asset|srd|backup|item-portrait)(?:\/([\da-f-]{36}))?)?$/.exec(pathname);
     if (!path) fail(404,'Página não encontrada.');
     const [,id,route,assetId] = path;
     const row = await store.get(id);
@@ -1017,6 +1071,18 @@ export async function api(request,store) {
     }
     if (!access) fail(403,'Convite inválido ou mesa indisponível.');
     const {master}=access;
+    if(method==='POST'&&route==='voice'){
+      const own=ownedCharacter(row.state,access);
+      if(!master&&!own)fail(403,'Escolha um personagem para usar o microfone.');
+      const data=await requestJson(request,512);
+      if(typeof data?.active!=='boolean'||data.sceneId!==activeSceneId(row.state))fail(400,'Estado de fala ou cena inválida.');
+      if(!master&&(data.tokenId!==undefined||data.characterId!==undefined&&data.characterId!==own.id))fail(403,'A fala do jogador acompanha seu personagem.');
+      if(master&&!row.state.tokens.some(t=>t.id===data.tokenId&&t.kind!=='item'))fail(400,'Escolha um token da cena ativa.');
+      if(store.realtime)store.realtime.voice(row,access,data.active,data.tokenId);
+      else if(store.voice)await store.voice.write(row.id,data.sceneId,master?'token/'+data.tokenId:'character/'+own.id,data.active?Date.now()+2600:0);
+      else fail(503,'Indicador de fala indisponível.');
+      return json({ok:true});
+    }
     if(method==='POST'&&route==='item-portrait')return json(view(await uploadItemPortrait(request,store,row,access),access,request.headers.get('X-Scene-Id')||requestedScene),201);
     if(route==='player-access'&&method==='POST'){
       if(!master)fail(403,'Somente o mestre pode recuperar o acesso de outro jogador.');
@@ -1096,7 +1162,7 @@ export async function api(request,store) {
       if(data.name!==row.state.name)fail(400,'Digite o nome da campanha para confirmar a exclusão.');
       if(!await store.remove(row))fail(409,'A campanha mudou. Atualize e tente novamente.');
       store.realtime?.closeCampaign(id);
-      const assets=[...(row.state.cinematicLibrary||[]),...itemPortraits(row.state),...sceneMaps(row.state),...sceneTokenPortraits(row.state),...row.state.books,...(row.state.audio?.clips||[]),...row.state.characters.map(c=>c.portrait)].filter(Boolean);
+      const assets=[...(row.state.cinematicLibrary||[]),...itemPortraits(row.state),...sceneMaps(row.state),...sceneTokenPortraits(row.state),...row.state.books,...(row.state.audio?.clips||[]),...row.state.characters.flatMap(c=>[c.portrait,c.injury?.image])].filter(Boolean);
       const cleanup=store.deleteCampaignAssets?[store.deleteCampaignAssets(id)]:assets.map(asset=>store.deleteAsset(id+'/'+asset.id));
       const results=await Promise.allSettled(cleanup);
       return json({deleted:id,cleanupPending:results.some(result=>result.status==='rejected')});
@@ -1118,6 +1184,10 @@ export async function api(request,store) {
           scene={patrolFrame:{sceneId:scoped.sceneId,tokens:projection.tokens.filter(t=>t.motion),combat:projection.table.combat}};
         }else scene=sceneView(row,access,requestedScene).state;
       }
+      if(store.voice&&scene.tokens){
+        const speakers=new Set(await store.voice.active(row.id,scene.sceneId));
+        scene.speakingTokens=scene.tokens.filter(t=>(speakers.has('token/'+t.id)||t.characterId&&speakers.has('character/'+t.characterId))&&scene.sceneId===activeSceneId(row.state)).map(t=>t.id);
+      }
       const checks=scene.checkRequests??(params.get('checkRev')===String(row.rev)?null:checkRequestView(row.state,access));
       delete scene.checkRequests;
       const stamp=checks?checkVersion(checks):null;
@@ -1134,7 +1204,7 @@ export async function api(request,store) {
       const cineAssets=master?row.state.cinematicLibrary||[]:(row.state.cinematicLibrary||[]).filter(a=>a.id===visibleRun?.media?.id||a.id===visibleRun?.soundtrackId);
       const checkedAssets=mediaCheckView(row.state,access)?.assets||[];
       const prepared=[...sceneMaps(row.state),...(row.state.cinematicLibrary||[])].filter(a=>checkedAssets.includes(a.id));
-      const asset = [...prepared,...cineAssets,...sharedImages,...itemImages,...tokenPortraits,...row.state.books,...(row.state.audio?.clips||[]),...visibleCharacters.map(character=>character.portrait),...(master?sceneMaps(row.state):[row.state.map])].find(item=>item?.id===assetId);
+      const asset = [...prepared,...cineAssets,...sharedImages,...itemImages,...tokenPortraits,...row.state.books,...(row.state.audio?.clips||[]),...visibleCharacters.flatMap(c=>[c.portrait,...(master||viewer?.id===c.id?[c.injury?.image]:[injuredPortrait(row.state,c)])]),...(master?sceneMaps(row.state):[row.state.map])].find(item=>item?.id===assetId);
       if (!asset) fail(404,'Arquivo indisponível.');
       const body = await store.getAsset(id+'/'+asset.id);
       if (!body) fail(404,'Arquivo indisponível.');
@@ -1144,13 +1214,14 @@ export async function api(request,store) {
       const {action,data} = await requestJson(request);
       let lootResult,responseScene;
       if(typeof action!=='string'||!action||action.length>80||data!==undefined&&(!data||typeof data!=='object'||Array.isArray(data)))fail(400,'Ação ou dados inválidos.');
-      let deleted,removedMaps=[],removedPortraits=[],removedItemPortraits=[];
+      let deleted,oldInjury,removedMaps=[],removedPortraits=[],removedItemPortraits=[];
       const updated = await update(store,row,state=>{
         const assets=action==='cinematicDelete'?state.cinematicLibrary:action==='bookDelete' ? state.books : action==='soundDelete' ? state.audio?.clips : null;
         deleted=assets?.find(asset=>asset.id===data?.id);
         if (['sheetPortraitDelete','characterDelete'].includes(action)) {
           deleted=state.characters.find(character=>character.id===data?.id)?.portrait;
         }
+        if(['injurySettings','characterDelete'].includes(action))oldInjury=state.characters.find(c=>c.id===data?.id)?.injury?.image;
         const previousItemPortraits=itemPortraits(state);
         const previousPortraits=sceneTokenPortraits(state);
         const previousMaps=action==='sceneDelete'?sceneMaps(state):[];
@@ -1165,7 +1236,7 @@ export async function api(request,store) {
         if(previousMaps.length){const retained=new Set(sceneMaps(state).map(item=>item.id));removedMaps=previousMaps.filter(item=>!retained.has(item.id));}
       },['tokenMove','tokenRotate'].includes(action)?{id:data?.id,dragId:data?.dragId,sceneId:data?.sceneId,action}:null);
       if (deleted&&!campaignAssets(updated.state).some(a=>a.id===deleted.id)) await store.deleteAsset(id+'/'+deleted.id).catch(()=>{});
-      await Promise.all([...removedMaps,...removedPortraits,...removedItemPortraits].filter(asset=>!campaignAssets(updated.state).some(a=>a.id===asset.id)).map(asset=>store.deleteAsset(id+'/'+asset.id).catch(()=>{})));
+      await Promise.all([...removedMaps,...removedPortraits,...removedItemPortraits,...(oldInjury?[oldInjury]:[])].filter(asset=>!campaignAssets(updated.state).some(a=>a.id===asset.id)).map(asset=>store.deleteAsset(id+'/'+asset.id).catch(()=>{})));
       return json({...view(updated,access,responseScene),...(action==='lootCollect'&&lootResult?.itemId?{pickup:lootResult}:{})});
     }
     if (method === 'POST' && ['cinematic','map','pdf','sound','portrait','token-portrait'].includes(route)) {

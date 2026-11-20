@@ -1,5 +1,5 @@
 import {sharingView} from './player-sharing.mjs';
-import {cinematicStyle,campaignParties,outsideParty,tokenCharacterId,characterType,isPlayerCharacter} from './model.mjs';
+import {injuredPortrait,cinematicStyle,campaignParties,outsideParty,tokenCharacterId,characterType,isPlayerCharacter} from './model.mjs';
 import {sessionLogView} from './session-log.mjs';
 import {inventoryView,publicItemToken} from './inventory-model.mjs';
 import {journalView} from './journal-model.mjs';
@@ -37,7 +37,7 @@ export function authorizeAction(state,access,action,data) {
   }
   const own=ownedCharacter(state,access);
   if (!own) fail(403,'Escolha ou crie seu personagem para entrar na mesa.');
-  if (['character','sheetValue','sheetAppearance','bodyStressStep','sheetCounter','sheetFields','sheetPortraitDelete','sheetHistoryRestore','sheetEntry','sheetMastery','dndAdd','dndRest','dndCast'].includes(action)) {
+  if (['character','sheetValue','sheetAppearance','bodyStressStep','sheetCounter','sheetFields','sheetPortraitDelete','injurySettings','sheetHistoryRestore','sheetEntry','sheetMastery','dndAdd','dndRest','dndCast'].includes(action)) {
     requireOwnCharacter(state,access,data.id);
   }
   if (action==='tokenMove'||action==='tokenRotate') {
@@ -46,9 +46,9 @@ export function authorizeAction(state,access,action,data) {
   }
 }
 
-function fullCharacter(character) {
+function fullCharacter(state,character) {
   const {ownerId,presentation,...data}=character;
-  return {...data,characterType:characterType(character),access:'full',claimed:Boolean(ownerId)};
+  return {...data,...(character.injury?{basePortrait:character.portrait||null}:{}),portrait:injuredPortrait(state,character)||character.portrait,characterType:characterType(character),access:'full',claimed:Boolean(ownerId)};
 }
 
 export function rollView(state,master,viewer) {
@@ -64,14 +64,19 @@ export function rollVersion(rolls) {
   return rolls.length+'-'+(hash>>>0).toString(36);
 }
 
+export function canAssist(state,helper,target){
+ const ally=state.characters.find(c=>c.id===target.characterId);
+ return Boolean(helper?.ownerId&&ally?.ownerId===target.memberId&&helper.ownerId!==ally.ownerId&&helper.id!==ally.id&&!helper.hidden&&!ally.hidden&&isPlayerCharacter(helper)&&isPlayerCharacter(ally)&&(helper.party||'')===(ally.party||''));
+}
 export function checkRequestView(state,access){
   const viewer=ownedCharacter(state,access);
   if(!viewer&&!access.master)return [];
   return (state.checkRequests||[]).flatMap(check=>{
     const targets=check.targets.filter(target=>access.master||target.characterId===viewer.id&&target.memberId===access.memberId);
-    if(!targets.length||!access.master&&check.closed)return [];
-    return [{id:check.id,label:check.label,closed:check.closed,
-      ...(access.master||check.showDc?{dc:check.dc}:{}),
+    const allies=check.allowHelp&&!access.master?check.targets.filter(t=>!t.result&&canAssist(state,viewer,t)&&(!t.help||t.help.helper===viewer.id)).map(t=>({id:t.characterId,name:t.name,...(t.help?{offered:true,effect:t.help.effect}: {})})):[];
+    if(!targets.length&&!allies.length||!access.master&&check.closed)return [];
+    return [{id:check.id,label:check.label,closed:check.closed,...(allies.length?{allies}:{}),...(check.allowHelp?{allowHelp:true}:{}),
+      ...(access.master||targets.length&&check.showDc?{dc:check.dc}:{}),
       targets:targets.map(({memberId,...target})=>{
         if(!access.master||!target.result)return target;
         const {id,formula,total}=target.result;
@@ -81,7 +86,7 @@ export function checkRequestView(state,access){
 }
 // Requests are immutable after creation except for each participant's single result.
 export function checkVersion(checks){
-  return rollVersion(checks.flatMap(check=>[check,...check.targets.map(t=>({id:t.result?.id||t.characterId}))]));
+  return rollVersion(checks.map(check=>({id:JSON.stringify(check)})));
 }
 export function cinematicView(state,access){
   const run=state.cinematicRun;
@@ -95,15 +100,15 @@ export function publicState(state,access) {
   const {mediaCheck,investigationReceipts,materialShares,sessionLog,cinematicCues,cinematicRun,cinematicLibrary,parties,gmResources,sheetStarter,members,notes,initiative,gmScreen,sceneLibrary,inventory,journal,sheetTemplates,narrations,...base}=state;
   const shared={...base,checkRequests:checkRequestView(state,access),cinematic:cinematicView(state,access),tokens:(base.tokens||[]).filter(t=>access.master||!t.hidden).map(t=>publicItemToken(t,access.master)),...(base.table?{table:{...base.table,...(!access.master&&base.table.exploration?{exploration:[]}:{}),lootEvents:(base.table.lootEvents||[]).filter(e=>access.master||e.public!==false)}}:{}),inventory:inventoryView(state,access),narrations:narrationView(state,access),journal:journalView(state,access),sheetTemplates:sheetTemplatesView(state,access)};
   shared.sessionLog=sessionLogView(state,access.master,ownedCharacter(state,access),shared.journal,shared.inventory);
-  if (access.master) return {...shared,cinematicCues:cinematicCues||[],cinematicLibrary:cinematicLibrary||[],parties:campaignParties(state),gmResources:gmResources||{},characters:state.characters.map(fullCharacter),notes,initiative,gmScreen};
+  if (access.master) return {...shared,cinematicCues:cinematicCues||[],cinematicLibrary:cinematicLibrary||[],parties:campaignParties(state),gmResources:gmResources||{},characters:state.characters.map(c=>fullCharacter(state,c)),notes,initiative,gmScreen};
   const own=ownedCharacter(state,access);
   return {
     ...shared,...(own?.party&&campaignParties(state).find(g=>g.id===own.party)?.emblem?{partyEmblem:campaignParties(state).find(g=>g.id===own.party).emblem}:{}),sharing:sharingView(state,own),
     investigationReceipts:own?(investigationReceipts||[]).filter(r=>r.characterId===own.id&&r.memberId===access.memberId).map(({id,location,from,items})=>({id,location,from,items})):[],
     characters:state.characters.filter(character=>!character.hidden&&!outsideParty(character,own)).map(character=>
-      isPlayerCharacter(character)&&character.ownerId===access.memberId&&access.memberId ? fullCharacter(character) : {
+      isPlayerCharacter(character)&&character.ownerId===access.memberId&&access.memberId ? fullCharacter(state,character) : {
         id:character.id,name:character.name,concept:character.concept,color:character.color,
-        portrait:character.portrait,characterType:characterType(character),access:'summary',available:isPlayerCharacter(character)&&!character.ownerId
+        portrait:injuredPortrait(state,character)||character.portrait,characterType:characterType(character),access:'summary',available:isPlayerCharacter(character)&&!character.ownerId
       }),
     rolls:rollView(state,false,own)
   };

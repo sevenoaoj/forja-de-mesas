@@ -310,3 +310,18 @@ test('recurso privado permanece exclusivo do mestre durante todo o ciclo da fich
   assert.equal((await change({...key,version:updated.version,operation:'delete'})).status,200);
   assert.deepEqual((await r.view(true)).state.gmResources.lyra,[]);
 });
+
+test('retrato de pouca vida usa o contador escolhido e retorna ao original após a cura',async()=>{
+ const r=await room(),state=r.rows.get(r.id).state,c=state.characters.find(c=>c.id==='lyra');
+ const hp=sheetFields(state,c).find(f=>f.type==='counter');
+ c.portrait={id:'normal'};c.injury={resource:hp.id,threshold:25,image:{id:'ferido'}};
+ const portrait=async()=>{const {state}=await r.view();return [state.characters.find(c=>c.id==='lyra').portrait.id,state.tokens.find(t=>t.characterId==='lyra').linkedPortrait];};
+ for(const [current,maximum,id] of [[6,20,'normal'],[5,20,'ferido'],[0,20,'ferido'],[6,20,'normal']]){
+   assert.equal((await r.act('sheetCounter',{id:c.id,field:hp.id,current,maximum})).status,200);
+   assert.deepEqual(await portrait(),[id,id]);
+ }
+ assert.equal((await r.act('injurySettings',{id:'dorian',remove:true})).status,403);
+ assert.equal((await r.act('injurySettings',{id:c.id,resource:hp.id,threshold:101})).status,400);
+ assert.equal((await r.act('injurySettings',{id:c.id,resource:hp.id,threshold:30})).status,200);
+ assert.deepEqual(await portrait(),['ferido','ferido']);
+});

@@ -80,7 +80,7 @@ function validateState(state){
 
 }
 export function backupAssets(state){
- const items=[...(state.cinematicLibrary||[]),...itemPortraits(state),...sceneMaps(state),...sceneTokenPortraits(state),...state.books,...(state.audio?.clips||[]),...state.characters.map(c=>c.portrait)].filter(Boolean),byId=new Map();
+ const items=[...(state.cinematicLibrary||[]),...itemPortraits(state),...sceneMaps(state),...sceneTokenPortraits(state),...state.books,...(state.audio?.clips||[]),...state.characters.flatMap(c=>[c.portrait,c.injury?.image])].filter(Boolean),byId=new Map();
  let total=0;
  for(const item of items){if(!uuid(item.id)||!mime.has(item.type)||!Number.isSafeInteger(item.size)||item.size<=0||item.size>40*1024*1024)fail(400,'Referência de arquivo inválida no backup.');const old=byId.get(item.id);if(old&&(old.size!==item.size||old.type!==item.type))fail(400,'Referências de arquivo conflitantes.');if(!old){byId.set(item.id,{id:item.id,type:item.type,size:item.size});total+=item.size;}}
  if(total>90_000_000||byId.size>1200)fail(413,'O backup suporta até 90 MB de arquivos por campanha.');return [...byId.values()];

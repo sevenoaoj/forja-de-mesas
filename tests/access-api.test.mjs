@@ -393,3 +393,24 @@ test('pedido de Essência usa a maestria da própria ficha uma única vez',async
  const retry=await(await send()).json();assert.equal(retry.state.checkRequests[0].targets[0].result.id,out.state.checkRequests[0].targets[0].result.id);
  assert.equal(retry.state.characters.find(x=>x.id===sheet.id).masteries[0].remaining,0);
 });
+
+test('ajuda precisa de aliado e aprovação, aplica o dado uma vez e aceita total físico',async()=>{
+ const r=await room(),gm=r.created.key,a=await r.join('a'),b=await r.join('b');
+ await r.action(a,'characterClaim',{id:'lyra'});await r.action(b,'characterClaim',{id:'dorian'});
+ const open=async()=>(await(await r.action(gm,'checkCreate',{characterIds:['lyra'],test:'attribute:forca',allowHelp:true,dc:17})).json()).state.checkRequests[0].id;
+ const id=await open(),data={id,target:'lyra',reason:'Seguro a corda'};
+ const helper=(await r.view(b)).state.checkRequests[0];
+ assert.equal(helper.dc,undefined);assert.equal(helper.targets.length,0);
+ assert.equal((await r.action(a,'assistOffer',data)).status,403);
+ assert.equal((await r.action(b,'assistOffer',data)).status,200);
+ assert.equal((await r.action(a,'checkRespond',{id})).status,409);
+ const offer=(await r.view(gm)).state.checkRequests[0].targets[0].help.id;
+ assert.equal((await r.action(b,'assistDecide',{...data,offer,effect:'1d6'})).status,403);
+ assert.equal((await r.action(gm,'assistDecide',{...data,offer,effect:'1d6'})).status,200);
+ const result=(await(await r.action(a,'checkRespond',{id})).json()).state.checkRequests[0].targets[0].result;
+ assert.match(result.formula,/\+1d6$/);assert.equal(result.help.effect,'1d6');
+ assert.equal((await(await r.action(a,'checkRespond',{id})).json()).state.checkRequests[0].targets[0].result.id,result.id);
+ const physical=await open();
+ assert.equal((await r.action(gm,'checkPhysical',{id:physical,target:'lyra',total:16})).status,200);
+ assert.equal((await r.view(a)).state.checkRequests[0].targets[0].result.total,16);
+});

@@ -91,6 +91,17 @@ export function sheetValue(character,field) {
   return dndDerived(character,field.id) ?? character?.values?.[field.id] ?? field.initial;
 }
 
+export function injuredPortrait(state,character){
+  const rule=character?.injury;
+  if(!rule?.image)return null;
+  const field=sheetFields(state,character).find(f=>f.id===rule.resource&&f.type==='counter');
+  if(!field)return null;
+  const parts=String(sheetValue(character,field)).split('/');
+  if(parts.length!==2||parts.some(p=>!p.trim()||!Number.isFinite(Number(p))))return null;
+  const [value,max]=parts.map(Number);
+  return max>0&&value>=0&&value*100<=max*rule.threshold?rule.image:null;
+}
+
 export function skillValues(character,skill,state) {
   const field=sheetFields(state,character).find(field=>field.id===skill.attribute && field.type==='number');
   const bounded=value=>Math.max(-999,Math.min(999,Math.trunc(Number(value)||0)));
