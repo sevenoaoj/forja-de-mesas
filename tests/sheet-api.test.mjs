@@ -325,3 +325,28 @@ test('retrato de pouca vida usa o contador escolhido e retorna ao original após
  assert.equal((await r.act('injurySettings',{id:c.id,resource:hp.id,threshold:30})).status,200);
  assert.deepEqual(await portrait(),['ferido','ferido']);
 });
+
+test('mestre renomeia Vitalidade em uma única ficha e pode voltar ao nome do modelo',async()=>{
+  const r=await room();
+  const fields=(await r.view(true)).state.fields;
+  await r.act('schema',{fields,expectedVersion:0},true);
+  const rename=(previous,label,modelLabel,master=true)=>r.act('sheetFields',{
+    id:'lyra',layout:true,fields:[],labelChanges:[{id:'f4',previous,label,modelLabel}]
+  },master);
+  const name=(state,id)=>sheetFields(state,state.characters.find(c=>c.id===id)).find(f=>f.id==='f4').label;
+  const initial=(await r.view()).state.characters.find(c=>c.id==='lyra').values.f4;
+  assert.equal((await rename('','Vida','Vitalidade',false)).status,403);
+  assert.equal((await rename('','Vida','Vitalidade')).status,200);
+  let state=(await r.view()).state;
+  assert.equal(name(state,'lyra'),'Vida');
+  const own=state.characters.find(c=>c.id==='lyra');
+  assert.equal(own.values.f4,initial);
+  assert.equal(displaySheetFormula('1d6+@{f4}',state,own),'1d6+Vida');
+  assert.equal((await rename('','Energia','Vitalidade')).status,409);
+  assert.equal((await r.act('schema',{fields:fields.map(f=>f.id==='f4'?{...f,label:'Saúde'}:f),expectedVersion:1},true)).status,200);
+  state=(await r.view(true)).state;
+  assert.equal(name(state,'dorian'),'Saúde');
+  assert.equal(name(state,'lyra'),'Vida');
+  assert.equal((await rename('Vida','','Saúde')).status,200);
+  assert.equal(name((await r.view()).state,'lyra'),'Saúde');
+});

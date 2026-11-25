@@ -5,6 +5,7 @@ import {inventoryView,publicItemToken} from './inventory-model.mjs';
 import {journalView} from './journal-model.mjs';
 import {sheetTemplatesView} from './sheet-template-model.mjs';
 import {narrationView} from './narration-model.mjs';
+import {messageView} from './chat-model.mjs';
 
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
 
@@ -51,11 +52,12 @@ function fullCharacter(state,character) {
   return {...data,...(character.injury?{basePortrait:character.portrait||null}:{}),portrait:injuredPortrait(state,character)||character.portrait,characterType:characterType(character),access:'full',claimed:Boolean(ownerId)};
 }
 
+const rollActor=name=>String(name||'').trim().toLocaleLowerCase('pt-BR');
 export function rollView(state,master,viewer) {
   if(master)return state.rolls||[];
   const hidden=state.characters.filter(character=>character.hidden||outsideParty(character,viewer));
-  const ids=new Set(hidden.map(c=>c.id)),names=new Set(hidden.map(c=>c.name));
-  return (state.rolls||[]).filter(roll=>roll.rolledBy==='player'&&roll.visibility==='public'&&(roll.characterId?!ids.has(roll.characterId):!names.has(roll.actor)));
+  const ids=new Set(hidden.map(c=>c.id)),names=new Set(hidden.map(c=>rollActor(c.name)).filter(Boolean));
+  return (state.rolls||[]).filter(roll=>roll.visibility==='public'&&(roll.characterId?!ids.has(roll.characterId):!names.has(rollActor(roll.actor))));
 }
 
 export function rollVersion(rolls) {
@@ -97,11 +99,11 @@ export function cinematicView(state,access){
   return {id:run.id,text:run.text,soundtrackId:run.soundtrackId||'',...cinematicStyle(run),startedAt:run.startedAt,revealAt:run.revealAt,endsAt:run.endsAt,media:asset?{id:asset.id,type:asset.type}:null};
 }
 export function publicState(state,access) {
-  const {mediaCheck,investigationReceipts,materialShares,sessionLog,cinematicCues,cinematicRun,cinematicLibrary,parties,gmResources,sheetStarter,members,notes,initiative,gmScreen,sceneLibrary,inventory,journal,sheetTemplates,narrations,...base}=state;
-  const shared={...base,checkRequests:checkRequestView(state,access),cinematic:cinematicView(state,access),tokens:(base.tokens||[]).filter(t=>access.master||!t.hidden).map(t=>publicItemToken(t,access.master)),...(base.table?{table:{...base.table,...(!access.master&&base.table.exploration?{exploration:[]}:{}),lootEvents:(base.table.lootEvents||[]).filter(e=>access.master||e.public!==false)}}:{}),inventory:inventoryView(state,access),narrations:narrationView(state,access),journal:journalView(state,access),sheetTemplates:sheetTemplatesView(state,access)};
-  shared.sessionLog=sessionLogView(state,access.master,ownedCharacter(state,access),shared.journal,shared.inventory);
-  if (access.master) return {...shared,cinematicCues:cinematicCues||[],cinematicLibrary:cinematicLibrary||[],parties:campaignParties(state),gmResources:gmResources||{},characters:state.characters.map(c=>fullCharacter(state,c)),notes,initiative,gmScreen};
+  const {mediaCheck,investigationReceipts,materialShares,sessionLog,cinematicCues,cinematicRun,cinematicLibrary,parties,gmResources,sheetStarter,members,notes,initiative,gmScreen,sceneLibrary,inventory,journal,sheetTemplates,narrations,messages,...base}=state;
   const own=ownedCharacter(state,access);
+  const shared={...base,messages:messageView(state,access,own),checkRequests:checkRequestView(state,access),cinematic:cinematicView(state,access),tokens:(base.tokens||[]).filter(t=>access.master||!t.hidden).map(t=>publicItemToken(t,access.master)),...(base.table?{table:{...base.table,...(!access.master&&base.table.exploration?{exploration:[]}:{}),lootEvents:(base.table.lootEvents||[]).filter(e=>access.master||e.public!==false)}}:{}),inventory:inventoryView(state,access),narrations:narrationView(state,access),journal:journalView(state,access),sheetTemplates:sheetTemplatesView(state,access)};
+  shared.sessionLog=sessionLogView(state,access.master,own,shared.journal,shared.inventory);
+  if (access.master) return {...shared,cinematicCues:cinematicCues||[],cinematicLibrary:cinematicLibrary||[],parties:campaignParties(state),gmResources:gmResources||{},characters:state.characters.map(c=>fullCharacter(state,c)),notes,initiative,gmScreen};
   return {
     ...shared,...(own?.party&&campaignParties(state).find(g=>g.id===own.party)?.emblem?{partyEmblem:campaignParties(state).find(g=>g.id===own.party).emblem}:{}),sharing:sharingView(state,own),
     investigationReceipts:own?(investigationReceipts||[]).filter(r=>r.characterId===own.id&&r.memberId===access.memberId).map(({id,location,from,items})=>({

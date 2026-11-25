@@ -77,3 +77,8 @@
 .canvas-tools [aria-pressed=true]{background:#443651;border-color:#b999de}
 .canvas-tools button:disabled{opacity:.5}
 .canvas-shell:has([data-camera=select][aria-pressed=true]) .vault-scroll{cursor:crosshair}
+.gm-delta-form{display:flex;align-items:center;gap:5px;margin-top:6px;flex-wrap:wrap}
+.gm-delta-form input[type=number]{width:66px;min-height:28px;padding:3px 6px;font-size:11px}
+.gm-private-resources{margin-top:12px;padding-top:10px;border-top:1px dashed #6d587c66}
+.sheet-delta-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px}
+.sheet-delta-bar input[type=number]{width:70px;min-height:30px;padding:4px 7px;font-size:12px}

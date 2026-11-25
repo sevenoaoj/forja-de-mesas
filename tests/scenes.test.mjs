@@ -34,7 +34,9 @@ test('trocar de cena restaura posições, desenhos, névoa e combate; recursos d
  const r=await room(t),initial=activeSceneId(r.row().state);await r.act('tokenMove',{id:'lyra',x:2,y:2});await r.act('tableDrawingAdd',{kind:'freehand',color:'#abcdef',points:[{x:1,y:1},{x:3,y:2}]});await r.act('combatSet',{entries:[{name:'Lyra',value:15,tokenId:'lyra'}]});
  const before=await r.view(),second=await r.make('Floresta');await r.act('sceneActivate',{id:second});assert.equal((await r.view('',r.member)).state.sceneId,second);assert.equal(r.row().state.tokens.length,0);
  await r.act('sheetCounter',{id:'lyra',field:'f4',step:-1},r.member);await r.act('tokenAdd',{name:'Árvore',color:'jade'});await r.act('sceneActivate',{id:initial});const restored=await r.view();
- assert.deepEqual(restored.state.tokens,before.state.tokens);assert.deepEqual(restored.state.table.drawings,before.state.table.drawings);assert.deepEqual(restored.state.table.combat,before.state.table.combat);assert.equal(restored.state.characters[0].values.f4,'17/22');assert.equal(sceneProjection(r.row().state,second).tokens[0].name,'Árvore');
+ const expectedTokens=before.state.tokens.map(t=>t.id==='lyra'?{...t,resourceBar:{...t.resourceBar,current:17}}:t);
+ const expectedCombat={...before.state.table.combat,entries:before.state.table.combat.entries.map(e=>e.tokenId==='lyra'?{...e,resourceBar:{...e.resourceBar,current:17}}:e)};
+ assert.deepEqual(restored.state.tokens,expectedTokens);assert.deepEqual(restored.state.table.drawings,before.state.table.drawings);assert.deepEqual(restored.state.table.combat,expectedCombat);assert.equal(restored.state.characters[0].values.f4,'17/22');assert.equal(sceneProjection(r.row().state,second).tokens[0].name,'Árvore');
  const activeRecord=r.row().state.sceneLibrary.scenes.find(s=>s.id===initial);assert.equal(activeRecord.tokens,undefined);assert.equal(activeRecord.table,undefined);
 });
 test('sessões agrupam cenas, permitem reordenação e exigem mover conteúdo antes de apagar',async t=>{

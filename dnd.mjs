@@ -39,8 +39,18 @@ export const dndSpells=[
  ['thunderwave','Onda Trovejante','Thunderwave',1,'2d8','save','bard druid sorcerer wizard',171,'Cubo de energia trovejante. Salvaguarda de Constituição; confira deslocamento e metade do dano no livro.'],
  ['bless','Bênção','Bless',1,'1d4','effect','cleric paladin',112,'Concentração: acrescenta 1d4 aos ataques e às salvaguardas dos alvos escolhidos.'],
  ['shield','Escudo Arcano','Shield',1,'','utility','sorcerer wizard',163,'Reação: +5 na CA até o começo do seu próximo turno; também protege de Mísseis Mágicos.'],
- ['mage-armor','Armadura Arcana','Mage Armor',1,'','utility','sorcerer wizard',148,'Define a CA base como 13 + Destreza enquanto suas condições forem atendidas; duração de 8 horas.']
-].map(([id,name,english,level,formula,kind,classes,page,description])=>({id,name,english,level,formula,kind,classes:classes.split(' '),page,description}));
+ ['mage-armor','Armadura Arcana','Mage Armor',1,'','utility','sorcerer wizard',148,'Define a CA base como 13 + Destreza enquanto suas condições forem atendidas; duração de 8 horas.'],
+ ['misty-step','Passo Nebuloso','Misty Step',2,'','utility','sorcerer warlock wizard',152,'Ação bônus para se teleportar até 9 metros para um espaço desocupado que possa ver.'],
+ ['scorching-ray','Raio Ardente','Scorching Ray',2,'2d6','attack','sorcerer wizard',162,'Três raios de fogo; faça um ataque mágico à distância para cada raio (2d6 de fogo por acerto). Círculos superiores criam um raio adicional por círculo.',0],
+ ['invisibility','Invisibilidade','Invisibility',2,'','utility','bard sorcerer warlock wizard',144,'Concentração: uma criatura tocada fica Invisível até atacar, conjurar ou a concentração terminar. Círculos superiores afetam alvos adicionais.'],
+ ['hold-person','Imobilizar Pessoa','Hold Person',2,'','utility','bard cleric druid sorcerer warlock wizard',141,'Concentração: o humanoide faz salvaguarda de Sabedoria ou fica Paralisado. Círculos superiores afetam alvos adicionais.'],
+ ['shatter','Despedaçar','Shatter',2,'3d8','save','bard sorcerer wizard',163,'Esfera sonora; salvaguarda de Constituição para metade de 3d8 de dano trovejante. Espaços superiores acrescentam 1d8 por círculo.'],
+ ['lesser-restoration','Restauração Menor','Lesser Restoration',2,'','utility','bard cleric druid paladin ranger',145,'Ação bônus por toque para encerrar uma condição: Cego, Envenenado, Paralisado ou Surdo.'],
+ ['fireball','Bola de Fogo','Fireball',3,'8d6','save','sorcerer wizard',131,'Esfera flamejante de 6 metros de raio. Salvaguarda de Destreza para metade de 8d6 de dano de fogo. Espaços superiores acrescentam 1d6 por círculo.'],
+ ['counterspell','Contramagia','Counterspell',3,'','utility','sorcerer warlock wizard',119,'Reação ao ver uma criatura conjurar: o alvo faz salvaguarda de Constituição ou a conjuração falha sem gastar o espaço dela.'],
+ ['revivify','Revivificar','Revivify',3,'','utility','cleric druid paladin ranger',160,'Toque uma criatura morta há até 1 minuto para devolvê-la à vida com 1 PV (exige diamantes conforme o livro).'],
+ ['lightning-bolt','Relâmpago','Lightning Bolt',3,'8d6','save','sorcerer wizard',146,'Linha de 30 metros. Salvaguarda de Destreza para metade de 8d6 de dano elétrico. Espaços superiores acrescentam 1d6 por círculo.']
+].map(([id,name,english,level,formula,kind,classes,page,description,upcast])=>({id,name,english,level,formula,kind,classes:classes.split(' '),page,description,...(upcast!==undefined?{upcast}:{})}));
 export const dndRules=[['d20','Testes de d20',6,'Role 1d20, some o modificador do atributo e a proficiência quando aplicável, e compare com a CD ou CA.'],['advantage','Vantagem e desvantagem',7,'Role dois d20 e use o maior com vantagem ou o menor com desvantagem. Se ambas se aplicarem, elas se cancelam.'],['proficiency','Proficiência e especialização',8,'A proficiência varia de +2 a +6 com o nível. Especialização dobra esse bônus quando a regra se aplica.'],['critical','Acerto crítico',16,'Em um acerto crítico, dobre a quantidade de dados de dano do ataque e mantenha os modificadores. O dano deve ser aplicado ao alvo pelo grupo.'],['actions','Ações, ações bônus e reações',9,'O turno inclui movimento e uma ação; ações bônus e reações dependem de regras que as concedam.'],['concentration','Concentração',176,'Você mantém apenas uma concentração por vez. Consulte os gatilhos de interrupção e a salvaguarda de Constituição no glossário.'],['conditions','Condições',176,'O glossário define condições como Agarrado, Amedrontado, Caído, Cego, Enfeitiçado, Envenenado, Impedido, Incapacitado, Inconsciente, Invisível, Paralisado, Petrificado e Surdo.'],['rest','Descansos',185,'Descanso curto e longo têm requisitos e recuperações próprios. Os recursos automáticos da ficha indicam quais são restaurados.']].map(([id,name,page,description])=>({id,name,page,description}));
 export function dndFields() {
  const field=(id,label,type,group,initial='')=>({id,label,type,group,initial});
@@ -125,12 +135,104 @@ export function dndAdd(character,entryId,options={}) {
  }
 }
 
-export function dndSpellFormula(character,entry,part='effect',slotLevel=entry.level) {
+export function dndSpellFormula(first,second,part='effect',slotLevel) {
+ const swapped=typeof first?.level==='number'&&Array.isArray(first?.classes);
+ const character=swapped?second:first,entry=swapped?first:second;
+ if(typeof part==='number'){slotLevel=part;part='effect';}
+ slotLevel??=entry.level;
  const casting=dndClasses.find(c=>c.id===character.dnd?.classId)?.casting||character.dnd?.magicAbility;
  if(!casting)fail('Escolha um atributo mágico na criação ou crie uma rolagem personalizada.');
  if(part==='attack')return '1d20+@{dd-spell-attack}';
  let formula=entry.formula;
  if(entry.level===0&&entry.id!=='spell-eldritch-blast')formula=formula.replace(/^1d/,String(1+[5,11,17].filter(level=>dndLevel(character)>=level).length)+'d');
- if(entry.level>0&&slotLevel>entry.level&&['heal','save','attack'].includes(entry.kind))formula=formula.replace(/^(\d+)d/,(_,count)=>String(Number(count)+(slotLevel-entry.level)*(entry.kind==='heal'?2:1))+'d');
+ const step=entry.upcast??(entry.kind==='heal'?2:['save','attack'].includes(entry.kind)?1:0);
+ if(entry.level>0&&slotLevel>entry.level&&step>0)formula=formula.replace(/^(\d+)d/,(_,count)=>String(Number(count)+(slotLevel-entry.level)*step)+'d');
  return formula+(entry.kind==='heal'?'+@{dd-'+casting+'|mod}':'');
+}
+
+const fullCasterSlots=[
+ [2],[3],[4,2],[4,3],[4,3,2],[4,3,3],[4,3,3,1],[4,3,3,2],[4,3,3,3,1],[4,3,3,3,2],
+ [4,3,3,3,2,1],[4,3,3,3,2,1],[4,3,3,3,2,1,1],[4,3,3,3,2,1,1],[4,3,3,3,2,1,1,1],
+ [4,3,3,3,2,1,1,1],[4,3,3,3,2,1,1,1,1],[4,3,3,3,3,1,1,1,1],[4,3,3,3,3,2,1,1,1],[4,3,3,3,3,2,2,1,1]
+];
+
+export function dndSpellSlotsForLevel(level,classId='wizard') {
+ const lvl=Math.max(1,Math.min(20,Math.trunc(Number(level)||1)));
+ if(classId){
+  const cls=dndClasses.find(c=>c.id===classId);
+  if(cls&&!cls.casting)return {};
+  if(classId==='warlock'){
+   const circle=Math.min(5,Math.ceil(lvl/2));
+   const count=lvl===1?1:lvl<11?2:lvl<17?3:4;
+   return {[circle]:count};
+  }
+  if(classId==='paladin'||classId==='ranger'){
+   const row=fullCasterSlots[Math.ceil(lvl/2)-1]||[];
+   return Object.fromEntries(row.map((count,i)=>[i+1,count]));
+  }
+ }
+ const row=fullCasterSlots[lvl-1]||[];
+ return Object.fromEntries(row.map((count,i)=>[i+1,count]));
+}
+
+export function syncDndSpellSlots(character,newLevel=dndLevel(character)) {
+ if(!character?.dnd)return character;
+ const lvl=Math.max(1,Math.min(20,Math.trunc(Number(newLevel)||1)));
+ const cls=dndClasses.find(c=>c.id===character.dnd.classId);
+ const layout=character.layout??=dndFields();
+ const hasSlots=layout.some(f=>/^dd-slot-[1-9]$/.test(f.id))||Object.keys(character.values||{}).some(k=>/^dd-slot-[1-9]$/.test(k));
+ if(!cls?.casting&&!hasSlots)return character;
+ const slots=dndSpellSlotsForLevel(lvl,cls?.casting?cls.id:'wizard');
+ character.values??={};
+ const shortMode=cls?.id==='warlock'?'all':'none';
+ const previousValues={...character.values};
+ const previousFields=new Map(layout.filter(f=>/^dd-slot-[1-9]$/.test(f.id)).map(f=>[f.id,f]));
+ const firstSlotIndex=layout.findIndex(f=>/^dd-slot-[1-9]$/.test(f.id));
+ const hdIndex=layout.findIndex(f=>f.id==='dd-hd');
+ const insertAt=firstSlotIndex>=0?firstSlotIndex:(hdIndex>=0?hdIndex+1:layout.length);
+ const withoutSlots=layout.filter(f=>!/^dd-slot-[1-9]$/.test(f.id));
+ const targetIndex=Math.min(insertAt,withoutSlots.length);
+ const nextSlotFields=[];
+ for(let circle=1;circle<=9;circle++){
+  const id='dd-slot-'+circle,max=slots[circle]||0;
+  if(!max){delete character.values[id];continue;}
+  const oldField=previousFields.get(id);
+  const raw=previousValues[id]??oldField?.initial;
+  let current=max;
+  if(raw!==undefined){
+   const [oldCur,oldMax]=String(raw).split('/').map(Number);
+   if(Number.isFinite(oldCur)&&Number.isFinite(oldMax)&&oldMax>=0){
+    const gained=max>oldMax?max-oldMax:0;
+    current=Math.min(max,Math.max(0,oldCur+gained));
+   }
+  }
+  const label=oldField?.label||('Espaços de magia · círculo '+circle);
+  nextSlotFields.push({id,label,type:'counter',group:oldField?.group||'Recursos',initial:max+'/'+max});
+  character.values[id]=current+'/'+max;
+ }
+ withoutSlots.splice(targetIndex,0,...nextSlotFields);
+ character.layout=withoutSlots;
+ const activeIds=new Set(nextSlotFields.map(f=>f.id));
+ const recovery=(character.dnd.recovery||[]).filter(r=>!/^dd-slot-[1-9]$/.test(r.id)||activeIds.has(r.id));
+ for(const field of nextSlotFields){
+  const existing=recovery.find(r=>r.id===field.id);
+  if(existing)existing.short=shortMode;
+  else recovery.push({id:field.id,short:shortMode});
+ }
+ character.dnd.recovery=recovery;
+ return character;
+}
+
+export function dndCharacterSpellSlots(character,fields,minLevel=1) {
+ const list=[];
+ for(let circle=Math.max(1,minLevel);circle<=9;circle++){
+  const id='dd-slot-'+circle;
+  const field=(fields||[]).find(item=>item.id===id&&item.type==='counter');
+  if(!field)continue;
+  const raw=character?.values?.[id]??field.initial??'0/0';
+  const [current,maximum]=String(raw).split('/').map(Number);
+  if(!Number.isFinite(maximum)||maximum<=0)continue;
+  list.push({level:circle,fieldId:id,current:Number.isFinite(current)?Math.max(0,current):0,maximum});
+ }
+ return list;
 }

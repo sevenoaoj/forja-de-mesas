@@ -13,7 +13,7 @@ function prepareCaption(caption,text,speed){
 }
 
 // One stage per browser. Server timestamps let reconnecting viewers enter mid-scene.
-export function createCinematicStage(dialog,{load,stop,report,trackVolume=()=>.65}){
+export function createCinematicStage(dialog,{load,stop,report,trackVolume=()=>.65,trackEnabled=()=>false}){
  const media=dialog.querySelector('[data-cine-media]'),caption=dialog.querySelector('h2');
  const notice=dialog.querySelector('[role=status]'),sound=dialog.querySelector('[data-cine-sound]'),exit=dialog.querySelector('[data-cine-exit]');
  let identity='',revision=-1,current=null,dismissed='',abort,url,revealTimer,endTimer,video;
@@ -119,7 +119,9 @@ export function createCinematicStage(dialog,{load,stop,report,trackVolume=()=>.6
     else{audio.pause();trackButton.textContent='Ativar trilha';}
    };
    audio.onloadedmetadata=()=>{
-    if(current===session)playTrack();
+    if(current!==session)return;
+    if(trackEnabled())playTrack();
+    else {trackButton.textContent='Ativar trilha';trackButton.hidden=false;}
    };
    audio.onended=()=>{trackButton.hidden=true;};
    audio.onerror=()=>{if(current===session){trackButton.hidden=true;report('Não foi possível reproduzir a trilha da cinemática.');}};

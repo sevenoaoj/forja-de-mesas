@@ -2,7 +2,7 @@ import {normalizeTable} from './table-model.mjs';
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
 const clean=(value,max)=>typeof value==='string'?value.trim().slice(0,max):'';
 const name=value=>{const result=clean(value,100);if(!result)fail(400,'Informe um nome.');return result;};
-export const sceneActions=new Set(['sessionMaterial','sceneCreate','sceneUpdate','sceneDuplicate','sceneDelete','sceneActivate','sceneMove','sessionCreate','sessionUpdate','sessionDelete']);
+export const sceneActions=new Set(['sessionMaterial','sessionMaterialMove','sceneCreate','sceneUpdate','sceneDuplicate','sceneDelete','sceneActivate','sceneMove','sessionCreate','sessionUpdate','sessionDelete']);
 export function sceneLibrary(state){
  return state.sceneLibrary||{version:0,activeId:'scene-initial',sessions:[{id:'session-initial',name:'Sessão 1',date:'',notes:''}],scenes:[{id:'scene-initial',name:state.scene||'Primeira cena',sessionId:'session-initial',notes:''}]};
 }
@@ -21,7 +21,7 @@ export function sceneSummary(state){
  })};
 }
 export function sceneMaps(state){return [...new Map([state.map,...(state.sceneLibrary?.scenes||[]).map(scene=>scene.map)].filter(Boolean).map(asset=>[asset.id,asset])).values()];}
-export function sceneTokenPortraits(state){return [...new Map([...(state.tokens||[]),...(state.sceneLibrary?.scenes||[]).flatMap(scene=>scene.tokens||[])].map(token=>token.portrait).filter(Boolean).map(asset=>[asset.id,asset])).values()];}
+export function sceneTokenPortraits(state){return [...new Map([...(state.tokens||[]),...(state.sceneLibrary?.scenes||[]).flatMap(scene=>scene.tokens||[])].flatMap(token=>[token?.portrait,...(Array.isArray(token?.portraits)?token.portraits:[])]).filter(Boolean).map(asset=>[asset.id,asset])).values()];}
 export function removeSessionMaterial(state,kind,id){
  const library=state.sceneLibrary;
  if(!library)return;
@@ -60,6 +60,14 @@ export function mutateScenes(state,action,data,master){
     session.materials=[...links,{kind:data.kind,id:data.id}];
    }
   }else session.materials=links.filter(ref=>!matches(ref));
+ }else if(action==='sessionMaterialMove'){
+  const session=requireSession(lib,data.sessionId),materials=session.materials||[];
+  if(![-1,1].includes(data.direction))fail(400,'Direção inválida.');
+  const index=materials.findIndex(ref=>ref.kind===data.kind&&ref.id===data.id);
+  if(index<0)fail(404,'Material indisponível no roteiro.');
+  const next=index+data.direction;
+  if(next<0||next>=materials.length)fail(409,'O material já está no limite do roteiro.');
+  [materials[index],materials[next]]=[materials[next],materials[index]];
  }else if(action==='sessionCreate'){
   if(lib.sessions.length>=40)fail(409,'Use até 40 sessões por campanha.');
   lib.sessions.push({id:crypto.randomUUID(),name:name(data.name),date:sessionDate(data.date),notes:clean(data.notes,2000)});

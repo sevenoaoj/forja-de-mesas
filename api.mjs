@@ -1,4 +1,5 @@
 import {resolveTokenPath} from './token-motion.mjs';
+import {strongEtag,matchesIfNoneMatch} from './etag.mjs';
 import {mutateSharing,sharingView} from './player-sharing.mjs';
 import {itemPortraits} from './item-assets.mjs';
 import {mutateLoot} from './loot-model.mjs';
@@ -10,14 +11,15 @@ import {recordItemDelivery,mutateInventory,inventoryView,commitInventory} from '
 import {mutateJournal} from './journal-model.mjs';
 import {browserSessionKey,lastBrowserCampaign,rememberBrowserSession} from './browser-session.mjs';
 import {mutateNarration,narrationView} from './narration-model.mjs';
+import {mutateChat,messageView,messageVersion} from './chat-model.mjs';
 import {mutateSheetTemplates,readableSheetTemplate,sheetTemplateCharacter} from './sheet-template-model.mjs';
 import {captureSheetChanges,recordSheetChanges,mutateSheetHistory} from './sheet-history.mjs';
-import {removeSessionMaterial,sceneProjection,sceneSummary,sceneMaps,sceneTokenPortraits,withScene,mutateScenes,activeSceneId} from './scene-model.mjs';
+import {removeSessionMaterial,sceneLibrary,sceneProjection,sceneSummary,sceneMaps,sceneTokenPortraits,withScene,mutateScenes,activeSceneId} from './scene-model.mjs';
 import {validateSheetAppearance,sheetAppearance} from './sheet-layout.mjs';
 import {mutateSessionLog} from './session-log.mjs';
 import {mutateGmScreen,gmScreenActions,gmBoard} from './gm-screen-model.mjs';
-import {dndCharacter,dndFields,dndAdd,dndDerived,dndCatalog,dndSpellFormula,dndBook} from './dnd.mjs';
-import {injuredPortrait,requestedTest,sheetRequestOptions,cinematicStyle,cinematicDisplayMs,campaignParties,tokenCharacterId,outsideParty,stressRegionsFor,bodyStressWithHead,newCampaign,characterType,isPlayerCharacter,playerVisionSource, colors, characterColorHex, rollFormulaLimit, sheetFields, sheetValue,parseDiceFormula,resolveSheetFormula,displaySheetFormula,sheetPreset,sheetAttributeTest,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
+import {dndCharacter,dndFields,dndAdd,dndDerived,dndCatalog,dndSpellFormula,dndBook,syncDndSpellSlots} from './dnd.mjs';
+import {primaryCharacterResource,injuredPortrait,requestedTest,sheetRequestOptions,cinematicStyle,cinematicDisplayMs,campaignParties,tokenCharacterId,outsideParty,stressRegionsFor,bodyStressWithHead,newCampaign,characterType,isPlayerCharacter,playerVisionSource, colors, characterColorHex, rollFormulaLimit, sheetFields, sheetValue,parseDiceFormula,resolveSheetFormula,displaySheetFormula,sheetPreset,sheetAttributeTest,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
 import {emptyAudio,soundPresets,audioDelay} from './media.mjs';
 import {musicActions,changeMusic,musicCommand,audioView} from './music-model.mjs';
 import {investigationInbox,explorationActions,mutateExploration,explorationView,ambientAt} from './exploration-model.mjs';
@@ -36,7 +38,7 @@ function emblemData(value){
  if(typeof value!=='string'||value.length>28000||!/^data:image\/png;base64,iVBORw0KGgo[A-Za-z0-9+/]+=*$/.test(value))fail(400,'Emblema PNG inválido.');
  return value;
 }
-const privateActions = new Set(['assistDecide','checkPhysical','regionTravelDecision','mediaCheckStart','campaignSheetTheme','checkCreate','checkClose','cinematicSave','cinematicForget','cinematicStart','cinematicStop','cinematicDelete','partySave','partyDelete','characterParty','gmResourceChange','bodyStressConfig','settings','schema','notes','initiative','tokenAdd','tokenDelete','bookDelete','track','soundPlay','soundDelete','characterType','characterVisibility','characterRelease','sheetMasteryRefresh',...musicActions,...soundboardActions,...gmScreenActions]);
+const privateActions = new Set(['assistDecide','checkPhysical','regionTravelDecision','mediaCheckStart','campaignSheetTheme','checkCreate','checkClose','cinematicSave','cinematicForget','cinematicStart','cinematicStop','cinematicDelete','partySave','partyDelete','characterParty','gmResourceChange','bodyStressConfig','settings','schema','notes','initiative','tokenAdd','tokenDelete','tableSceneLife','bookDelete','track','soundPlay','soundDelete','characterType','characterVisibility','characterRelease','sheetMasteryRefresh',...musicActions,...soundboardActions,...gmScreenActions]);
 const updateList = (list, entry) => list.some(item => item.id === entry.id)
   ? list.map(item => item.id === entry.id ? entry : item) : [...list, entry];
 const validTypes = new Set(['text','number','counter','long','check']);
@@ -74,7 +76,7 @@ function injuryRule(state,character,resource,threshold){
   return {resource,threshold:Number(threshold)};
 }
 
-function sheetAction(state,action,data) {
+function sheetAction(state,action,data,master) {
   const character=findCharacter(state,data.id);
   if(action==='dndAdd') {dndAdd(character,data.entryId,{allowExtra:data.allowExtra===true});return;}
   if(action==='dndRest') {
@@ -106,11 +108,18 @@ function sheetAction(state,action,data) {
       if(!['number','string'].includes(typeof data.current)||!['number','string'].includes(typeof data.maximum)||!String(data.current).trim()||!String(data.maximum).trim()||!Number.isFinite(current)||!Number.isFinite(maximum)||current<0||maximum<0||maximum>1000000||current>maximum) fail(400,'Use um valor atual entre zero e o máximo, até 1000000.');
       character.values[field.id]=current+'/'+maximum;return;
     }
-    if (![1,-1].includes(data.step)) fail(400,'Contador inválido.');
+    let delta;
+    if (data.delta!==undefined) {
+      if (data.step!==undefined||!Number.isSafeInteger(data.delta)||Math.abs(data.delta)>1_000_000) fail(400,'Contador inválido.');
+      delta=data.delta;
+    } else {
+      if (![1,-1].includes(data.step)) fail(400,'Contador inválido.');
+      delta=data.step;
+    }
     const [value,limit]=sheetValue(character,field).split('/');
     const max=Number(limit);
     if (!limit || !Number.isFinite(max) || max<0) fail(400,'Defina o valor máximo na edição da ficha.');
-    const next=Math.min(max,Math.max(0,(Number(value)||0)+data.step));
+    const next=Math.min(max,Math.max(0,(Number(value)||0)+delta));
     character.values[field.id]=next+'/'+limit;
     return;
   }
@@ -127,6 +136,21 @@ function sheetAction(state,action,data) {
   if (action==='sheetFields') {
     if (data.layout===true) {
       if(!Array.isArray(data.fields)||data.fields.length>100) fail(400,'Use até 100 campos por ficha.');
+      if(data.labelChanges!==undefined){
+        if(!master)fail(403,'Somente o mestre pode renomear campos do modelo nesta ficha.');
+        if(!state.sheetModelVersion||!Array.isArray(data.labelChanges)||data.labelChanges.length>100)fail(400,'Alterações de nome inválidas.');
+        const labels={...character.fieldLabels};
+        for(const change of data.labelChanges){
+          const field=state.fields.find(item=>item.id===change?.id);
+          if(!field||field.label!==change.modelLabel||(labels[field.id]??'')!==change.previous)fail(409,'Um nome mudou. Reabra a ficha antes de salvar.');
+          if(typeof change.label!=='string'||change.label.length>80)fail(400,'Use até 80 caracteres no nome do campo.');
+          const label=change.label.trim();
+          if(label&&label!==field.label)labels[field.id]=label;
+          else delete labels[field.id];
+        }
+        if(Object.keys(labels).length)character.fieldLabels=labels;
+        else delete character.fieldLabels;
+      }
       const known=new Set(sheetFields(state,character).map(field=>field.id));
       const seen=new Set();
       const layout=data.fields.map(field=>{
@@ -219,15 +243,39 @@ function createCheckRequest(state,data){
   if(!Array.isArray(ids)||!ids.length||ids.length>60||new Set(ids).size!==ids.length)fail(400,'Escolha até 60 personagens diferentes.');
   const dc=data.dc??null;
   if(dc!==null&&(!Number.isInteger(dc)||Math.abs(dc)>999))fail(400,'Confira a dificuldade.');
-  let label;
-  const targets=ids.map(id=>{
-    const c=state.characters.find(c=>c.id===id&&c.ownerId&&!c.hidden&&isPlayerCharacter(c));
-    if(!c)fail(409,'Um dos personagens já não está disponível.');
-    const matches=sheetRequestOptions(state,c).filter(o=>o.key===data.test);
-    if(matches.length!==1)fail(400,'O teste precisa ter um nome único em cada ficha selecionada.');
-    const option=matches[0];label=option.name;
-    return {characterId:c.id,name:c.name,memberId:c.ownerId,kind:option.kind,testId:option.id,result:null};
-  });
+  const isFree=data.mode==='free'||data.freeFormula!==undefined;
+  let label='',targets;
+  if(isFree){
+    const parsed=parseDiceFormula(data.freeFormula??data.formula);
+    if(data.label!==undefined&&(typeof data.label!=='string'||!data.label.trim()||data.label.trim().length>80))fail(400,'Informe um nome de 1 a 80 caracteres para o teste.');
+    label=data.label!==undefined?data.label.trim():('Teste · '+parsed.formula);
+    targets=ids.map(id=>{
+      const c=state.characters.find(c=>c.id===id&&c.ownerId&&!c.hidden&&isPlayerCharacter(c));
+      if(!c)fail(409,'Um dos personagens já não está disponível.');
+      return {characterId:c.id,name:c.name,memberId:c.ownerId,kind:'free',formula:parsed.formula,label,result:null};
+    });
+  }else{
+    const hasCustomFallback=data.fallbackFormula!==undefined&&data.fallbackFormula!==null&&data.fallbackFormula!=='';
+    if(hasCustomFallback&&typeof data.fallbackFormula!=='string')fail(400,'Fórmula alternativa inválida.');
+    const useFallback=data.allowFallback===true||hasCustomFallback;
+    const fallback=hasCustomFallback?parseDiceFormula(data.fallbackFormula).formula:'1d20';
+    if(useFallback&&(typeof data.test!=='string'||!/^(?:attribute|skill|saved):.+/.test(data.test)))fail(400,'Escolha um teste válido.');
+    targets=ids.map(id=>{
+      const c=state.characters.find(c=>c.id===id&&c.ownerId&&!c.hidden&&isPlayerCharacter(c));
+      if(!c)fail(409,'Um dos personagens já não está disponível.');
+      const matches=sheetRequestOptions(state,c).filter(o=>o.key===data.test);
+      if(matches.length===1){
+        const option=matches[0];label=option.name;
+        return {characterId:c.id,name:c.name,memberId:c.ownerId,kind:option.kind,testId:option.id,result:null};
+      }
+      if(!useFallback)fail(400,'O teste precisa ter um nome único em cada ficha selecionada.');
+      return {characterId:c.id,name:c.name,memberId:c.ownerId,kind:'free',formula:fallback,label:'',result:null};
+    });
+    if(!label){
+      label=state.characters.flatMap(c=>sheetRequestOptions(state,c)).find(o=>o.key===data.test)?.name||str(data.label,80)||'Teste ('+fallback+')';
+    }
+    for(const target of targets)if(target.kind==='free'&&!target.label)target.label=label;
+  }
   const checks=state.checkRequests??=[];
   if(checks.length>=30)fail(409,'Encerre um pedido anterior para abrir espaço.');
   const request={id:uid(),label,targets,dc,...(data.allowHelp===true?{allowHelp:true}:{}),showDc:data.showDc===true,closed:false};
@@ -264,11 +312,13 @@ function makeSheetRoll(state,data,access,help){
   if(mastery) {mastery.remaining--;result.mastery={name:mastery.name,die:mastery.die};}
   if(button) result.label=button.name;
   else if(test)result.label=test.label;
+  else {const label=str(data.label,80);if(label)result.label=label;}
   if(resolved.bindings.length) {
     result.expression=displaySheetFormula(resolved.template,state,character);
     result.bindings=resolved.bindings;
   }
-  return {id:uid(),at:Date.now(),rolledBy:master?'master':'player',visibility:master?'gm':'public',actor:master?str(data.actor,60)||'Mestre':own.name,
+  const visibility=['public','gm'].includes(data.visibility)?data.visibility:(master?'gm':'public');
+  return {id:uid(),at:Date.now(),rolledBy:master?'master':'player',visibility,actor:master?str(data.actor,60)||'Mestre':own.name,
     ...(character?{characterId:character.id,diceColor:sheetAppearance(state,character).options.accent}:{}),kind:button&&(button.id==='dd-initiative'||/^iniciativa$/i.test(button.name?.trim()))?'initiative':'check',...result};
 }
 
@@ -313,6 +363,7 @@ function mutate(state, action, data, access) {
   if(mutateSharing(state,action,data,ownedCharacter(state,access)))return;
   if(mutateSessionLog(state,action,data,master))return;
   if(mutateNarration(state,action,data,access))return;
+  if(mutateChat(state,action,data,access))return;
   if(mutateInventory(state,action,data,access)){
     if(action==='itemGrant')recordItemDelivery(state,state.characters.find(c=>c.id===data.characterId),[state.inventory.at(-1)],{from:'Mestre'});
     if(action==='itemSave'&&data.prepSession)prepareMaterial(state,data,access,'item',state.inventory.at(-1).id);
@@ -412,6 +463,7 @@ function mutate(state, action, data, access) {
         if(character.dnd&&field.id==='dd-level'&&(!Number.isInteger(Number(value))||Number(value)<1||Number(value)>20))fail(400,'O nível deve estar entre 1 e 20.');
         if(character.dnd&&/^dd-(str|dex|con|int|wis|cha)$/.test(field.id)&&(!Number.isInteger(Number(value))||Number(value)<1||Number(value)>30))fail(400,'Atributos devem estar entre 1 e 30.');
         character.values??={};character.values[field.id]=value;
+        if(character.dnd&&field.id==='dd-level')syncDndSpellSlots(character,Number(value));
       }
       break;
     }
@@ -420,9 +472,18 @@ function mutate(state, action, data, access) {
       const resources=(state.gmResources??={})[character.id]??=[];
       const resource=resources.find(item=>item.id===data.resourceId);
       if(data.resourceId&&!resource)fail(404,'Recurso privado não encontrado.');
-      if(data.operation==='step'){
-        if(!resource||![1,-1].includes(data.step))fail(400,'Ajuste inválido.');
-        resource.current=Math.max(0,Math.min(resource.maximum,resource.current+data.step));
+      if(data.operation==='step'||data.operation==='delta'||(data.operation===undefined&&data.delta!==undefined)){
+        if(!resource)fail(400,'Ajuste inválido.');
+        let delta;
+        if(data.delta!==undefined){
+          if(data.step!==undefined||!Number.isSafeInteger(data.delta)||Math.abs(data.delta)>1_000_000)fail(400,'Ajuste inválido.');
+          delta=data.delta;
+        }else{
+          if(![1,-1].includes(data.step))fail(400,'Ajuste inválido.');
+          delta=data.step;
+        }
+        if(data.version!==undefined&&(!Number.isSafeInteger(Number(data.version))||resource.version!==Number(data.version)))fail(409,'Este recurso mudou. Abra o editor novamente.');
+        resource.current=Math.max(0,Math.min(resource.maximum,resource.current+delta));
         resource.version++;
         break;
       }
@@ -469,6 +530,14 @@ function mutate(state, action, data, access) {
           }
           // Retired fields stay on existing sheets with their original values.
           character.layout=prior.filter(field=>!seen.has(field.id));
+          const labels={...character.fieldLabels};
+          for(const id of Object.keys(labels))if(!seen.has(id))delete labels[id];
+          if(!state.sheetModelVersion)for(const field of prior){
+            const inherited=previous.find(item=>item.id===field.id);
+            if(inherited&&seen.has(field.id)&&inherited.label!==field.label)labels[field.id]=field.label;
+          }
+          if(Object.keys(labels).length)character.fieldLabels=labels;
+          else delete character.fieldLabels;
           delete character.fields;
         }
         if(data.source){
@@ -613,6 +682,7 @@ function mutate(state, action, data, access) {
       const type=master?data.characterType??characterType(old):'player';
       const character={...base,characterType:type,id:old?.id||uid(),name,concept:str(data.concept,80),color:color(data.color),values,
         hidden:master?(data.hidden??old?.hidden??false):false};
+      if(old?.dnd&&Number(values['dd-level'])!==Number(old.values?.['dd-level']||1))syncDndSpellSlots(character,Number(values['dd-level']));
       if(old?.appearance?.options&&old.color!==character.color&&old.appearance.options.accent===characterColorHex(old.color)){character.appearance={...old.appearance,version:(old.appearance.version||0)+1,options:{...old.appearance.options,accent:characterColorHex(character.color)}};}
       delete character.presentation;
       if (!old&&!master) character.ownerId=access.memberId;
@@ -630,16 +700,21 @@ function mutate(state, action, data, access) {
       const character=findCharacter(state,data.id);
       const spell=dndCatalog.find(e=>e.id===data.entryId&&e.category==='spells');
       if(!character.dnd||!spell||!character.abilities?.some(a=>a.id===spell.id))fail(400,'Adicione a magia à ficha antes de conjurar.');
+      let usedSlot=spell.level;
+      if(spell.level===0&&data.slotLevel!==undefined&&data.slotLevel!==0)fail(400,'Truques não consomem espaços de magia.');
       if(spell.level>0) {
-        const field=sheetFields(state,character).find(f=>f.id==='dd-slot-1'&&f.type==='counter');
+        usedSlot=data.slotLevel===undefined?spell.level:data.slotLevel;
+        if(!Number.isInteger(usedSlot)||usedSlot<spell.level||usedSlot>9)fail(400,'Escolha um círculo válido para conjurar esta magia.');
+        const field=sheetFields(state,character).find(f=>f.id==='dd-slot-'+usedSlot&&f.type==='counter');
         const [now,max]=String(field?sheetValue(character,field):'0/0').split('/').map(Number);
-        if(!Number.isFinite(now)||now<1)fail(409,'Sem espaços de 1º círculo. Use os controles da ficha para recursos concedidos por talentos.');
+        if(!field||!Number.isFinite(now)||now<1)fail(409,'Sem espaços de '+usedSlot+'º círculo. Use os controles da ficha para recursos concedidos por talentos.');
+        character.values??={};
         character.values[field.id]=(now-1)+'/'+max;
       }
       if(spell.formula) {
-        const formula=dndSpellFormula(character,spell,spell.kind==='attack'?'attack':'effect');
-        mutate(state,'roll',{characterId:character.id,actor:character.name,formula,mode:spell.kind==='attack'?data.mode:'normal'},access);
-        state.rolls[0].label='Conjurar · '+spell.name;
+        const formula=dndSpellFormula(character,spell,spell.kind==='attack'?'attack':'effect',usedSlot);
+        mutate(state,'roll',{characterId:character.id,actor:character.name,formula,mode:spell.kind==='attack'?data.mode:'normal',...(data.visibility!==undefined?{visibility:data.visibility}:{})},access);
+        state.rolls[0].label='Conjurar · '+spell.name+(usedSlot>spell.level?' ('+usedSlot+'º círculo)':'');
       }
       break;
     }
@@ -690,7 +765,7 @@ function mutate(state, action, data, access) {
     case 'injurySettings':
     case 'sheetPortraitDelete':
     case 'sheetEntry':
-      sheetAction(state,action,data);
+      sheetAction(state,action,data,master);
       break;
     case 'characterDelete':
       if (!master) fail(403,'Ação reservada ao mestre.');
@@ -703,12 +778,19 @@ function mutate(state, action, data, access) {
     case 'gmTableRoll': {
       const card=gmBoard(state).cards.find(card=>card.id===data.id&&card.kind==='table');
       if(!card||card.items.length<2)fail(404,'Tabela indisponível.');
-      const result=rollDice('1d'+card.items.length),entry=card.items[result.total-1];
-      const roll={id:uid(),at:Date.now(),rolledBy:'master',visibility:'gm',actor:'Mestre',...result,label:card.title+' · '+entry.text};
+      const available=card.items.filter(item=>!card.noRepeat||!item.drawn);
+      if(!available.length)fail(409,'Todas as entradas já saíram. Reinicie os sorteios.');
+      const faces=available.reduce((sum,item)=>sum+(item.weight??1),0);
+      const total=randomDie(faces);
+      const result={formula:'1d'+faces,total,modifier:0,dice:[total],groups:[{faces,sign:1,dice:[total]}]};
+      let remaining=total;
+      const entry=available.find(item=>{remaining-=item.weight??1;return remaining<=0;});
+      if(card.noRepeat){entry.drawn=true;card.version++;}
+      const roll={id:uid(),at:Date.now(),rolledBy:'master',visibility:'gm',actor:'Mestre',kind:'table',...result,label:card.title+' · '+entry.text};
       state.rolls=[roll,...state.rolls];
       const counts={public:0,gm:0};
-      state.rolls=state.rolls.filter(item=>++counts[item.rolledBy==='player'&&item.visibility==='public'?'public':'gm']<=40);
-      card.lastRoll={rollId:roll.id,at:roll.at,index:result.total,text:entry.text};
+      state.rolls=state.rolls.filter(item=>++counts[item.visibility==='public'?'public':'gm']<=40);
+      card.lastRoll={rollId:roll.id,at:roll.at,index:card.items.indexOf(entry)+1,text:entry.text};
       break;
     }
     case 'campaignSheetTheme':
@@ -741,7 +823,7 @@ function mutate(state, action, data, access) {
     case 'assistOffer':
     case 'assistDecide':
     case 'checkPhysical': {
-      const check=state.checkRequests?.find(c=>c.id===data.id&&!c.closed&&c.allowHelp);
+      const check=state.checkRequests?.find(c=>c.id===data.id&&!c.closed&&(action==='checkPhysical'||c.allowHelp));
       const t=check?.targets.find(t=>t.characterId===data.target);
       if(!t||t.result)fail(409,'Este teste não está disponível para ajuda.');
       if(action==='assistOffer'){
@@ -779,8 +861,12 @@ function mutate(state, action, data, access) {
         if(master||!requestTarget||check.closed)fail(403,'Pedido indisponível.');
         if(requestTarget.result)break;
         if(requestTarget.help&&!requestTarget.help.effect)fail(409,'Aguarde a decisão do mestre sobre a ajuda.');
-        const inputKey={attribute:'attributeId',skill:'skillId',saved:'rollId'}[requestTarget.kind];
-        data={[inputKey]:requestTarget.testId,characterId:own.id,masteryId:data.masteryId,mode:requestTarget.help?.effect==='advantage'?'advantage':undefined};
+        if(requestTarget.kind==='free'){
+          data={formula:requestTarget.formula,label:requestTarget.label||check.label,characterId:own.id,masteryId:data.masteryId,mode:requestTarget.help?.effect==='advantage'?'advantage':undefined};
+        }else{
+          const inputKey={attribute:'attributeId',skill:'skillId',saved:'rollId'}[requestTarget.kind];
+          data={[inputKey]:requestTarget.testId,characterId:own.id,masteryId:data.masteryId,mode:requestTarget.help?.effect==='advantage'?'advantage':undefined};
+        }
       }
       const roll=makeSheetRoll(state,data,access,requestTarget?.help);
       if(requestTarget){
@@ -789,7 +875,7 @@ function mutate(state, action, data, access) {
       }
       state.rolls.unshift(roll);
       const counts={public:0,gm:0};
-      state.rolls=state.rolls.filter(roll=>++counts[roll.rolledBy==='player'&&roll.visibility==='public'?'public':'gm']<=40);
+      state.rolls=state.rolls.filter(roll=>++counts[roll.visibility==='public'?'public':'gm']<=40);
       break;
     }
     default: fail(400,'Ação desconhecida.');
@@ -832,7 +918,7 @@ function exploreDuringMove(state,character,params){
 function projectedTable(scoped,access,own){
   const table=tableView(scoped,access.master);
   if(scoped.table?.exploration)table.table.exploration=explorationView(scoped,own,access.master,table.table);
-  if(table.tokens.some(t=>t.motion))table.table.hasPatrols=true;
+  if(table.tokens.some(t=>t.motion)||table.table.hasPatrols)table.table.hasPatrols=true;
   table.tokens=table.tokens.map(token=>({...token,visionSource:playerVisionSource(scoped,token)}));
   if (!access.master) {
     const darkness=table.table.darkness,teams=darkness.teams||{},team=teams[own?.id];
@@ -875,9 +961,23 @@ function projectedTable(scoped,access,own){
     }));
   }
   const linked=new Map(scoped.characters.map(c=>[c.id,c]));
+  const canViewResource=charId=>Boolean(charId&&(access.master||!access.guest&&own&&charId===own.id));
+  const tokenById=new Map();
   for(const token of table.tokens){
+    tokenById.set(token.id,token);
+    if(token.kind==='item')continue;
     const c=linked.get(token.characterId);
-    if(c)token.linkedPortrait=(injuredPortrait(scoped,c)||token.portrait||c.portrait)?.id||null;
+    if(c){
+      token.linkedPortrait=(injuredPortrait(scoped,c)||token.portrait||c.portrait)?.id||null;
+      if(canViewResource(c.id)){
+        const bar=primaryCharacterResource(scoped,c);
+        if(bar)token.resourceBar=bar;
+      }
+    }
+  }
+  for(const entry of table.table.combat.entries){
+    const token=entry.tokenId?tokenById.get(entry.tokenId):null;
+    if(token?.resourceBar)entry.resourceBar={...token.resourceBar};
   }
   return table;
 }
@@ -892,17 +992,36 @@ function view(row,access,sceneId) {
   const own=ownedCharacter(scoped,access);
   const table=projectedTable(scoped,access,own);
   Object.assign(state,table);
-  return {id:row.id,rev:row.rev,checkVersion:checkVersion(state.checkRequests),master:access.master,
+  return {id:row.id,rev:row.rev,checkVersion:checkVersion(state.checkRequests),messageVersion:messageVersion(state.messages||[]),master:access.master,
     role:access.master?'master':access.guest?'guest':'player',
     characterId:own?.id||null,needsCharacter:!access.master&&!own,
     serverTime:Date.now(),state,...(access.master?{invite:row.player}:{})};
+}
+
+export async function campaignViewEtag(row,access,requestedScene,now=Date.now()) {
+  const identity=access.master?'master:'+(row.player||''):access.guest?'guest':'member:'+access.memberId;
+  const lib=sceneLibrary(row.state);
+  const effectiveScene=access.master?(requestedScene||''):'';
+  const scene=lib.scenes.find(s=>s.id===(effectiveScene||lib.activeId))||lib.scenes.find(s=>s.id===lib.activeId);
+  const tokens=(scene?.id===lib.activeId?row.state.tokens:scene?.tokens)||[];
+  const table=(scene?.id===lib.activeId?row.state.table:scene?.table)||{};
+  const characters=row.state.characters||[];
+  const hasActivePatrol=tokens.some(t=>t?.patrol?.started&&t.kind!=='item'&&(!t.characterId||characters.some(c=>c.id===t.characterId&&!isPlayerCharacter(c))));
+  const cinematic=row.state.cinematicRun&&now<row.state.cinematicRun.endsAt?row.state.cinematicRun.id:'';
+  const shares=!access.master&&!access.guest?(row.state.materialShares||[]).filter(g=>g&&g.until>now).map(g=>g.id).join(','):'';
+  const pings=(table.pings||[]).filter(p=>p&&Number.isFinite(p.at)&&now-p.at<1500&&p.at<=now+1000).map(p=>p.id).join(',');
+  const loot=(table.lootEvents||[]).filter(e=>e&&Number.isFinite(e.at)&&now-e.at<3000&&e.at<=now+1000).map(e=>e.id).join(',');
+  return strongEtag([
+    'v1',row.id,row.rev,identity,lib.activeId||'',scene?.id||'',effectiveScene,
+    cinematic,shares,pings,loot,hasActivePatrol?'patrol:'+now:''
+  ].join('\0'));
 }
 
 const toolVersion=items=>rollVersion((items||[]).map(item=>({id:item.id+':'+item.version})));
 
 export function sceneView(row,access,sceneId){
   const visible=view(row,access,sceneId);
-  return {type:'scene',checkVersion:checkVersion(visible.state.checkRequests),id:visible.id,rev:visible.rev,master:visible.master,characterId:visible.characterId,needsCharacter:visible.needsCharacter,serverTime:visible.serverTime,rollVersion:rollVersion(visible.state.rolls||[]),state:{checkRequests:visible.state.checkRequests,...(access.master?{investigations:visible.state.investigations,travelRequests:visible.state.travelRequests||[]}:{investigationReceipts:visible.state.investigationReceipts}),sessionClocks:visible.state.sessionLog.clocks,cinematic:visible.state.cinematic,scene:visible.state.scene,sceneId:visible.state.sceneId,activeSceneId:visible.state.activeSceneId,sessionName:visible.state.sessionName,...(visible.master?{sceneLibrary:visible.state.sceneLibrary}:{}),journalVersion:toolVersion(visible.state.journal),sheetTemplatesVersion:toolVersion(visible.state.sheetTemplates?.items),narrations:visible.state.narrations||[],rolls:visible.state.rolls||[],table:visible.state.table,tokens:visible.state.tokens,map:visible.state.map||null}};
+  return {type:'scene',checkVersion:checkVersion(visible.state.checkRequests),id:visible.id,rev:visible.rev,master:visible.master,characterId:visible.characterId,needsCharacter:visible.needsCharacter,serverTime:visible.serverTime,rollVersion:rollVersion(visible.state.rolls||[]),messageVersion:messageVersion(visible.state.messages||[]),state:{checkRequests:visible.state.checkRequests,...(access.master?{investigations:visible.state.investigations,travelRequests:visible.state.travelRequests||[]}:{investigationReceipts:visible.state.investigationReceipts}),sessionClocks:visible.state.sessionLog.clocks,cinematic:visible.state.cinematic,scene:visible.state.scene,sceneId:visible.state.sceneId,activeSceneId:visible.state.activeSceneId,sessionName:visible.state.sessionName,...(visible.master?{sceneLibrary:visible.state.sceneLibrary}:{}),journalVersion:toolVersion(visible.state.journal),sheetTemplatesVersion:toolVersion(visible.state.sheetTemplates?.items),narrations:visible.state.narrations||[],messages:visible.state.messages||[],rolls:visible.state.rolls||[],table:visible.state.table,tokens:visible.state.tokens,map:visible.state.map||null}};
 }
 
 async function update(store, row, operation,commit=null) {
@@ -992,14 +1111,30 @@ async function upload(request, store, row, kind,access) {
         if (audio.clips.length >= 600) fail(409,'Limite de 600 efeitos por campanha atingido.');
         audio.clips.push(asset);mutateSoundboard(audio,'soundboardPick',{id:asset.id,enabled:true});
       } else if (kind==='token-portrait') {
-        const action=tokenData.id?'tokenUpdate':'tokenAdd';
-        replacedAsset=undefined;
-        if(tokenData.id)withScene(state,tokenData.sceneId,true,world=>{replacedAsset=world.tokens.find(item=>item.id===tokenData.id)?.portrait?.id;});
-        mutate(state,action,tokenData,access);
-        withScene(state,tokenData.sceneId,true,world=>{
-          const token=tokenData.id?world.tokens.find(item=>item.id===tokenData.id):world.tokens.at(-1);
-          token.portrait=asset;
-        });
+        const appendPool=request.headers.get('X-Portrait-Pool')==='append';
+        if(appendPool&&tokenData.id){
+          replacedAsset=undefined;
+          withScene(state,tokenData.sceneId,true,world=>{
+            const token=world.tokens.find(item=>item.id===tokenData.id);
+            if(!token||token.kind==='item')fail(404,'Token indisponível.');
+            const existing=Array.isArray(token.portraits)?[...token.portraits]:token.portrait?[token.portrait]:[];
+            if(existing.length>=12)fail(409,'Use até 12 imagens por galeria de figurante.');
+            existing.push(asset);
+            token.portraits=existing;
+            token.portrait??=asset;
+            token.icon='auto';
+          });
+        }else{
+          const action=tokenData.id?'tokenUpdate':'tokenAdd';
+          replacedAsset=undefined;
+          if(tokenData.id)withScene(state,tokenData.sceneId,true,world=>{replacedAsset=world.tokens.find(item=>item.id===tokenData.id)?.portrait?.id;});
+          mutate(state,action,tokenData,access);
+          withScene(state,tokenData.sceneId,true,world=>{
+            const token=tokenData.id?world.tokens.find(item=>item.id===tokenData.id):world.tokens.at(-1);
+            token.portrait=asset;
+            if(!tokenData.icon||tokenData.icon==='auto')token.icon='auto';
+          });
+        }
       } else if (kind==='portrait') {
         const character=requireOwnCharacter(state,access,characterId);
         if(request.headers.get('X-Portrait-Variant')==='injury'){
@@ -1167,7 +1302,12 @@ export async function api(request,store) {
       const results=await Promise.allSettled(cleanup);
       return json({deleted:id,cleanupPending:results.some(result=>result.status==='rejected')});
     }
-    if (method === 'GET' && !route) return json(view(row,access,requestedScene));
+    if (method === 'GET' && !route) {
+      const etag = await campaignViewEtag(row,access,requestedScene);
+      const headers = {'Cache-Control':'private, no-cache','ETag':etag,'Vary':'Authorization, Cookie'};
+      if (matchesIfNoneMatch(request.headers.get('If-None-Match'),etag)) return new Response(null,{status:304,headers});
+      return Response.json(view(row,access,requestedScene),{headers});
+    }
     if (method==='GET'&&route==='sync') {
       const params=new URL(request.url).searchParams;
       const character=ownedCharacter(row.state,access);
@@ -1175,6 +1315,8 @@ export async function api(request,store) {
       if(params.get('motionOnly')==='1')return json({rev:row.rev,state:{movingPoints:moving?.points??null,ambient:moving?.ambient??null}});
       const rolls=rollView(row.state,master,character),version=rollVersion(rolls);
       const changed=params.get('rollVersion')!==version;
+      const messages=messageView(row.state,access,character),msgVersion=messageVersion(messages);
+      const messagesChanged=params.get('messageVersion')!==msgVersion;
       let scene={};
       if(params.get('table')==='1'){
         // Between campaign revisions only moving tokens and their visible initiative entries can change.
@@ -1190,14 +1332,15 @@ export async function api(request,store) {
       }
       const checks=scene.checkRequests??(params.get('checkRev')===String(row.rev)?null:checkRequestView(row.state,access));
       delete scene.checkRequests;
+      if(!messagesChanged&&!('table' in Object.fromEntries(params)))delete scene.messages;
       const stamp=checks?checkVersion(checks):null;
-      return json({id:row.id,rev:row.rev,master,characterId:ownedCharacter(row.state,access)?.id||null,needsCharacter:!master&&!ownedCharacter(row.state,access),rollVersion:version,checkVersion:stamp,serverTime:Date.now(),state:{mediaCheck:mediaCheckView(row.state,access),...(checks&&params.get('checks')!==stamp?{checkRequests:checks}:{}),cinematic:cinematicView(row.state,access),...(!master?{narrations:narrationView(row.state,access)}:{}),audio:{...audioView(row.state.audio,master,{includeLibrary:false}),ambient:moving?.ambient??ambientAt(row.state,ownedCharacter(row.state,access),master)},...(moving?{movingPoints:moving.points}:{}),...(changed?{rolls}:{}),...scene}});
+      return json({id:row.id,rev:row.rev,master,characterId:ownedCharacter(row.state,access)?.id||null,needsCharacter:!master&&!ownedCharacter(row.state,access),rollVersion:version,messageVersion:msgVersion,latestMessageVersion:msgVersion,checkVersion:stamp,serverTime:Date.now(),state:{mediaCheck:mediaCheckView(row.state,access),...(checks&&params.get('checks')!==stamp?{checkRequests:checks}:{}),cinematic:cinematicView(row.state,access),...(!master?{narrations:narrationView(row.state,access)}:{}),audio:{...audioView(row.state.audio,master,{includeLibrary:false}),ambient:moving?.ambient??ambientAt(row.state,ownedCharacter(row.state,access),master)},...(moving?{movingPoints:moving.points}:{}),...(changed?{rolls}:{}),...(messagesChanged?{messages}:{}),...scene}});
     }
     if (method === 'GET' && route === 'asset') {
       const viewer=ownedCharacter(row.state,access);
       const rivals=new Set(row.state.characters.filter(c=>outsideParty(c,viewer)).map(c=>c.id));
       const visibleCharacters=master?row.state.characters:row.state.characters.filter(character=>!character.hidden&&!rivals.has(character.id));
-      const tokenPortraits=master?sceneTokenPortraits(row.state):(row.state.tokens||[]).filter(token=>!token.hidden&&!rivals.has(tokenCharacterId(row.state,token))).map(token=>token.portrait);
+      const tokenPortraits=master?sceneTokenPortraits(row.state):(row.state.tokens||[]).filter(token=>!token.hidden&&!rivals.has(tokenCharacterId(row.state,token))).flatMap(token=>[token.portrait,...(Array.isArray(token.portraits)?token.portraits:[])]);
       const sharedImages=master?[]:sharingView(row.state,viewer).received.map(g=>g.material.portrait).filter(p=>p?.id);
       const itemImages=master?itemPortraits(row.state):itemPortraits({inventory:inventoryView(row.state,access),tokens:(row.state.tokens||[]).filter(t=>!t.hidden)});
       const visibleRun=cinematicView(row.state,access);

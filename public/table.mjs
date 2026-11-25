@@ -1,10 +1,10 @@
 import {lootEffect} from './loot.mjs';
 import {lightShape,renderDarkness,updateDarkness,renderVisionCones,updateVisionCones,visionSources,tokenInVision,normalizeRotation} from './table-vision.mjs';
-import {tokenIconSvg} from './token-icons.mjs';
-import {renderTableRollPanel,renderTableRollContent,renderFreeRollPreview,tableRollPreview,tableRollTabs} from './table-rolls.mjs';
-import {renderRollHistory} from './rolls.mjs';
-import {pointRevealed,slideToken,conditionSummary,normalizeTable,pingNames,mapPixelsPerCell} from './table-model.mjs';
-import {colors,sheetFields,sheetValue,skillValues,displaySheetFormula,rollFormulaLimit,sheetTestBase,sheetAttributeTest,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
+import {tokenIcons,tokenIconSvg} from './token-icons.mjs';
+import {renderTableRollPanel,renderTableRollContent,renderFreeRollPreview,tableRollPreview,tableRollTabs,dndSpellHasRoll} from './table-rolls.mjs';
+import {renderRollHistory,renderFeedListMarkup,feedFilterOptions,chatChannels,canRepeatRoll,repeatRollPayload} from './rolls.mjs';
+import {pointRevealed,slideToken,conditionSummary,normalizeTable,pingNames,mapPixelsPerCell,ambientPresets,polygonBounds} from './table-model.mjs';
+import {colors,characterColorNames,sheetFields,sheetValue,skillValues,displaySheetFormula,rollFormulaLimit,sheetTestBase,sheetAttributeTest,sheetSkillTest,sheetSavedRollFormula} from './model.mjs';
 
 const escape = value => String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const icons = {
@@ -80,7 +80,49 @@ export function renderAtmosphere({weather,tone,level,toneOpacity=100}){
   return '<div style="--tone-opacity:'+strength+'" class="vtt-atmosphere" data-weather="'+escape(weather)+'" data-tone="'+escape(tone)+'" data-level="'+escape(level)+'" aria-hidden="true"><span class="vtt-tone"></span>'+lightning+particles+ripples+'</div>';
 }
 
-export function createTabletop({microphoneControl=()=>'',action,openCharacter,openLoot=()=>{},placePoint=()=>{},explorationChanged=()=>{},report,requestAsset,realtime=()=>{}}) {
+export function measureGridDistance(points = [], grid = {}) {
+  const size = Number(grid.size) > 0 ? Number(grid.size) : 1.5;
+  const unit = grid.unit || 'm';
+  const mode = grid.distance === 'chebyshev' || grid.distance === 'manhattan' ? grid.distance : 'euclidean';
+  let cells = 0;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    const dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y);
+    cells += mode === 'chebyshev' ? Math.max(dx, dy) : mode === 'manhattan' ? dx + dy : Math.hypot(dx, dy);
+  }
+  const distance = cells * size;
+  const text = distance.toLocaleString('pt-BR', {maximumFractionDigits: 2}) + ' ' + unit;
+  const rule = {chebyshev: 'diagonais iguais', manhattan: 'sem diagonais'}[mode] || 'linha reta';
+  return {cells, distance, text, rule, unit, mode};
+}
+
+export function focusedViewportOffset({token, grid = {}, viewportWidth, viewportHeight, zoom = 1} = {}) {
+  if (!Number.isFinite(viewportWidth) || !Number.isFinite(viewportHeight) || viewportWidth <= 0 || viewportHeight <= 0) {
+    return {x: 0, y: 0};
+  }
+  const columns = Math.max(1, Number(grid.columns) || 16);
+  const rows = Math.max(1, Number(grid.rows) || 10);
+  const scale = Number(zoom) > 0 ? Number(zoom) : 1;
+  const baseWidth = Math.max(1, Math.min(viewportWidth - 24, (viewportHeight - 24) * columns / rows));
+  const baseHeight = baseWidth * rows / columns;
+  const originX = (viewportWidth - baseWidth) / 2;
+  const originY = (viewportHeight - baseHeight) / 2;
+  const size = Number(token?.size) || 1;
+  const centerX = ((Number(token?.x) || 0) + size / 2) / columns * baseWidth;
+  const centerY = ((Number(token?.y) || 0) + size / 2) / rows * baseHeight;
+  const axis = (center, baseSize, viewportSize, originAxis) => {
+    const scaled = baseSize * scale;
+    if (scaled <= viewportSize) return viewportSize / 2 - originAxis - scaled / 2;
+    const raw = viewportSize / 2 - originAxis - center * scale;
+    return clamp(raw, viewportSize - originAxis - scaled, -originAxis);
+  };
+  return {
+    x: axis(centerX, baseWidth, viewportWidth, originX),
+    y: axis(centerY, baseHeight, viewportHeight, originY)
+  };
+}
+
+export function createTabletop({microphoneControl=()=>'',action,openCharacter,quickInspect=openCharacter,uploadTokenPortraits=async()=>{},openLoot=()=>{},placePoint=()=>{},explorationChanged=()=>{},confirm=()=>true,report,requestAsset,realtime=()=>{}}) {
   let row;
   let table;
   let root;
@@ -96,10 +138,13 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
   let rollingCharacter='';
   let rollingMastery='';
   let rollingMode='normal';
+  let rollingVisibility='public',rollRole=null;
   let rollingTab='tests',rollingQuery='',rollingBase='1d20';
   let rollRevision=-1;
   let characterSignature='',connectionStatus='connecting';
-  let historyMarkup='';
+  let historyMarkup='',feedFilter='all';
+  let chatDraft={channel:'public',targetId:'',speakerCharacterId:'',speaker:'',text:''};
+  let castSlots={};
   let rollFormula='1d20';
   let tool='select';
   let shape='freehand',pingSignal='point';
@@ -109,6 +154,8 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
   let fogShape='brush',fogBrushPixels=160;
   const brushRadius=()=>{const map=row?.state.map;const pixels=table.grid.mode==='manual'&&map?.width&&map?.height?Math.max(map.width/table.grid.columns,map.height/table.grid.rows):table.grid.cellPixels;return clamp(fogBrushPixels/(2*pixels),.001,8);};
   let playerPreview=false,showCones=true;
+  let dragRulerEnabled=(()=>{try{return globalThis.localStorage?.getItem('forja.table.dragRuler')==='1';}catch{return false;}})();
+  let ambientBubblesEnabled=(()=>{try{return globalThis.localStorage?.getItem('forja.table.ambientBubbles')!=='0';}catch{return true;}})();
   let fogOpacity=.65;
   let migratedMap;
   let sceneMap;
@@ -125,12 +172,15 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
   let baseWidth=800;
   let origin={x:12,y:12};
   const portraitURLs=new Map(),tokenPaint=new WeakMap();
-  let tokenListKey=null,tokenListMarkup='';
+  let tokenListKey=null,tokenListMarkup='',ambientGroupOpen=false,listPointerDown=false;
   let busy=false;
   let focusAfterMove='';
   let measurement=null,measureMode='direct';
   const touches=new Map();
 
+  const playerTools={select:'Selecionar',pan:'Mover visão',measure:'Medir',ping:'Apontar'};
+  const masterTools={...playerTools,draw:'Desenhar',fog:'Névoa',walls:'Paredes, portas e janelas',lights:'Iluminação',region:'Região interativa',clue:'Colocar pista',sound:'Colocar som'};
+  function toolLabel(id){return id==='effect'?'Mirar efeito':masterTools[id];}
   function toolButton(id,label) {
     return '<button class="vtt-tool" type="button" data-table-tool="'+id+'" aria-label="'+label+'" title="'+label+'" aria-pressed="'+(tool===id)+'">'+icon(id)+'<span>'+label+'</span></button>';
   }
@@ -183,11 +233,18 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
       if(node.style.top!==top)node.style.top=top;
       if(previous?.rotation!==rotation)node.style.setProperty('--vtt-facing',rotation);
       if(previous?.visible!==visible){node.classList.toggle('is-out-of-vision',!visible);node.setAttribute('aria-hidden',String(!visible));node.setAttribute('tabindex',visible?'0':'-1');}
+      const absent=Boolean(token.ambientAbsent);
+      node.classList.toggle('is-ambient-absent',absent);
+      node.classList.toggle('is-ambient-entering',token.ambientPhase==='entering');
+      node.classList.toggle('is-ambient-exiting',token.ambientPhase==='exiting');
+      const bubble=node.querySelector?.('.vtt-ambient-bubble');
+      const bubbleText=ambientBubblesEnabled&&!absent&&token.ambientActivity?token.ambientActivity:'';
+      if(bubble){bubble.hidden=!bubbleText;if(bubble.textContent!==bubbleText)bubble.textContent=bubbleText;}
       tokenPaint.set(node,{x:token.x,y:token.y,rotation,visible});
     }
     const selectedToken=tokens.find(token=>token.id===selected);
     if(selectedToken){const output=root.querySelector('[data-facing-value]');if(output)output.textContent=(Math.round(normalizeRotation(selectedToken.rotation))%360)+'°';}
-    const list=root.querySelector('[data-table-token-list]');if(list){const markup=tokenList(tokens,shown);if(list.innerHTML!==markup)list.innerHTML=markup;}
+    syncTokenListDom(tokens,shown);
     const hint=root.querySelector('[data-vision-hint]');if(hint){hint.hidden=!table.darkness.enabled;if(table.darkness.enabled){const mode=table.darkness.mode==='teams'?'Visão por grupos':table.darkness.mode==='group'?'Visão compartilhada entre jogadores':'Visão individual';hint.textContent=row.master?(playerPreview?mode+' · Prévia dos jogadores; as guias do mestre estão ocultas.':mode+(showCones?' · Cones de todos os tokens. Tracejado indica token oculto dos jogadores.':' · Cones ocultados apenas nesta tela.')):visionSources(row,tokens).length?mode+' · Selecione seu token para ajustar a direção.':'Sem token de visão nesta cena. Peça ao mestre para vincular seu personagem a um token.';}}
   }
   function mayRotate(token){return Boolean(token&&token.kind!=='item'&&(row.master||token.characterId===row.characterId&&!token.locked&&!token.hidden&&token.canMove!==false));}
@@ -218,17 +275,26 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
     });
     return [...timed,...(token.statuses||[]).map(name=>'<span>'+escape(name)+'</span>')].slice(0,3).join('');
   }
+  function tokenResourceBar(token){
+    const bar=token?.resourceBar;
+    if(!bar||!(bar.maximum>0)||row.master&&playerPreview&&token.characterId!==row.characterId)return '';
+    const pct=clamp(Math.round(bar.current/bar.maximum*100),0,100);
+    return '<span class="vtt-token-bar'+(pct<=25?' is-critical':'')+'" title="'+escape(bar.label+': '+bar.current+'/'+bar.maximum)+'" aria-hidden="true"><i style="width:'+pct+'%"></i></span>';
+  }
   function tokenMarkup(token) {
     const {grid}=table;
     const size=Number(token.size)||1;
     const status=conditionBadges(token);
-    return '<button type="button" class="vtt-token '+escape(token.color||'violet')+(token.hidden?' is-hidden':'')+(token.locked?' is-locked':'')+(selected===token.id?' is-selected':'')+(activeCombatant()?.tokenId===token.id?' is-active-turn':'')+(token.kind==='item'?' is-item':'')+(!tokenShown(token)?' is-out-of-vision':'')+'" '+
+    const bar=tokenResourceBar(token);
+    const bubbleText=ambientBubblesEnabled&&!token.ambientAbsent&&token.ambientActivity?token.ambientActivity:'';
+    return '<button type="button" class="vtt-token '+escape(token.color||'violet')+(token.hidden?' is-hidden':'')+(token.locked?' is-locked':'')+(selected===token.id?' is-selected':'')+(activeCombatant()?.tokenId===token.id?' is-active-turn':'')+(token.kind==='item'?' is-item':'')+(token.ambient?' is-ambient':'')+(token.ambientAbsent?' is-ambient-absent':'')+(token.ambientPhase==='entering'?' is-ambient-entering':token.ambientPhase==='exiting'?' is-ambient-exiting':'')+(!tokenShown(token)?' is-out-of-vision':'')+'" '+
       'data-table-token="'+escape(token.id)+'" style="--vtt-facing:'+normalizeRotation(token.rotation)+'deg;left:'+token.x/grid.columns*100+'%;top:'+token.y/grid.rows*100+'%;width:'+size/grid.columns*100+'%;height:'+size/grid.rows*100+'%" '+
-      'aria-label="'+escape([token.name,conditionSummary(token)].filter(Boolean).join(' · '))+(token.locked?' · Bloqueado':'')+(token.hidden?' · Oculto':'')+'" title="'+escape(token.name)+'">'+
+      'aria-label="'+escape([token.name,token.ambientActivity,conditionSummary(token)].filter(Boolean).join(' · '))+(token.locked?' · Bloqueado':'')+(token.hidden?' · Oculto':'')+'" title="'+escape(token.name)+'">'+
       '<span '+(token.kind==='item'?'hidden ':'')+'class="vtt-token-facing" aria-hidden="true"></span><span class="vtt-token-face"><span class="vtt-token-letter">'+(tokenIconSvg(token.icon)||escape(token.name?.[0]?.toUpperCase()||'✦'))+'</span>'+
       (tokenPortrait(token)?'<img alt="" hidden data-table-token-image="'+escape(tokenPortrait(token))+'">':'')+
       (token.kind==='item'&&!tokenPortrait(token)&&/^https?:\/\//i.test(token.loot?.item?.portrait||'')?'<img alt="" hidden data-loot-portrait src="'+escape(token.loot.item.portrait)+'" referrerpolicy="no-referrer" decoding="async">':'')+'</span><span class="vtt-token-label">'+escape(token.name)+'</span>'+
-      (status?'<span class="vtt-token-status">'+status+'</span>':'')+'</button>';
+      '<span class="vtt-ambient-bubble" aria-hidden="true"'+(bubbleText?'':' hidden')+'>'+escape(bubbleText)+'</span>'+
+      bar+(status?'<span class="vtt-token-status">'+status+'</span>':'')+'</button>';
   }
 
   function fogMarkup() {
@@ -341,16 +407,38 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
       (row.master?'<svg class="vtt-light-markers" viewBox="0 0 '+columns+' '+rows+'" preserveAspectRatio="none" aria-hidden="true">'+lightMarkers()+'</svg>':'')+
       (row.master?'<svg class="vtt-walls" viewBox="0 0 '+columns+' '+rows+'" preserveAspectRatio="none" aria-hidden="true">'+table.walls.map(wallLine).join('')+'</svg>':'')+
       '<svg class="vtt-preview" viewBox="0 0 '+columns+' '+rows+'" preserveAspectRatio="none" aria-hidden="true"></svg>'+
+      '<div class="vtt-drag-label" aria-hidden="true" hidden></div>'+
       '<div class="vtt-pings" aria-hidden="true"></div></div>';
   }
 
   function tokenList(snapshot=visualTokens(),visibility) {
     const sources=visibility?null:visionSources(row,snapshot,{selected,preview:playerPreview});
     const tokens=snapshot.filter(token=>visibility?visibility.get(token.id):tokenShown(token,snapshot,sources));
-    const key=JSON.stringify([selected,tokens.map(t=>[t.id,t.name,t.color,t.icon,t.hidden,t.locked,t.statuses,t.timedStatuses])]);if(key===tokenListKey)return tokenListMarkup;tokenListKey=key;
-    return tokenListMarkup=tokens.length?'<ul class="vtt-token-list">'+tokens.map(token=>'<li><button type="button" data-table-select="'+escape(token.id)+'" class="'+(selected===token.id?'selected':'')+'">'+
+    const ambientTokens=tokens.filter(t=>t.ambient);
+    const shouldOpenAmbient=Boolean(ambientGroupOpen||ambientTokens.some(t=>t.id===selected));
+    const key=JSON.stringify([selected,row.master,shouldOpenAmbient,tokens.map(t=>[t.id,t.name,t.color,t.icon,t.hidden,t.locked,t.ambient,t.ambientAbsent,t.ambientActivity,t.statuses,t.timedStatuses])]);if(key===tokenListKey)return tokenListMarkup;tokenListKey=key;
+    const itemMarkup=token=>'<li class="vtt-token-row"><button type="button" data-table-select="'+escape(token.id)+'" class="'+(selected===token.id?'selected':'')+'">'+
       '<span class="vtt-token-swatch '+escape(token.color||'violet')+'">'+(tokenIconSvg(token.icon)||escape(token.name?.[0]||'✦'))+'</span><span><b>'+escape(token.name)+'</b>'+
-      '<small>'+escape(conditionSummary(token)||(token.hidden?'Oculto':token.locked?'Bloqueado':'Na cena'))+'</small></span></button></li>').join('')+'</ul>':'<p class="vtt-empty">Nenhum token visível nesta cena.</p>';
+      '<small>'+escape(token.ambientAbsent?'Fora da cena · volta em breve':conditionSummary(token)||(token.ambientActivity||((token.hidden?'Oculto':token.locked?'Bloqueado':token.ambient?'Figurante':'Na cena'))))+'</small></span></button>'+
+      (row.master?'<button type="button" class="vtt-token-quick-delete" data-table-delete-token="'+escape(token.id)+'" title="Remover '+escape(token.name)+'" aria-label="Remover '+escape(token.name)+'">✕</button>':'')+'</li>';
+    const mainTokens=tokens.filter(t=>!t.ambient);
+    if(!tokens.length)return tokenListMarkup='<p class="vtt-empty">Nenhum token visível nesta cena.</p>';
+    const mainHtml=mainTokens.length?'<ul class="vtt-token-list">'+mainTokens.map(itemMarkup).join('')+'</ul>':'';
+    const ambientHtml=ambientTokens.length?'<details class="vtt-ambient-group"'+(shouldOpenAmbient?' open':'')+'><summary><span>Figurantes ('+ambientTokens.length+')</span></summary>'+(row.master?'<div class="vtt-ambient-actions"><button type="button" class="btn small danger ghost" data-table-action="clearAmbient">Remover todos os figurantes</button></div>':'')+'<ul class="vtt-token-list">'+ambientTokens.map(itemMarkup).join('')+'</ul></details>':'';
+    return tokenListMarkup=mainHtml+ambientHtml;
+  }
+
+  function syncTokenListDom(snapshot,visibility) {
+    const list=root?.querySelector('[data-table-token-list]');
+    if(!list||listPointerDown)return;
+    const group=list.querySelector?.('.vtt-ambient-group');
+    if(group&&typeof group.open==='boolean')ambientGroupOpen=group.open;
+    const markup=tokenList(snapshot,visibility);
+    if(list.dataset){
+      if(list.dataset.listSignature===tokenListKey)return;
+      list.dataset.listSignature=tokenListKey;
+    }else if(list.innerHTML===markup)return;
+    list.innerHTML=markup;
   }
 
   function myCombatTurn(){
@@ -362,9 +450,22 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
     const hiddenTurn=row.state.table?.combat?.active===-1;
     const entries=combat.entries;
     const active=activeCombatant(),myTurn=myCombatTurn();
+    const tokens=visualTokens(),byId=new Map(tokens.map(token=>[token.id,token])),sources=visionSources(row,tokens,{selected,preview:playerPreview});
     const endTurn=myTurn?'<button type="button" class="btn primary" data-table-action="combatEndOwn" data-entry="'+escape(active.id)+'" data-round="'+combat.round+'">Encerrar meu turno</button>':'';
     return '<section class="vtt-side-section" data-table-combat><div class="vtt-side-heading"><h2>Iniciativa</h2>'+ (row.master?button('Organizar','tableCombat','','flag'):'')+'</div>'+
-      (entries.length?'<div class="vtt-round">Rodada '+combat.round+(hiddenTurn?' · Turno do mestre':myTurn?' · Sua vez':'')+'</div><ol class="vtt-combat">'+entries.map((entry,index)=>'<li class="'+(!hiddenTurn && index===combat.active?'current':'')+'"><span>'+escape(entry.name)+'</span><strong>'+entry.value+'</strong>'+(!hiddenTurn && index===combat.active?'<small>Turno atual</small>':'')+'</li>').join('')+'</ol>'+(row.master?'<div class="vtt-turn-controls"><button type="button" class="btn small" data-table-action="combatPrevious" aria-label="Voltar um turno">←</button><button type="button" class="btn primary" data-table-action="combatNext">Próximo turno →</button></div>':endTurn):'<p class="vtt-empty">Organize a ordem dos participantes para acompanhar o combate.</p>')+'</section>';
+      (entries.length?'<div class="vtt-round">Rodada '+combat.round+(hiddenTurn?' · Turno do mestre':myTurn?' · Sua vez':'')+'</div><ol class="vtt-combat">'+entries.map((entry,index)=>{
+        const token=entry.tokenId?byId.get(entry.tokenId):null;
+        const selectable=Boolean(token&&(row.master||tokenShown(token,tokens,sources)));
+        const label=selectable
+          ?'<button type="button" class="vtt-combat-select'+(selected===token.id?' selected':'')+'" data-table-select="'+escape(token.id)+'">'+escape(entry.name)+'</button>'
+          :'<span>'+escape(entry.name)+'</span>';
+        const rawEntry=row.state.table?.combat?.entries?.find(e=>e.id===entry.id);
+        const bar=rawEntry?.resourceBar||token?.resourceBar;
+        const showBar=Boolean(bar&&bar.maximum>0&&(!row.master||!playerPreview||token?.characterId===row.characterId));
+        const pct=showBar?clamp(Math.round(bar.current/bar.maximum*100),0,100):0;
+        const barMarkup=showBar?'<span class="vtt-combat-bar'+(pct<=25?' is-critical':'')+'" title="'+escape(bar.label+': '+bar.current+'/'+bar.maximum)+'"><span><i style="width:'+pct+'%"></i></span><small>'+escape(bar.current+'/'+bar.maximum)+'</small></span>':'';
+        return '<li class="'+(!hiddenTurn && index===combat.active?'current':'')+'">'+label+'<strong>'+entry.value+'</strong>'+barMarkup+(!hiddenTurn && index===combat.active?'<small>Turno atual</small>':'')+'</li>';
+      }).join('')+'</ol>'+(row.master?'<div class="vtt-turn-controls"><button type="button" class="btn small" data-table-action="combatPrevious" aria-label="Voltar um turno">←</button><button type="button" class="btn primary" data-table-action="combatNext">Próximo turno →</button></div>':endTurn):'<p class="vtt-empty">Organize a ordem dos participantes para acompanhar o combate.</p>')+'</section>';
   }
 
   function rollCharacters() {
@@ -380,10 +481,10 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
   }
 
   function resetRollCharacter(character){
-    rollingCharacter=character?.id||'';rollingMastery='';rollingMode='normal';
+    rollingCharacter=character?.id||'';rollingMastery='';rollingMode='normal';castSlots={};
     rollingTab='tests';rollingQuery='';rollingBase=sheetTestBase(character);rollFormula=rollingBase;
   }
-  function rollView(){return {tab:rollingTab,query:rollingQuery,base:rollingBase,formula:rollFormula,mode:rollingMode,masteryId:rollingMastery};}
+  function rollView(){return {tab:rollingTab,query:rollingQuery,base:rollingBase,formula:rollFormula,mode:rollingMode,masteryId:rollingMastery,visibility:rollingVisibility,castSlots};}
   function rollPanelContent() {
     characterSignature=JSON.stringify(row.state.characters||[]);
     return renderTableRollPanel(row,rollCharacter(),rollCharacters(),rollView());
@@ -410,28 +511,78 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
       const formula=test?.formula||(saved?sheetSavedRollFormula(character,saved):data.formula)||'';
       const preview=tableRollPreview(formula,row.state,character,rollView());
       if(preview.error){report(preview.error);return;}
-      return perform('roll',{...data,characterId:character.id,actor:character.name,
+      return perform('roll',{...data,characterId:character.id,actor:character.name,visibility:rollingVisibility,
         ...(test&&!character.dnd?{testDice:rollingBase}:{}),
         ...(preview.mastery?{masteryId:preview.mastery.id}:{}),
         ...(preview.d20&&rollingMode!=='normal'?{mode:rollingMode}:{})});
     }catch(error){report(error.message);}
   }
 
+  function defaultZoneAround(token){
+    const size=Number(token.size)||1,span=Math.max(4,size+2);
+    const width=Math.min(span,table.grid.columns),height=Math.min(span,table.grid.rows);
+    const x=clamp(token.x+size/2-width/2,0,Math.max(0,table.grid.columns-width));
+    const y=clamp(token.y+size/2-height/2,0,Math.max(0,table.grid.rows-height));
+    return {x:Number(x.toFixed(2)),y:Number(y.toFixed(2)),width:Number(width.toFixed(2)),height:Number(height.toFixed(2))};
+  }
   function routeControls(token){
     if(!row.master||token.characterId&&!row.state.characters?.some(c=>c.id===token.characterId&&c.characterType==='npc'))return '';
     const control=(key,title,disabled=false)=>'<button type="button" class="btn small" data-patrol="'+key+'" '+(disabled?'disabled':'')+'>'+title+'</button>';
     if(routeDraft?.id===token.id){
-      const {points,mode,speed}=routeDraft;
-      return '<div class="vtt-route-controls"><strong>Rota · '+points.length+' pontos</strong><small>Toque no mapa para marcar cada parada.</small><label>Percurso <select data-route-mode><option value="return">Ida e volta</option><option value="loop" '+(mode==='loop'?'selected':'')+'>Circuito fechado</option></select></label><label>Ritmo <select data-route-speed>'+[[.5,'Passeio'],[1,'Caminhada'],[2,'Rápido']].map(([n,label])=>'<option value="'+n+'" '+(n===speed?'selected':'')+'>'+label+'</option>').join('')+'</select></label>'+control('undo','Desfazer ponto',points.length<2)+control('start','Iniciar rota',points.length<2)+control('cancel','Cancelar')+'</div>';
+      const {points,mode,speed,pause=0,cooldown=15,activity='',varyAppearance=false,count=1,ambient=false,preset='',bounds=null,area=null,color=token.color||'violet',iconChoice=token.icon||'auto'}=routeDraft;
+      const presetOptions='<option value="">Personalizado</option>'+Object.entries(ambientPresets).map(([key,item])=>'<option value="'+key+'" '+(preset===key?'selected':'')+'>'+escape(item.label)+'</option>').join('');
+      const hasWanderZone=Boolean(area?.length>=3||bounds);
+      const hint=mode==='wander'
+        ?(area?.length>=3?'Área livre pronta ('+area.length+' vértices · respeita paredes). Arraste no mapa para redesenhar.':bounds?'Área rápida '+bounds.width.toFixed(1)+'×'+bounds.height.toFixed(1)+' pronta. Arraste livremente no mapa para desenhar qualquer formato.':'Segure e desenhe livremente no mapa o contorno da área onde os NPCs vão caminhar.')
+        :mode==='idle'
+          ?'Fica no lugar atual com pequenos giros naturais e pausas.'
+          :'Toque no mapa para marcar cada parada ('+points.length+' pontos).';
+      const portraitPool=Array.isArray(token.portraits)&&token.portraits.length?token.portraits:token.portrait?[token.portrait]:[];
+      const colorOptions=Object.entries(characterColorNames).map(([k,label])=>'<option value="'+escape(k)+'" '+(k===color?'selected':'')+'>'+escape(label)+'</option>').join('');
+      const iconOptions=[['auto','Imagem importada / Inicial'],['initial','Sempre inicial'],...Object.entries(tokenIcons).map(([k,v])=>[k,v.label])].map(([k,label])=>'<option value="'+escape(k)+'" '+(k===iconChoice?'selected':'')+'>'+escape(label)+'</option>').join('');
+      const appearanceBox='<div class="vtt-route-appearance"><div class="vtt-route-appearance-actions"><label class="btn small">+ Adicionar imagem(ns)<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden data-route-portraits></label>'+(portraitPool.length?control('clearPortraits','Limpar imagens'):'')+'</div><small>'+(portraitPool.length?portraitPool.length+' imagem(ns) pronta(s) · distribuídas nos figurantes e entradas':'Adicione até 12 imagens para variar o visual dos figurantes sem usar ícone padrão.')+'</small><div class="vtt-route-appearance-selects"><label>Cor <select data-route-color>'+colorOptions+'</select></label><label>Símbolo <select data-route-icon>'+iconOptions+'</select></label></div></div>';
+      const passFields=mode==='pass'
+        ?'<label>Fora da cena <select data-route-cooldown>'+[[10,'10 s'],[15,'15 s'],[30,'30 s'],[60,'1 min']].map(([n,label])=>'<option value="'+n+'" '+(n===cooldown?'selected':'')+'>'+label+'</option>').join('')+'</select></label>'+
+         '<label class="check"><input type="checkbox" data-route-vary '+(varyAppearance?'checked':'')+'> '+(portraitPool.length>1?'Alternar imagens e cores a cada entrada':'Variar cor/símbolo a cada entrada')+'</label>'
+        :'';
+      const speedList=[[0.5,'Passeio'],[0.6,'Lento'],[1,'Caminhada'],[1.1,'Ronda'],[2,'Rápido'],[2.2,'Corrida']];
+      const pauseList=[[0,'Sem pausa'],[1.5,'Muito breve · 1,5 s'],[3,'Breve · 3 s'],[6,'Moderada · 6 s'],[8,'Natural · 8 s'],[15,'Longa · 15 s']];
+      const canStart=mode==='idle'?true:mode==='wander'?hasWanderZone:points.length>=2;
+      return '<div class="vtt-route-controls"><strong>'+(mode==='wander'?'Área de vagueio livre':mode==='idle'?'Rotina estacionária':'Rota · '+points.length+' pontos')+'</strong><small>'+hint+'</small>'+
+        '<label>Perfil pronto <select data-route-preset>'+presetOptions+'</select></label>'+
+        '<label>Percurso <select data-route-mode><option value="return" '+(mode==='return'?'selected':'')+'>Ida e volta</option><option value="loop" '+(mode==='loop'?'selected':'')+'>Circuito fechado</option><option value="pass" '+(mode==='pass'?'selected':'')+'>Entrar e sair (passagem)</option><option value="wander" '+(mode==='wander'?'selected':'')+'>Área desenhada livremente</option><option value="idle" '+(mode==='idle'?'selected':'')+'>Estacionário vivo</option></select></label>'+
+        (mode!=='idle'?'<label>Ritmo <select data-route-speed>'+speedList.map(([n,label])=>'<option value="'+n+'" '+(Math.abs(n-speed)<0.01?'selected':'')+'>'+label+'</option>').join('')+'</select></label>':'')+
+        '<label>Pausa nas paradas <select data-route-pause>'+pauseList.map(([n,label])=>'<option value="'+n+'" '+(Math.abs(n-pause)<0.01?'selected':'')+'>'+label+'</option>').join('')+'</select></label>'+
+        '<label>Atividade (balão opcional) <input type="text" maxlength="32" list="vtt-activity-presets" data-route-activity value="'+escape(activity)+'" placeholder="Ex. Pescando, Conversando…"></label>'+
+        '<datalist id="vtt-activity-presets"><option value="Pescando"></option><option value="Conversando"></option><option value="Olhando barraca"></option><option value="Passeando"></option><option value="Brincando"></option><option value="Caminhando"></option><option value="Em ronda"></option></datalist>'+
+        appearanceBox+
+        passFields+
+        (mode==='wander'?control('zoneAround','Área 4×4 ao redor')+(hasWanderZone?control('clearZone','Limpar desenho'):''):'')+
+        (!token.characterId&&mode!=='idle'?'<label>Figurantes na rotina <select data-route-count>'+[1,2,3,4,5,6].map(n=>'<option value="'+n+'" '+(n===count?'selected':'')+'>'+(n===1?'Só este token':n+' figurantes')+'</option>').join('')+'</select></label>':'')+
+        (!token.characterId?'<label class="check"><input type="checkbox" data-route-ambient '+(ambient||count>1?'checked':'')+'> Marcar como figurante (ambiente)</label>':'')+
+        (!['wander','idle'].includes(mode)?control('undo','Desfazer ponto',points.length<2):'')+control('start',mode==='idle'?'Iniciar rotina':'Iniciar rota',!canStart)+control('cancel','Cancelar')+'</div>';
     }
-    return '<div class="vtt-route-controls">'+control('draw',token.patrol?'Redesenhar rota':'Traçar rota')+(token.patrol?control(token.patrol.started?'pause':'resume',token.patrol.started?'Pausar rota':'Retomar rota')+control('clear','Remover rota'):'')+'</div>';
+    return '<div class="vtt-route-controls">'+control('draw',token.patrol?'Editar rotina / rota':'Rotina / rota')+(token.patrol?control(token.patrol.started?'pause':'resume',token.patrol.started?'Pausar rota':'Retomar rota')+control('clear','Remover rota'):'')+(token.ambient||token.patrol?'<button type="button" class="btn small primary" data-patrol="promote">Assumir controle (NPC)</button>':'')+'</div>';
   }
   function paintRoute(){
     const preview=root?.querySelector('.vtt-preview');
     if(!preview)return;
     if(routeDraft){
-      const half=routeDraft.size/2,points=routeDraft.points.map(p=>[p.x+half,p.y+half]);
-      preview.innerHTML='<polyline points="'+points.join(' ')+'" fill="none" stroke="#76e3c3" stroke-width="3" stroke-dasharray="6 3" vector-effect="non-scaling-stroke"/>'+points.map(([x,y])=>'<circle cx="'+x+'" cy="'+y+'" r=".14" fill="#76e3c3"/>').join('');
+      if(routeDraft.mode==='wander'){
+        if(routeDraft.area?.length>=3){
+          const pts=routeDraft.area.map(p=>p.x+','+p.y).join(' ');
+          preview.innerHTML='<polygon points="'+pts+'" fill="#76e3c326" stroke="#76e3c3" stroke-width="2.5" stroke-dasharray="6 3" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>';
+        }else if(routeDraft.bounds){
+          const b=routeDraft.bounds;
+          preview.innerHTML='<rect x="'+b.x+'" y="'+b.y+'" width="'+b.width+'" height="'+b.height+'" fill="#76e3c322" stroke="#76e3c3" stroke-width="2.5" stroke-dasharray="6 3" vector-effect="non-scaling-stroke"/>';
+        }else preview.replaceChildren();
+      }else if(routeDraft.mode==='idle'){
+        const half=routeDraft.size/2,p=routeDraft.points[0];
+        preview.innerHTML='<circle cx="'+(p.x+half)+'" cy="'+(p.y+half)+'" r="'+(half+0.35)+'" fill="none" stroke="#76e3c3" stroke-width="2" stroke-dasharray="4 3" vector-effect="non-scaling-stroke"/>';
+      }else{
+        const half=routeDraft.size/2,points=routeDraft.points.map(p=>[p.x+half,p.y+half]);
+        preview.innerHTML='<polyline points="'+points.join(' ')+'" fill="none" stroke="#76e3c3" stroke-width="3" stroke-dasharray="6 3" vector-effect="non-scaling-stroke"/>'+points.map(([x,y])=>'<circle cx="'+x+'" cy="'+y+'" r=".14" fill="#76e3c3"/>').join('');
+      }
     }else preview.replaceChildren();
     root.querySelector('[data-table-selection]').innerHTML=selectedMarkup();
   }
@@ -444,10 +595,20 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
       [['up','↑','cima'],['left','←','esquerda'],['down','↓','baixo'],['right','→','direita']].map(([direction,symbol,label])=>
         '<button type="button" class="btn" data-table-move="'+direction+'" aria-label="Mover '+escape(token.name)+' para '+label+'">'+symbol+'</button>'
       ).join('')+'</div>':'';
-    return '<div class="vtt-selection"><div><strong>'+escape(token.name)+'</strong>'+(row.master&&token.realName?'<small>Nome verdadeiro · '+escape(token.realName)+'</small>':'')+'<small>'+escape((row.master?(token.hidden?'Oculto dos jogadores · ':'Compartilhado com a mesa · '):'')+(conditionSummary(token)||'Sem condições'))+'</small></div><div class="actions">'+
+    const canEditResource=Boolean(token.resourceBar&&token.resourceBar.maximum>0&&token.characterId&&(row.master&&!playerPreview||token.characterId===row.characterId));
+    const resourceControls=canEditResource?(()=>{
+      const bar=token.resourceBar,pct=clamp(Math.round(bar.current/bar.maximum*100),0,100);
+      return '<div class="vtt-selection-resource" data-table-selection-resource><div class="vtt-selection-resource-head"><span><b>'+escape(bar.label)+'</b><strong>'+escape(bar.current+' / '+bar.maximum)+'</strong></span><div class="vtt-selection-meter'+(pct<=25?' is-critical':'')+'"><i style="width:'+pct+'%"></i></div></div><div class="vtt-selection-deltas">'+
+        [-5,-1,1,5].map(delta=>'<button type="button" class="btn small'+(delta<0?' ghost':'')+'" data-table-resource-delta="'+delta+'" data-character-id="'+escape(token.characterId)+'" data-field-id="'+escape(bar.fieldId)+'">'+(delta>0?'+'+delta:String(delta).replace('-','−'))+'</button>').join('')+
+        '<input type="number" min="1" max="1000000" step="1" value="1" data-table-delta-input aria-label="Valor de dano ou cura">'+
+        '<button type="button" class="btn small danger" data-table-delta-apply="-1" data-character-id="'+escape(token.characterId)+'" data-field-id="'+escape(bar.fieldId)+'">− Dano</button>'+
+        '<button type="button" class="btn small" data-table-delta-apply="1" data-character-id="'+escape(token.characterId)+'" data-field-id="'+escape(bar.fieldId)+'">+ Cura</button></div></div>';
+    })():'';
+    return '<div class="vtt-selection"><div><strong>'+escape(token.name)+'</strong>'+(row.master&&token.realName?'<small>Nome verdadeiro · '+escape(token.realName)+'</small>':'')+'<small>'+escape((row.master?(token.ambientAbsent?'Fora da cena no momento · ':token.hidden?'Oculto dos jogadores · ':'Compartilhado com a mesa · '):'')+(conditionSummary(token)||'Sem condições'))+'</small></div><div class="actions">'+
       (row.master&&row.state.characters?.some(c=>c.id===token.characterId&&c.party)?button('Identidade entre grupos','characterParty',token.characterId):'')+
+      (row.state.characters?.some(character=>character.id===token.characterId)?'<button type="button" class="btn small" data-table-quick-character="'+escape(token.characterId)+'">Consulta rápida</button>':'')+
       (row.state.characters?.some(character=>character.id===token.characterId&&character.access!=='summary')?'<button type="button" class="btn small" data-table-character="'+escape(token.characterId)+'">Abrir ficha</button>':'')+
-      (row.master?'<button type="button" class="btn small" data-table-action="tokenVisibility" aria-pressed="'+Boolean(token.hidden)+'">'+(token.hidden?'Mostrar aos jogadores':'Ocultar dos jogadores')+'</button>'+button('Condições','tableConditions',token.id)+button('Editar token','tableTokenEdit',token.id)+(row.state.characters?.some(character=>character.id===token.characterId&&character.claimed&&!character.hidden)?button('Mensagem privada','tableTokenMessage',token.id):''):'')+'</div>'+routeControls(token)+movePad+(movable?'<div class="vtt-rotation-controls" role="group" aria-label="Direção do token"><button type="button" class="btn small" data-table-action="rotateLeft" aria-label="Girar 15 graus à esquerda">Q ↶</button><span>Direção <output data-facing-value>'+Math.round(normalizeRotation(token.rotation))+'°</output></span><button type="button" class="btn small" data-table-action="rotateRight" aria-label="Girar 15 graus à direita">E ↷</button><small>Q/E para girar · Ao arrastar, use a roda</small></div>':'')+(row.master&&table.darkness.enabled?'<button type="button" class="btn small" data-table-action="visionPreview" aria-pressed="'+playerPreview+'">'+(playerPreview?'Voltar à visão do mestre':table.darkness.mode==='group'?'Prévia da visão compartilhada':'Ver pela visão deste token')+'</button>':'')+'</div>';
+      (row.master?'<button type="button" class="btn small" data-table-action="tokenVisibility" aria-pressed="'+Boolean(token.hidden)+'">'+(token.hidden?'Mostrar aos jogadores':'Ocultar dos jogadores')+'</button>'+button('Condições','tableConditions',token.id)+button('Editar token','tableTokenEdit',token.id)+(row.state.characters?.some(character=>character.id===token.characterId&&character.claimed&&!character.hidden)?button('Mensagem privada','tableTokenMessage',token.id):'')+'<button type="button" class="btn small danger" data-table-delete-token="'+escape(token.id)+'">Remover</button>':'')+'</div>'+resourceControls+routeControls(token)+movePad+(movable?'<div class="vtt-rotation-controls" role="group" aria-label="Direção do token"><button type="button" class="btn small" data-table-action="rotateLeft" aria-label="Girar 15 graus à esquerda">Q ↶</button><span>Direção <output data-facing-value>'+Math.round(normalizeRotation(token.rotation))+'°</output></span><button type="button" class="btn small" data-table-action="rotateRight" aria-label="Girar 15 graus à direita">E ↷</button><small>Q/E para girar · Ao arrastar, use a roda'+(row.master?' · Del remove':'')+'</small></div>':'')+(row.master&&table.darkness.enabled?'<button type="button" class="btn small" data-table-action="visionPreview" aria-pressed="'+playerPreview+'">'+(playerPreview?'Voltar à visão do mestre':table.darkness.mode==='group'?'Prévia da visão compartilhada':'Ver pela visão deste token')+'</button>':'')+'</div>';
   }
 
   function drawingOptions() {
@@ -458,29 +619,34 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
       '<div class="vtt-fog-options" '+(tool==='fog'?'':'hidden')+'><label>Formato<select data-fog-shape><option value="brush" '+(fogShape==='brush'?'selected':'')+'>Pincel livre</option><option value="rectangle" '+(fogShape==='rectangle'?'selected':'')+'>Retângulo na grade</option></select></label><label data-fog-brush-options '+(fogShape==='brush'?'':'hidden')+'>Diâmetro do pincel <output data-fog-brush-size>'+fogBrushPixels+' px</output><input type="range" data-fog-brush min="10" max="300" step="5" value="'+fogBrushPixels+'"></label><label>No toque<select data-table-fog><option value="reveal" '+(fogOperation==='reveal'?'selected':'')+'>Revelar</option><option value="hide" '+(fogOperation==='hide'?'selected':'')+'>Ocultar</option></select></label><button type="button" class="btn small" data-table-action="fogToggle">'+(table.fog.enabled?'Desativar névoa':'Ativar névoa')+'</button><button type="button" class="btn small danger" data-table-action="fogReset">Cobrir tudo</button><button type="button" class="btn small" data-table-action="fogRevealAll">Revelar tudo</button><button type="button" class="btn small" data-table-action="fogUndo" '+(table.fog.history.length?'':'disabled')+'>Desfazer névoa</button><button type="button" class="btn small" data-table-action="fogPreview" aria-pressed="'+playerPreview+'">'+(playerPreview?'Voltar à visão do mestre':'Prévia dos jogadores')+'</button><label>Opacidade para o mestre<input type="range" min="20" max="90" value="'+Math.round(fogOpacity*100)+'" data-fog-opacity></label><p class="vtt-fog-legend"><span>Verde revela</span><span>Laranja oculta</span> · Mouse: esquerdo revela, direito oculta · Esc cancela</p></div>';
   }
 
+  function feedState(){return {filter:feedFilter,...chatDraft};}
   function render(nextRow) {
     if (campaign!==nextRow.id) {
-      rollingCharacter='';rollingMastery='';rollFormula='1d20';rollRevision=-1;historyMarkup='';
+      rollingCharacter='';rollingMastery='';rollFormula='1d20';rollRevision=-1;historyMarkup='';feedFilter='all';
+      chatDraft={channel:'public',targetId:'',speakerCharacterId:'',speaker:'',text:''};castSlots={};
+      rollRole=Boolean(nextRow.master);rollingVisibility=nextRow.master?'gm':'public';
       campaign=nextRow.id;seenPings.clear();seenLoot.clear();clearRemoteMoves();resetRollCharacter();selected='';zoom=1;offset={x:0,y:0};tool='select';measurement=null;playerPreview=false;migratedMap=null;mapDimensions=null;
       for (const pending of portraitURLs.values()) pending.then(url=>URL.revokeObjectURL(url)).catch(()=>{});
       portraitURLs.clear();
       for (const cached of portraitURLs.values()) cached.then(url=>URL.revokeObjectURL(url)).catch(()=>{});
       portraitURLs.clear();
+    } else if (rollRole!==Boolean(nextRow.master)) {
+      rollRole=Boolean(nextRow.master);rollingVisibility=nextRow.master?'gm':'public';
     }
     if (sceneMap!==(nextRow.state.sceneId||'')+'/'+(nextRow.state.map?.id||'')) {sceneMap=(nextRow.state.sceneId||'')+'/'+(nextRow.state.map?.id||'');zoom=1;offset={x:0,y:0};measurement=null;playerPreview=false;}
     row=nextRow;sampleClock=clock();
     table=normalizeTable(row.state);
-    rollRevision=Math.max(rollRevision,row.rev||0);historyMarkup=renderRollHistory(row);
-    if (!row.master && ['draw','fog'].includes(tool)) tool='select';
+    rollRevision=Math.max(rollRevision,row.rev||0);historyMarkup=renderRollHistory(row,feedState());
+    if(!row.master&&tool!=='effect'&&!Object.hasOwn(playerTools,tool))tool='select';
     if (!(row.state.tokens||[]).some(token=>token.id===selected)) selected='';
     return '<section class="vtt"><div class="vtt-heading"><div><p class="vtt-eyebrow" data-table-campaign-name>'+escape(row.state.name)+'</p><h1>Mesa virtual</h1><p class="subtitle" data-table-scene-name>'+escape([row.state.sessionName,row.state.scene].filter(Boolean).join(' · ')||'Cena atual')+'</p></div><div class="actions"><button type="button" class="btn small vtt-fullscreen" data-act="tableFullscreen">'+icon('fit')+'<span class="vtt-enter-label">Tela cheia</span><span class="vtt-exit-label">Sair da tela cheia</span></button>'+microphoneControl()+'<button type="button" class="btn small" data-table-focus-rolls>'+icon('dice')+'Dados da ficha</button>'+(row.master?button('Ambiente','tableAtmosphere','','darkness')+button('Enviar mapa','upload','map','image')+button('Novo token','tableTokenAdd','','plus')+button('Colocar item','lootPlace','','plus'):'')+'</div></div>'+
-      '<div class="vtt-layout"><div class="vtt-scene-column"><section class="vtt-stage"><div class="vtt-toolbar" role="toolbar" aria-label="Ferramentas da mesa"><div class="vtt-tools">'+
-      toolButton('select','Selecionar')+toolButton('pan','Mover visão')+toolButton('measure','Medir')+toolButton('ping','Apontar')+(row.master?toolButton('draw','Desenhar')+toolButton('fog','Névoa')+toolButton('walls','Paredes, portas e janelas')+toolButton('lights','Iluminação')+toolButton('region','Região interativa')+toolButton('clue','Colocar pista')+toolButton('sound','Colocar som'):'')+'</div>'+
-      '<div class="vtt-view-controls"><span class="vtt-connection" data-table-connection role="status" aria-live="polite">Conectando…</span><button class="vtt-tool" type="button" data-table-zoom="out" aria-label="Diminuir zoom" title="Diminuir zoom">'+icon('zoomOut')+'</button><span data-table-zoom-label>'+Math.round(zoom*100)+'%</span><button class="vtt-tool" type="button" data-table-zoom="in" aria-label="Aumentar zoom" title="Aumentar zoom">'+icon('zoomIn')+'</button><button class="vtt-tool" type="button" data-table-zoom="fit" aria-label="Ajustar mapa à tela" title="Ajustar mapa à tela">'+icon('fit')+'</button>'+(row.master?'<button class="vtt-tool" type="button" data-table-action="darknessToggle" aria-pressed="'+table.darkness.enabled+'" title="'+(table.darkness.enabled?'Desativar escuridão':'Ativar escuridão')+'" aria-label="'+(table.darkness.enabled?'Desativar escuridão':'Ativar escuridão')+'">'+icon('darkness')+'</button>':'')+(row.master?'<button type="button" class="vtt-tool vtt-vision-sharing" data-table-action="visionShare" aria-pressed="'+(table.darkness.mode==='group')+'" title="Compartilhar visão entre jogadores">'+icon('sharedVision')+'<span data-vision-share-label>'+(table.darkness.mode==='teams'?'Visão: por grupos':table.darkness.mode==='group'?'Visão: compartilhada':'Visão: individual')+'</span></button><button type="button" class="vtt-tool vtt-cones-control" data-table-action="visionCones" aria-pressed="'+showCones+'" title="Mostrar cones de todos os tokens, só para o mestre" '+(!table.darkness.enabled||playerPreview?'disabled':'')+'>'+icon('cones')+'<span>Cones</span></button>':'')+(row.master?'<button class="vtt-tool" type="button" data-act="tableSettings" aria-label="Configurar grade" title="Configurar grade">'+icon('settings')+'</button>':'')+'</div></div><div class="vtt-measure-options" '+(tool==='measure'?'':'hidden')+'><label>Régua <select data-measure-mode><option value="direct">Linha direta</option><option value="path" '+(measureMode==='path'?'selected':'')+'>Percurso por pontos</option></select></label><button type="button" class="btn small" data-table-action="measureUndo" '+(measureMode==='path'?'':'hidden')+'>Desfazer ponto</button><button type="button" class="btn small" data-table-action="measureClear">Limpar medida</button></div><div class="vtt-ping-options" '+(tool==='ping'?'':'hidden')+'><label>Sinal no mapa <select data-ping-signal>'+Object.entries(pingNames).map(([key,label])=>'<option value="'+key+'" '+(key===pingSignal?'selected':'')+'>'+label+'</option>').join('')+'</select></label></div>'+drawingOptions()+
+      '<div class="vtt-layout"><div class="vtt-scene-column"><section class="vtt-stage"><div class="vtt-toolbar" role="toolbar" aria-label="Ferramentas da mesa"><button type="button" class="btn vtt-tools-toggle" aria-expanded="false" aria-controls="vtt-tool-list" data-tool-list-toggle>Ferramentas · <span data-active-tool>'+toolLabel(tool)+'</span></button><div class="vtt-tools" id="vtt-tool-list">'+
+      Object.entries(row.master?masterTools:playerTools).map(([id,label])=>toolButton(id,label)).join('')+'</div>'+
+      '<div class="vtt-view-controls"><span class="vtt-connection" data-table-connection role="status" aria-live="polite">Conectando…</span><button class="vtt-tool" type="button" data-table-zoom="out" aria-label="Diminuir zoom" title="Diminuir zoom">'+icon('zoomOut')+'</button><span data-table-zoom-label>'+Math.round(zoom*100)+'%</span><button class="vtt-tool" type="button" data-table-zoom="in" aria-label="Aumentar zoom" title="Aumentar zoom">'+icon('zoomIn')+'</button><button class="vtt-tool" type="button" data-table-zoom="fit" aria-label="Ajustar mapa à tela" title="Ajustar mapa à tela">'+icon('fit')+'</button><button class="vtt-tool" type="button" data-table-action="dragRulerToggle" aria-pressed="'+dragRulerEnabled+'" title="'+(dragRulerEnabled?'Desativar régua automática ao arrastar tokens':'Ativar régua automática ao arrastar tokens')+'" aria-label="Régua ao arrastar tokens">'+icon('measure')+'<span>Régua auto</span></button><button class="vtt-tool" type="button" data-table-action="ambientBubblesToggle" aria-pressed="'+ambientBubblesEnabled+'" title="'+(ambientBubblesEnabled?'Ocultar balões de atividade dos figurantes':'Mostrar balões de atividade dos figurantes')+'" aria-label="Balões de atividade dos figurantes">'+icon('ping')+'<span>Balões NPC</span></button>'+(row.master&&(row.state.table?.patrolRunning>0||row.state.table?.patrolPaused>0)?'<button class="vtt-tool" type="button" data-table-action="sceneLifeToggle" aria-pressed="'+(row.state.table?.patrolRunning>0)+'" title="'+(row.state.table?.patrolRunning>0?'Pausar todas as rotas e figurantes da cena':'Retomar todas as rotas e figurantes da cena')+'"><span>'+(row.state.table?.patrolRunning>0?'⏸ Pausar vida':'▶ Retomar vida')+'</span></button>':'')+(row.master&&(row.state.tokens||[]).some(t=>t.ambient)?'<button class="vtt-tool" type="button" data-table-action="clearAmbient" data-table-toolbar-clear-ambient title="Remover todos os figurantes desta cena"><span>✕ Figurantes</span></button>':'')+(row.master?'<button class="vtt-tool" type="button" data-table-action="darknessToggle" aria-pressed="'+table.darkness.enabled+'" title="'+(table.darkness.enabled?'Desativar escuridão':'Ativar escuridão')+'" aria-label="'+(table.darkness.enabled?'Desativar escuridão':'Ativar escuridão')+'">'+icon('darkness')+'</button>':'')+(row.master?'<button type="button" class="vtt-tool vtt-vision-sharing" data-table-action="visionShare" aria-pressed="'+(table.darkness.mode==='group')+'" title="Compartilhar visão entre jogadores">'+icon('sharedVision')+'<span data-vision-share-label>'+(table.darkness.mode==='teams'?'Visão: por grupos':table.darkness.mode==='group'?'Visão: compartilhada':'Visão: individual')+'</span></button><button type="button" class="vtt-tool vtt-cones-control" data-table-action="visionCones" aria-pressed="'+showCones+'" title="Mostrar cones de todos os tokens, só para o mestre" '+(!table.darkness.enabled||playerPreview?'disabled':'')+'>'+icon('cones')+'<span>Cones</span></button>':'')+(row.master?'<button class="vtt-tool" type="button" data-act="tableSettings" aria-label="Configurar grade" title="Configurar grade">'+icon('settings')+'</button>':'')+'</div></div><div class="vtt-measure-options" '+(tool==='measure'?'':'hidden')+'><label>Régua <select data-measure-mode><option value="direct">Linha direta</option><option value="path" '+(measureMode==='path'?'selected':'')+'>Percurso por pontos</option></select></label><button type="button" class="btn small" data-table-action="measureUndo" '+(measureMode==='path'?'':'hidden')+'>Desfazer ponto</button><button type="button" class="btn small" data-table-action="measureClear">Limpar medida</button></div><div class="vtt-ping-options" '+(tool==='ping'?'':'hidden')+'><label>Sinal no mapa <select data-ping-signal>'+Object.entries(pingNames).map(([key,label])=>'<option value="'+key+'" '+(key===pingSignal?'selected':'')+'>'+label+'</option>').join('')+'</select></label></div>'+drawingOptions()+
       '<div class="vtt-viewport" tabindex="0" role="region" aria-label="Mapa interativo. Use as ferramentas para medir, apontar e movimentar tokens.">'+sceneMarkup()+
       (!row.state.map?'<p class="vtt-map-hint">'+(row.master?'Envie um mapa ou use a grade para começar.':'A cena está pronta para os tokens.')+'</p>':'')+'</div>'+
       '<div class="vtt-statusbar"><span data-table-help role="status" aria-live="polite">'+help()+'</span><span>'+table.grid.columns+' × '+table.grid.rows+' células · '+table.grid.size+' '+escape(table.grid.unit)+' / célula'+(table.fog.enabled?' · Névoa ativa':'')+'</span></div><p class="vtt-vision-hint" data-vision-hint '+(table.darkness.enabled?'':'hidden')+'>'+(row.master?'Escuridão ativa · selecione um token para inspecionar seu campo de visão.':'Escuridão ativa · sua visão acompanha seus tokens. Use os controles de direção após selecionar seu token.')+'</p><div data-table-selection>'+selectedMarkup()+'</div></section><section class="vtt-roll-feed" data-table-roll-history aria-label="Histórico de rolagens">'+historyMarkup+'</section></div>'+
-      '<aside class="vtt-inspector">'+rollPanelMarkup()+'<div data-point-list>'+pointsList()+'</div><section class="vtt-side-section"><div class="vtt-side-heading"><h2>Tokens</h2><span class="vtt-count" data-table-token-count>'+ (row.state.tokens||[]).length+'</span></div>'+'<div data-table-token-list>'+tokenList()+'</div></section>'+combatMarkup()+'</aside></div></section>';
+      '<aside class="vtt-inspector">'+rollPanelMarkup()+'<div data-point-list>'+pointsList()+'</div><section class="vtt-side-section"><div class="vtt-side-heading"><h2>Tokens</h2><span class="vtt-count" data-table-token-count>'+ (row.state.tokens||[]).length+'</span></div>'+'<div data-table-token-list data-list-signature="'+escape(tokenListKey||'')+'">'+tokenList()+'</div></section>'+combatMarkup()+'</aside></div></section>';
   }
 
   function help() {
@@ -531,6 +697,21 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
     if (focus) [...root.querySelectorAll('[data-table-token]')].find(node=>node.dataset.tableToken===id)?.focus({preventScroll:true});
   }
 
+  function focusToken(id) {
+    if (!root || !row || !table) return false;
+    const tokens=visualTokens(),token=tokens.find(t=>t.id===id);
+    if (!token || (!row.master && !tokenShown(token,tokens))) return false;
+    setSelection(id,true);
+    if (!viewport || !world) return false;
+    const bounds=viewport.getBoundingClientRect?.();
+    const viewportWidth=viewport.clientWidth||bounds?.width||0;
+    const viewportHeight=viewport.clientHeight||bounds?.height||0;
+    if (viewportWidth<=0 || viewportHeight<=0) return false;
+    offset=focusedViewportOffset({token,grid:table.grid,viewportWidth,viewportHeight,zoom});
+    updateTransform();
+    return true;
+  }
+
   function restoreToken(id) {
     const token=row.state.tokens.find(token=>token.id===id);
     const node=[...(root?.querySelectorAll('[data-table-token]')||[])].find(node=>node.dataset.tableToken===id);
@@ -548,6 +729,9 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
     try {
       await action(name,{...data,...(row.state.sceneId?{sceneId:row.state.sceneId}:{})});
       if(name==='roll') {if(data.masteryId)rollingMastery='';updateRollPanel();}
+      if(!row.master&&data.visibility==='gm'&&(name==='roll'||name==='dndCast'&&dndSpellHasRoll(data.entryId))){
+        report('Rolagem secreta enviada ao mestre.');
+      }
     } catch (error) {
       if (name==='tokenMove') restoreToken(data.id);
       report(error.message);
@@ -558,7 +742,15 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
     if(gesture)cancelPointer();
     if(routeDraft){routeDraft=null;root.querySelector('[data-table-selection]').innerHTML=selectedMarkup();}
     tool=next;
+    const activeLabel=root.querySelector('[data-active-tool]');
+    if(activeLabel)activeLabel.textContent=toolLabel(tool);
+    const toggle=root.querySelector('[data-tool-list-toggle]');
+    if(toggle?.getAttribute?.('aria-expanded')==='true'){
+      toggle.setAttribute('aria-expanded','false');
+      if(toggle.offsetWidth)toggle.focus({preventScroll:true});
+    }
     measurement=null;
+    clearDragRuler();
     root.querySelector('.vtt-preview').replaceChildren();
     root.querySelectorAll('[data-table-tool]').forEach(node=>node.setAttribute('aria-pressed',String(node.dataset.tableTool===tool)));
     const ruler=root.querySelector('.vtt-measure-options');if(ruler)ruler.hidden=tool!=='measure';
@@ -586,20 +778,48 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
     updateTransform();
   }
 
+  function clearDragRuler() {
+    const label=root?.querySelector('.vtt-drag-label');
+    if (label) {label.hidden=true;label.textContent='';}
+  }
+
+  function paintTokenRuler(active) {
+    const preview=root?.querySelector('.vtt-preview'),status=root?.querySelector('[data-table-help]');
+    if (!dragRulerEnabled || !active?.moved || !active.previewPosition) {
+      clearDragRuler();
+      preview?.replaceChildren();
+      if (status) status.textContent=help();
+      return;
+    }
+    const half=(Number(active.item.size)||1)/2;
+    const from={x:active.item.x+half,y:active.item.y+half};
+    const to={x:active.previewPosition.x+half,y:active.previewPosition.y+half};
+    const measured=measureGridDistance([from,to],table.grid);
+    if (preview) {
+      preview.innerHTML='<line x1="'+from.x+'" y1="'+from.y+'" x2="'+to.x+'" y2="'+to.y+'" stroke="#f0d89a" stroke-width="2.5" stroke-dasharray="6 4" vector-effect="non-scaling-stroke"/>'+
+        '<circle cx="'+from.x+'" cy="'+from.y+'" r=".1" fill="#f0d89a"/>'+
+        '<circle cx="'+to.x+'" cy="'+to.y+'" r=".1" fill="#f0d89a"/>';
+    }
+    const label=root?.querySelector('.vtt-drag-label');
+    if (label) {
+      label.hidden=false;
+      label.textContent=measured.text;
+      label.style.left=((from.x+to.x)/2)/table.grid.columns*100+'%';
+      label.style.top=((from.y+to.y)/2)/table.grid.rows*100+'%';
+    }
+    if (status) status.textContent=measured.text+' · '+measured.rule;
+  }
+
   function paintMeasurement(points){
     const preview=root.querySelector('.vtt-preview'),status=root.querySelector('[data-table-help]');
     if(!points?.length){preview.replaceChildren();status.textContent=help();return;}
-    let distance=0;
     const lines=[];
     for(let i=1;i<points.length;i++){
-      const a=points[i-1],b=points[i],dx=Math.abs(b.x-a.x),dy=Math.abs(b.y-a.y);
-      const cells=table.grid.distance==='chebyshev'?Math.max(dx,dy):table.grid.distance==='manhattan'?dx+dy:Math.hypot(dx,dy);
-      distance+=cells*table.grid.size;
+      const a=points[i-1],b=points[i];
       lines.push('<line x1="'+a.x+'" y1="'+a.y+'" x2="'+b.x+'" y2="'+b.y+'" stroke="#f0d89a" stroke-width="0.06"/>');
     }
     preview.innerHTML=lines.join('')+points.map(p=>'<circle cx="'+p.x+'" cy="'+p.y+'" r="0.12" fill="#f0d89a"/>').join('');
-    const text=distance.toLocaleString('pt-BR',{maximumFractionDigits:2})+' '+table.grid.unit;
-    const rule={chebyshev:'diagonais iguais',manhattan:'sem diagonais'}[table.grid.distance]||'linha reta';
+    const {text,rule}=measureGridDistance(points,table.grid);
     status.textContent=points.length===1?'Origem marcada · toque no próximo ponto':text+' · '+rule+(measureMode==='path'?' · '+lines.length+(lines.length===1?' trecho':' trechos'):'');
   }
 
@@ -653,6 +873,7 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
     queueVision();
     gesture=null;
     if(viewport)delete viewport.dataset.panning;
+    clearDragRuler();
     root?.querySelector('.vtt-preview')?.replaceChildren();
     const label=root?.querySelector('[data-table-help]');
     if (label) label.textContent=help();
@@ -715,11 +936,19 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
     if(event.target.closest('[data-act="exploreOpen"]'))return;
     if(row.master&&['clue','sound'].includes(tool)){placePoint(tool,start,row.state.sceneId);return;}
     if(routeDraft&&row.master&&row.state.tokens.some(t=>t.id===routeDraft.id)){
+      if(routeDraft.mode==='idle'){event.preventDefault();return;}
+      if(routeDraft.mode==='wander'){
+        gesture={kind:'wanderLasso',pointer:event.pointerId,points:[{x:Number(start.x.toFixed(3)),y:Number(start.y.toFixed(3))}]};
+        viewport.setPointerCapture(event.pointerId);
+        event.preventDefault();
+        return;
+      }
       if(routeDraft.points.length>=48){report('Use até 48 pontos.');return;}
       const size=routeDraft.size;
       routeDraft.points.push({x:clamp(start.x-size/2,0,table.grid.columns-size),y:clamp(start.y-size/2,0,table.grid.rows-size)});
       paintRoute();event.preventDefault();return;
     }
+    clearDragRuler();
     root.querySelector('.vtt-preview').replaceChildren();
     if(tool!=='measure'||measureMode!=='path')measurement=null;
     else paintMeasurement(measurement);
@@ -787,8 +1016,19 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
       gesture.moved=Math.abs(end.x-gesture.start.x)+Math.abs(end.y-gesture.start.y)>.03;
       gesture.token.style.left=x/table.grid.columns*100+'%';
       gesture.token.style.top=y/table.grid.rows*100+'%';queueVision();
+      paintTokenRuler(gesture);
       if(gesture.moved)sendTokenPreview(gesture,'move');
       else if(!row.master){syncPoints();explorationChanged();}
+    } else if (gesture.kind==='wanderLasso') {
+      const last=gesture.points.at(-1);
+      if (!last||Math.hypot(end.x-last.x,end.y-last.y)>=0.12) {
+        if (gesture.points.length>=64) gesture.points=gesture.points.filter((_,idx)=>idx%2===0);
+        gesture.points.push({x:Number(end.x.toFixed(3)),y:Number(end.y.toFixed(3))});
+      }
+      const preview=root?.querySelector('.vtt-preview');
+      if (preview&&gesture.points.length>=2) {
+        preview.innerHTML='<polygon points="'+gesture.points.map(p=>p.x+','+p.y).join(' ')+'" fill="#76e3c326" stroke="#76e3c3" stroke-width="2.5" stroke-dasharray="6 3" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>';
+      }
     } else {
       if(gesture.kind==='draw'&&gesture.shape==='freehand'||gesture.kind==='fog'&&gesture.fogShape==='brush')addFreehandPoint(gesture,end);
       updatePreview(end);
@@ -818,6 +1058,22 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
       if(active.kind==='pan'&&tool==='measure')paintMeasurement(measurement);
     }
     if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
+    if (active.kind==='wanderLasso') {
+      if (routeDraft?.mode==='wander') {
+        const last=active.points.at(-1);
+        if (!last||Math.hypot(end.x-last.x,end.y-last.y)>=0.08) {
+          if (active.points.length>=64) active.points=active.points.filter((_,idx)=>idx%2===0);
+          active.points.push({x:Number(end.x.toFixed(3)),y:Number(end.y.toFixed(3))});
+        }
+        const box=polygonBounds(active.points,table.grid);
+        if (active.points.length>=3&&box&&(box.width>=0.5||box.height>=0.5)) {
+          routeDraft.area=active.points.slice(0,64);
+          routeDraft.bounds=box;
+        }
+        paintRoute();
+      }
+      return;
+    }
     if (active.kind==='token' && active.moved) {
       focusAfterMove=active.item.id;
       active.token.style.left=active.position.x/table.grid.columns*100+'%';active.token.style.top=active.position.y/table.grid.rows*100+'%';
@@ -879,9 +1135,34 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
     }).finally(()=>{focusAfterMove='';});
   }
 
+  async function deleteTokenQuick(id) {
+    if (!row?.master) return;
+    const item=(row.state.tokens||[]).find(t=>t.id===id);
+    if (!item) return;
+    if (!item.ambient) {
+      const ok=await confirm({
+        title:'Remover token da mesa?',
+        message:'Remover "'+item.name+'" desta cena?'+(item.characterId?' A ficha do personagem não será apagada.':''),
+        confirmLabel:'Remover token'
+      });
+      if (!ok) return;
+    }
+    if (routeDraft?.id===id) {routeDraft=null;root?.querySelector('.vtt-preview')?.replaceChildren();}
+    if (selected===id) selected='';
+    try {
+      await action('tokenDelete',{id,...(row.state.sceneId?{sceneId:row.state.sceneId}:{})});
+    } catch (error) {
+      report(error.message);
+    }
+  }
+
   function keyDown(event) {
     const token=event.target.closest('[data-table-token]');
     const item=row.state.tokens.find(t=>t.id===token?.dataset.tableToken);if(item?.kind==='item'&&['Enter',' '].includes(event.key)&&tokenShown(item)){event.preventDefault();openLoot(item.id);return;}
+    if(!event.target.matches?.('input,textarea,select')&&row.master&&['Delete','Backspace'].includes(event.key)){
+      const targetId=token?.dataset.tableToken||selected;
+      if(targetId&&(row.state.tokens||[]).some(t=>t.id===targetId)){event.preventDefault();void deleteTokenQuick(targetId);return;}
+    }
     if(!event.target.matches?.('input,textarea,select')&&['q','e'].includes(event.key?.toLowerCase())){event.preventDefault();const id=token?.dataset.tableToken||selected,item=row.state.tokens.find(t=>t.id===id);if(item)rotateToken(id,rotationTarget(id)+(event.key.toLowerCase()==='q'?-15:15));return;}
     const direction={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]}[event.key];
     if (token && direction) {
@@ -892,13 +1173,68 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
   }
 
   function mountEvents(signal) {
+    root.addEventListener('pointerdown',event=>{
+      if(event.target.closest?.('[data-table-token-list]'))listPointerDown=true;
+    },{signal});
+    const releaseListPointer=()=>{if(listPointerDown){listPointerDown=false;syncTokenListDom();}};
+    root.addEventListener('pointerup',releaseListPointer,{signal});
+    root.addEventListener('pointercancel',releaseListPointer,{signal});
+    root.addEventListener('toggle',event=>{
+      if(event.target.matches?.('.vtt-ambient-group'))ambientGroupOpen=Boolean(event.target.open);
+    },{signal,capture:true});
     root.addEventListener('click',async event=>{
+      listPointerDown=false;
       if(event.target.closest('[data-table-focus-rolls]')) {
         const panel=root.querySelector('[data-table-rolls]');
         panel?.scrollIntoView?.({block:'nearest'});panel?.focus({preventScroll:true});
       }
+      const feedBtn=event.target.closest('[data-feed-filter]');
+      if(feedBtn&&Object.hasOwn(feedFilterOptions,feedBtn.dataset.feedFilter)){
+        feedFilter=feedBtn.dataset.feedFilter;
+        const feed=root.querySelector('[data-table-roll-history]');
+        const itemsHost=feed?.querySelector?.('[data-feed-items]');
+        if(itemsHost){
+          itemsHost.innerHTML=renderFeedListMarkup(row,feedState());
+          for(const btn of feed.querySelectorAll?.('[data-feed-filter]')||[]){
+            const on=btn.dataset.feedFilter===feedFilter;
+            btn.setAttribute('aria-pressed',String(on));
+            btn.classList?.toggle?.('primary',on);
+            btn.classList?.toggle?.('ghost',!on);
+          }
+          historyMarkup=renderRollHistory(row,feedState());
+        }else if(feed){
+          historyMarkup=renderRollHistory(row,feedState());
+          feed.innerHTML=historyMarkup;
+        }
+        return;
+      }
+      const quickDelta=event.target.closest('[data-table-resource-delta]');
+      if(quickDelta){
+        const delta=Number(quickDelta.dataset.tableResourceDelta),characterId=quickDelta.dataset.characterId,field=quickDelta.dataset.fieldId;
+        if(characterId&&field&&Number.isSafeInteger(delta))perform('sheetCounter',{id:characterId,field,delta});
+        return;
+      }
+      const applyDelta=event.target.closest('[data-table-delta-apply]');
+      if(applyDelta){
+        const sign=Number(applyDelta.dataset.tableDeltaApply),characterId=applyDelta.dataset.characterId,field=applyDelta.dataset.fieldId;
+        const input=root.querySelector('[data-table-delta-input]');
+        const amount=Math.trunc(Number(input?.value||1));
+        if(!Number.isSafeInteger(amount)||amount<1||amount>1000000){report('Informe um valor inteiro entre 1 e 1000000.');return;}
+        if(characterId&&field)perform('sheetCounter',{id:characterId,field,delta:sign<0?-amount:amount});
+        return;
+      }
+      const repeat=event.target.closest('[data-roll-repeat]');
+      if(repeat){
+        const item=row.state.rolls?.find(r=>r.id===repeat.dataset.rollRepeat);
+        if(item&&canRepeatRoll(item,row))perform('roll',repeatRollPayload(item,row));
+        return;
+      }
       const spell=event.target.closest('[data-table-dnd-cast]');
-      if(spell&&rollCharacter()?.dnd)perform('dndCast',{id:rollCharacter().id,entryId:spell.dataset.tableDndCast,mode:rollingMode});
+      if(spell&&rollCharacter()?.dnd){
+        const spellId=spell.dataset.tableDndCast;
+        const slotValue=castSlots[spellId]??(spell.dataset.slotLevel?Number(spell.dataset.slotLevel):undefined);
+        perform('dndCast',{id:rollCharacter().id,entryId:spellId,mode:rollingMode,visibility:rollingVisibility,...(Number.isInteger(slotValue)&&slotValue>=1?{slotLevel:slotValue}:{})});
+      }
       const roll=event.target.closest('[data-table-sheet-roll]');
       if(roll)rollForCharacter({rollId:roll.dataset.tableSheetRoll});
       const tab=event.target.closest('[data-table-roll-tab]');
@@ -919,10 +1255,23 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
       if(skill)rollForCharacter({skillId:skill.dataset.tableSkillRoll});
       const resource=event.target.closest('[data-table-roll-resource]');
       if(resource&&rollCharacter()) perform('sheetCounter',{id:rollCharacter().id,field:resource.dataset.tableRollResource,step:Number(resource.dataset.step)});
+      const toolToggle=event.target.closest('[data-tool-list-toggle]');
+      if(toolToggle){
+        toolToggle.setAttribute('aria-expanded',String(toolToggle.getAttribute('aria-expanded')!=='true'));
+        return;
+      }
       const toolNode=event.target.closest('[data-table-tool]');
       if (toolNode) switchTool(toolNode.dataset.tableTool);
+      const deleteTokenBtn=event.target.closest('[data-table-delete-token]');
+      if(deleteTokenBtn&&row.master){
+        event.preventDefault();
+        await deleteTokenQuick(deleteTokenBtn.dataset.tableDeleteToken);
+        return;
+      }
       const selection=event.target.closest('[data-table-select]');
-      if (selection) setSelection(selection.dataset.tableSelect,true);
+      if (selection) focusToken(selection.dataset.tableSelect);
+      const quickChar=event.target.closest('[data-table-quick-character]');
+      if (quickChar) quickInspect(quickChar.dataset.tableQuickCharacter);
       const character=event.target.closest('[data-table-character]');
       if (character) openCharacter(character.dataset.tableCharacter);
       const zoomButton=event.target.closest('[data-table-zoom]');
@@ -934,14 +1283,44 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
       if(patrol&&row.master){
         const token=row.state.tokens.find(t=>t.id===selected);if(!token)return;
         if(patrol==='draw'){
-          switchTool('select');routeDraft={id:selected,size:token.size||1,points:[{x:token.x,y:token.y}],speed:token.patrol?.speed||1,mode:token.patrol?.mode||'return'};
+          switchTool('select');
+          routeDraft={
+            id:selected,size:token.size||1,points:[{x:token.x,y:token.y}],
+            speed:token.patrol?.speed||1,mode:token.patrol?.mode||'return',
+            pause:token.patrol?.pause||0,cooldown:token.patrol?.cooldown||15,
+            activity:token.patrol?.activity||'',varyAppearance:Boolean(token.patrol?.varyAppearance),
+            bounds:token.patrol?.bounds||null,area:token.patrol?.area||null,preset:'',
+            color:token.color||'violet',iconChoice:token.icon||'auto',
+            count:1,ambient:Boolean(token.ambient)
+          };
+        }else if(patrol==='clearPortraits'&&routeDraft){
+          await perform('tokenUpdate',{id:selected,removePortraitPool:true});
+        }else if(patrol==='zoneAround'&&routeDraft){
+          routeDraft.bounds=defaultZoneAround(token);routeDraft.area=null;
+        }else if(patrol==='clearZone'&&routeDraft){
+          routeDraft.bounds=null;routeDraft.area=null;
         }else if(patrol==='undo')routeDraft?.points.pop();
         else if(patrol==='cancel')routeDraft=null;
         else if(patrol==='start'&&routeDraft){
           const draft=routeDraft;
           if(busy)return;
           busy=true;
-          try{await action('tokenPatrol',{id:selected,operation:'start',points:draft.points,speed:draft.speed,mode:draft.mode,sceneId:row.state.sceneId});if(routeDraft===draft)routeDraft=null;}
+          try{
+            await action('tokenPatrol',{
+              id:selected,operation:'start',mode:draft.mode,
+              ...(draft.mode==='wander'?(draft.area?.length>=3?{area:draft.area,bounds:draft.bounds}:{bounds:draft.bounds}):draft.mode==='idle'?{}:{points:draft.points}),
+              ...(draft.mode!=='idle'?{speed:draft.speed}:{}),
+              pause:draft.pause||0,
+              ...(draft.color?{color:draft.color}:{}),
+              ...(draft.iconChoice?{icon:draft.iconChoice}:{}),
+              ...(draft.mode==='pass'?{cooldown:draft.cooldown||15,varyAppearance:Boolean(draft.varyAppearance)}:{}),
+              ...(draft.activity?.trim()?{activity:draft.activity.trim()}:{}),
+              ...(draft.mode!=='idle'&&draft.count>1?{count:draft.count}:{}),
+              ...(draft.ambient||draft.count>1?{ambient:true}:{}),
+              sceneId:row.state.sceneId
+            });
+            if(routeDraft===draft)routeDraft=null;
+          }
           catch(error){report(error.message);}finally{busy=false;}
         }else perform('tokenPatrol',{id:selected,operation:patrol});
         paintRoute();return;
@@ -952,6 +1331,38 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
       if(command==='measureUndo'||command==='measureClear'){
         if(command==='measureClear')measurement=null;else measurement?.pop();
         paintMeasurement(measurement);
+      }
+      else if(command==='dragRulerToggle'){
+        dragRulerEnabled=!dragRulerEnabled;
+        try{globalThis.localStorage?.setItem('forja.table.dragRuler',dragRulerEnabled?'1':'0');}catch{}
+        const toggleButton=event.target.closest('[data-table-action]');
+        if(toggleButton){
+          toggleButton.setAttribute('aria-pressed',String(dragRulerEnabled));
+          toggleButton.title=dragRulerEnabled?'Desativar régua automática ao arrastar tokens':'Ativar régua automática ao arrastar tokens';
+        }
+        if(!dragRulerEnabled){clearDragRuler();root?.querySelector('.vtt-preview')?.replaceChildren();}
+      }
+      else if(command==='ambientBubblesToggle'){
+        ambientBubblesEnabled=!ambientBubblesEnabled;
+        try{globalThis.localStorage?.setItem('forja.table.ambientBubbles',ambientBubblesEnabled?'1':'0');}catch{}
+        const toggleButton=event.target.closest('[data-table-action]');
+        if(toggleButton){
+          toggleButton.setAttribute('aria-pressed',String(ambientBubblesEnabled));
+          toggleButton.title=ambientBubblesEnabled?'Ocultar balões de atividade dos figurantes':'Mostrar balões de atividade dos figurantes';
+        }
+        queueVision();
+      }
+      else if(command==='sceneLifeToggle'&&row.master){
+        perform('tableSceneLife',{operation:row.state.table?.patrolRunning>0?'pauseAll':'resumeAll'});
+      }
+      else if(command==='clearAmbient'&&row.master){
+        const count=(row.state.tokens||[]).filter(t=>t.ambient).length;
+        if(!count)return;
+        if(!(await confirm({title:'Remover todos os figurantes?',message:'Remover os '+count+' figurantes de ambiente desta cena?',confirmLabel:'Remover figurantes'})))return;
+        if(selected&&(row.state.tokens||[]).find(t=>t.id===selected)?.ambient){if(routeDraft?.id===selected)routeDraft=null;selected='';}
+        try{
+          await action('tableSceneLife',{operation:'clearAmbient',...(row.state.sceneId?{sceneId:row.state.sceneId}:{})});
+        }catch(error){report(error.message);}
       }
       else if(command==='visionShare'&&row.master)perform('tableSettings',{darkness:{mode:table.darkness.mode==='individual'?(Object.keys(table.darkness.teams||{}).length?'teams':'group'):'individual'}});
       else if(command==='visionCones'&&row.master&&table.darkness.enabled&&!playerPreview){showCones=!showCones;queueVision();}
@@ -972,8 +1383,25 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
         root.querySelector('[data-table-help]').textContent=playerPreview?'Prévia do mapa para jogadores · As fichas e ferramentas continuam na visão do mestre':help();queueVision();
       }
       else if (command==='fogUndo') perform('tableFog',{operation:'undo'});
-      else if (command==='fogRevealAll') perform('tableFog',{operation:'reveal',enabled:true,x:0,y:0,width:table.grid.columns,height:table.grid.rows});
-      else if (command==='fogReset') perform('tableFog',{operation:'reset',enabled:true});
+      else if (command==='fogRevealAll') {
+        if (!(await confirm({title:'Revelar todo o mapa?',message:'Toda a área oculta pela névoa manual nesta cena ficará visível aos jogadores.',confirmLabel:'Revelar tudo'}))) return;
+        perform('tableFog',{operation:'reveal',enabled:true,x:0,y:0,width:table.grid.columns,height:table.grid.rows});
+      }
+      else if (command==='fogReset') {
+        const war=table.fog.mode==='war';
+        if (!(await confirm({
+          title:'Cobrir todo o mapa?',
+          message:war
+            ?'No modo névoa de guerra, cobrir tudo apaga a memória de exploração dos personagens nesta cena.'
+            :'Toda a névoa manual desta cena voltará a cobrir o mapa.',
+          confirmLabel:'Cobrir tudo'
+        }))) return;
+        perform('tableFog',{operation:'reset',enabled:true});
+      }
+      else if (command==='tableDrawingClear') {
+        if (!(await confirm({title:'Limpar todos os desenhos?',message:'Todos os traços e formas desenhados nesta cena serão removidos.',confirmLabel:'Limpar desenhos'}))) return;
+        perform('tableDrawingClear');
+      }
       else if(command==='combatEndOwn'){
         const {entry,round}=event.target.closest('[data-table-action]').dataset;
         perform(command,{entryId:entry,round:Number(round)});
@@ -981,11 +1409,33 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
       else if (command==='combatPrevious') perform('combatNext',{direction:-1});
       else if (command) perform(command);
     },{signal});
-    root.addEventListener('submit',event=>{
+    root.addEventListener('submit',async event=>{
+      if(event.target.matches('[data-table-chat-form]')){
+        event.preventDefault();
+        const textInput=event.target.querySelector?.('[data-chat-text]');
+        const text=(textInput?.value??chatDraft.text).trim();
+        if(!text)return;
+        const channel=Object.hasOwn(chatChannels,chatDraft.channel)?chatDraft.channel:'public';
+        const targetSelect=event.target.querySelector?.('[data-chat-target]');
+        const targetId=targetSelect?.value??chatDraft.targetId;
+        const payload={
+          text,
+          channel,
+          ...(channel==='whisper'&&targetId?{targetId}:{}),
+          ...(row.master&&channel==='ic'?(chatDraft.speakerCharacterId?{speakerCharacterId:chatDraft.speakerCharacterId}:chatDraft.speaker.trim()?{speaker:chatDraft.speaker.trim()}:{}):{})
+        };
+        chatDraft.text='';
+        if(textInput)textInput.value='';
+        await perform('chatSend',payload);
+        return;
+      }
       if(!event.target.matches('[data-table-roll-form]'))return;
       event.preventDefault();rollForCharacter({formula:rollFormula});
     },{signal});
     root.addEventListener('input',event=>{
+      if(event.target.matches('[data-chat-text]'))chatDraft.text=event.target.value;
+      if(routeDraft&&event.target.matches('[data-route-activity]'))routeDraft.activity=event.target.value;
+      if(event.target.matches('[data-chat-speaker]'))chatDraft.speaker=event.target.value;
       if(event.target.matches('[data-light-level]'))root.querySelector('[data-light-level-output]').textContent=event.target.value+'%';
       if(event.target.matches('[data-fog-brush]')&&row.master){fogBrushPixels=clamp(Number(event.target.value)||160,10,300);root.querySelector('[data-fog-brush-size]').textContent=fogBrushPixels+' px';}
       if(event.target.matches('[data-table-roll-formula]')){rollFormula=event.target.value;root.querySelector('[data-table-roll-preview]').innerHTML=renderFreeRollPreview(row,rollCharacter(),rollView());}
@@ -995,7 +1445,23 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
         world.style.setProperty('--vtt-fog-opacity',fogOpacity);
       }
     },{signal});
-    root.addEventListener('change',event=>{
+    root.addEventListener('change',async event=>{
+      if(event.target.matches('[data-chat-channel]')){
+        chatDraft.channel=Object.hasOwn(chatChannels,event.target.value)?event.target.value:'public';
+        const feed=root.querySelector('[data-table-roll-history]');
+        if(feed){historyMarkup=renderRollHistory(row,feedState());feed.innerHTML=historyMarkup;}
+      }
+      if(event.target.matches('[data-chat-target]'))chatDraft.targetId=event.target.value;
+      if(event.target.matches('[data-chat-speaker-id]')){
+        chatDraft.speakerCharacterId=event.target.value;
+        const feed=root.querySelector('[data-table-roll-history]');
+        if(feed){historyMarkup=renderRollHistory(row,feedState());feed.innerHTML=historyMarkup;}
+      }
+      if(event.target.matches('[data-table-cast-slot]')){
+        const spellId=event.target.dataset.tableCastSlot;
+        castSlots[spellId]=Number(event.target.value);
+        updateRollContent();
+      }
       if(event.target.matches('[data-light-scope]'))lightScope=event.target.value;
       if(event.target.matches('[data-light-angle]'))lightAngle=Number(event.target.value);
       if(event.target.matches('[data-light-color]'))lightColor=event.target.value;
@@ -1005,14 +1471,53 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
         paintMeasurement(measurement);
       }
       if(event.target.matches('[data-ping-signal]'))pingSignal=event.target.value;
-      if(routeDraft&&event.target.matches('[data-route-mode]'))routeDraft.mode=event.target.value;
+      if(routeDraft&&event.target.matches('[data-route-portraits]')&&row.master){
+        const files=event.target.files;
+        if(files?.length){
+          try{
+            await uploadTokenPortraits(routeDraft.id,files);
+            routeDraft.iconChoice='auto';
+            paintRoute();
+            loadPortraits();
+          }catch(error){report(error.message);}
+          event.target.value='';
+        }
+        return;
+      }
+      if(routeDraft&&event.target.matches('[data-route-color]')){routeDraft.color=event.target.value;}
+      if(routeDraft&&event.target.matches('[data-route-icon]')){routeDraft.iconChoice=event.target.value;}
+      if(routeDraft&&event.target.matches('[data-route-preset]')){
+        const key=event.target.value,preset=ambientPresets[key];
+        routeDraft.preset=key;
+        if(preset){
+          routeDraft.mode=preset.mode;routeDraft.speed=preset.speed;routeDraft.pause=preset.pause;
+          if(preset.cooldown)routeDraft.cooldown=preset.cooldown;
+          routeDraft.varyAppearance=Boolean(preset.varyAppearance);
+          routeDraft.activity=preset.activity||'';
+          routeDraft.ambient=Boolean(preset.ambient);
+          if(preset.mode==='wander'&&!routeDraft.bounds&&!routeDraft.area){
+            // Inicia livre para o mestre desenhar diretamente no mapa (com botão de área 4×4 disponível)
+          }
+        }
+        paintRoute();
+      }
+      if(routeDraft&&event.target.matches('[data-route-mode]')){
+        routeDraft.mode=event.target.value;routeDraft.preset='';
+        paintRoute();
+      }
       if(routeDraft&&event.target.matches('[data-route-speed]'))routeDraft.speed=Number(event.target.value);
+      if(routeDraft&&event.target.matches('[data-route-pause]'))routeDraft.pause=Number(event.target.value);
+      if(routeDraft&&event.target.matches('[data-route-cooldown]'))routeDraft.cooldown=Number(event.target.value);
+      if(routeDraft&&event.target.matches('[data-route-vary]'))routeDraft.varyAppearance=event.target.checked;
+      if(routeDraft&&event.target.matches('[data-route-count]')){routeDraft.count=Number(event.target.value);if(routeDraft.count>1)routeDraft.ambient=true;paintRoute();}
+      if(routeDraft&&event.target.matches('[data-route-ambient]'))routeDraft.ambient=event.target.checked;
       if(event.target.matches('[data-light-enabled]'))perform('tableSettings',{darkness:{enabled:event.target.checked}});
       if(event.target.matches('[data-light-level]'))perform('tableSettings',{darkness:{level:Number(event.target.value)}});
       if(event.target.matches('[data-light-mode]')){lightMode=event.target.value;root.querySelector('[data-table-help]').textContent=help();}
       if(event.target.matches('[data-wall-mode]')&&row.master){cancelPointer();wallMode=event.target.value;root.querySelector('[data-table-help]').textContent=help();}
       if(event.target.matches('[data-fog-shape]')&&row.master){cancelPointer();fogShape=event.target.value==='rectangle'?'rectangle':'brush';root.querySelector('[data-fog-brush-options]').hidden=fogShape!=='brush';root.querySelector('[data-table-help]').textContent=help();}
       if(event.target.matches('[data-table-roll-mode]')){rollingMode=['normal','advantage','disadvantage'].includes(event.target.value)?event.target.value:'normal';updateRollContent();}
+      if(event.target.matches('[data-table-roll-visibility]')){rollingVisibility=['public','gm'].includes(event.target.value)?event.target.value:(row.master?'gm':'public');}
       if(event.target.matches('[data-table-roll-character]')) {
         const character=rollCharacters().find(c=>c.id===event.target.value);if(character){resetRollCharacter(character);updateRollPanel();}
       }
@@ -1030,7 +1535,7 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
     viewport.addEventListener('pointercancel',cancelPointer,{signal});
     viewport.addEventListener('lostpointercapture',event=>{if(gesture?.pointer===event.pointerId)cancelPointer();},{signal});
     viewport.addEventListener('contextmenu',event=>{if(tool==='fog'&&row.master)event.preventDefault();},{signal});
-    viewport.addEventListener('dblclick',event=>{const node=event.target.closest('[data-table-token]'),token=row.state.tokens.find(t=>t.id===node?.dataset.tableToken);if(tool==='select'&&token?.kind==='item'&&tokenShown(token)){event.preventDefault();openLoot(token.id);}},{signal});
+    viewport.addEventListener('dblclick',event=>{const node=event.target.closest('[data-table-token]'),token=row.state.tokens.find(t=>t.id===node?.dataset.tableToken);if(tool!=='select'||!token||!tokenShown(token))return;if(token.kind==='item'){event.preventDefault();openLoot(token.id);}else if(token.characterId&&row.state.characters?.some(c=>c.id===token.characterId)){event.preventDefault();quickInspect(token.characterId);}},{signal});
     viewport.addEventListener('keydown',keyDown,{signal});
     viewport.addEventListener('wheel',event=>{
       event.preventDefault();
@@ -1171,6 +1676,8 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
     if(next.state.sceneId!==row.state.sceneId||next.state.map?.id!==row.state.map?.id||nextTable.grid.columns!==table.grid.columns||nextTable.grid.rows!==table.grid.rows||nextTable.grid.mode!==table.grid.mode||nextTable.grid.cellPixels!==table.grid.cellPixels||next.state.map?.width!==row.state.map?.width||next.state.map?.height!==row.state.map?.height){cancelPointer();return false;}
     const oldRotations=new Map((row.state.tokens||[]).map(t=>[t.id,t.rotation||0]));
     const wasMyTurn=myCombatTurn();
+    const oldCombatBars=JSON.stringify((row.state.table?.combat?.entries||[]).map(e=>e.resourceBar||null));
+    const oldTokenBars=JSON.stringify((row.state.tokens||[]).map(t=>t.resourceBar||null));
     const oldTable=table,oldPositions=new Map((row.state.tokens||[]).map(item=>[item.id,{x:item.x,y:item.y}]));
     row=next;sampleClock=clock();table=nextTable;
     const currentTokens=row.state.tokens||[];
@@ -1193,6 +1700,8 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
       const letter=node.querySelector?.('.vtt-token-letter');if(letter){const symbol=tokenIconSvg(item.icon);if(symbol)letter.innerHTML=symbol;else letter.textContent=item.name?.[0]?.toUpperCase()||'✦';}
       const statusMarkup=conditionBadges(item),status=node.querySelector?.('.vtt-token-status');
       if(status)status.innerHTML=statusMarkup;else if(statusMarkup)node.insertAdjacentHTML?.('beforeend','<span class="vtt-token-status">'+statusMarkup+'</span>');
+      const barMarkup=tokenResourceBar(item),barNode=node.querySelector?.('.vtt-token-bar');
+      if(barNode){if(barMarkup)barNode.outerHTML=barMarkup;else barNode.remove?.();}else if(barMarkup)node.insertAdjacentHTML?.('beforeend',barMarkup);
       const portrait=tokenPortrait(item),image=node.querySelector?.('[data-table-token-image]');
       if(portrait){if(image&&image.dataset.tableTokenImage!==portrait){image.dataset.tableTokenImage=portrait;image.hidden=true;node.classList.toggle('has-portrait',false);}else if(!image)node.querySelector?.('.vtt-token-face')?.insertAdjacentHTML?.('beforeend','<img alt="" hidden data-table-token-image="'+escape(portrait)+'">');}else{image?.remove?.();if(!node.querySelector?.('[data-loot-portrait]'))node.classList.toggle('has-portrait',false);}
       node.setAttribute('aria-label',[item.name,conditionSummary(item)].filter(Boolean).join(' · ')+(item.locked?' · Bloqueado':'')+(item.hidden?' · Oculto':''));node.setAttribute('title',item.name);
@@ -1217,11 +1726,32 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
       else if(fog)fog.remove?.();
       else if(table.fog.enabled)world.insertAdjacentHTML?.('beforeend',fogMarkup());
     }
-    const list=root.querySelector('[data-table-token-list]');if(list){const markup=tokenList();if(list.innerHTML!==markup)list.innerHTML=markup;}
-    const combat=root.querySelector('[data-table-combat]');if(combat&&(wasMyTurn!==myCombatTurn()||JSON.stringify(oldTable.combat)!==JSON.stringify(table.combat)))combat.outerHTML=combatMarkup();
+    syncTokenListDom();
+    const nextCombatBars=JSON.stringify((row.state.table?.combat?.entries||[]).map(e=>e.resourceBar||null));
+    const nextTokenBars=JSON.stringify(currentTokens.map(t=>t.resourceBar||null));
+    const combat=root.querySelector('[data-table-combat]');if(combat&&(wasMyTurn!==myCombatTurn()||JSON.stringify(oldTable.combat)!==JSON.stringify(table.combat)||oldCombatBars!==nextCombatBars||oldTokenBars!==nextTokenBars))combat.outerHTML=combatMarkup();
     if(!currentTokens.some(token=>token.id===selected))selected='';
     if(!(gesture?.kind==='token')&&!root.querySelector('[data-table-selection]')?.contains?.(globalThis.document?.activeElement)){const selection=root.querySelector('[data-table-selection]');if(selection)selection.innerHTML=selectedMarkup();}
     const darknessToggle=root.querySelector('[data-table-action="darknessToggle"]');if(darknessToggle){darknessToggle.setAttribute('aria-pressed',String(table.darkness.enabled));darknessToggle.setAttribute('title',table.darkness.enabled?'Desativar escuridão':'Ativar escuridão');darknessToggle.setAttribute('aria-label',table.darkness.enabled?'Desativar escuridão':'Ativar escuridão');}
+    if(row.master){
+      const hasLife=(row.state.table?.patrolRunning||0)>0||(row.state.table?.patrolPaused||0)>0;
+      const running=(row.state.table?.patrolRunning||0)>0;
+      const lifeBtn=root.querySelector('[data-table-action="sceneLifeToggle"]');
+      if(hasLife){
+        const label=running?'⏸ Pausar vida':'▶ Retomar vida';
+        const title=running?'Pausar todas as rotas e figurantes da cena':'Retomar todas as rotas e figurantes da cena';
+        if(lifeBtn){lifeBtn.setAttribute('aria-pressed',String(running));lifeBtn.title=title;lifeBtn.innerHTML='<span>'+label+'</span>';}
+        else root.querySelector('[data-table-action="ambientBubblesToggle"]')?.insertAdjacentHTML?.('afterend','<button class="vtt-tool" type="button" data-table-action="sceneLifeToggle" aria-pressed="'+running+'" title="'+title+'"><span>'+label+'</span></button>');
+      }else lifeBtn?.remove?.();
+      const hasAmbientTokens=currentTokens.some(t=>t.ambient);
+      const clearBtn=root.querySelector('[data-table-toolbar-clear-ambient]');
+      if(hasAmbientTokens){
+        if(!clearBtn){
+          const anchor=root.querySelector('[data-table-action="sceneLifeToggle"]')||root.querySelector('[data-table-action="ambientBubblesToggle"]');
+          anchor?.insertAdjacentHTML?.('afterend','<button class="vtt-tool" type="button" data-table-action="clearAmbient" data-table-toolbar-clear-ambient title="Remover todos os figurantes desta cena"><span>✕ Figurantes</span></button>');
+        }
+      }else clearBtn?.remove?.();
+    }
     const fogToggle=root.querySelector('[data-table-action="fogToggle"]');if(fogToggle)fogToggle.textContent=table.fog.enabled?'Desativar névoa':'Ativar névoa';
     const fogUndo=root.querySelector('[data-table-action="fogUndo"]');if(fogUndo)fogUndo.disabled=!table.fog.history.length;
     if(JSON.stringify(oldTable.exploration)!==JSON.stringify(table.exploration)||oldTable.grid.columns!==table.grid.columns||oldTable.grid.rows!==table.grid.rows){
@@ -1309,17 +1839,28 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
   }
 
   function syncRolls(next) {
-    if(!root||!row||next.id!==row.id||!Array.isArray(next.state?.rolls)||next.rev<rollRevision)return;
-    rollRevision=next.rev;row.state.rolls=next.state.rolls;
-    const html=renderRollHistory(row);
+    if(!root||!row||next.id!==row.id||next.rev<rollRevision)return;
+    const hasRolls=Array.isArray(next.state?.rolls),hasMessages=Array.isArray(next.state?.messages);
+    if(!hasRolls&&!hasMessages)return;
+    rollRevision=next.rev;
+    if(hasRolls)row.state.rolls=next.state.rolls;
+    if(hasMessages)row.state.messages=next.state.messages;
+    const html=renderRollHistory(row,feedState());
     if(html===historyMarkup)return;
     historyMarkup=html;
     const feed=root.querySelector('[data-table-roll-history]');
     if(feed) {
+      const active=globalThis.document?.activeElement;
+      const typingInChat=Boolean(active&&feed.contains?.(active)&&active.matches?.('[data-chat-text],[data-chat-speaker],[data-chat-channel],[data-chat-target],[data-chat-speaker-id]'));
+      const itemsHost=typingInChat?feed.querySelector?.('[data-feed-items]'):null;
+      if(itemsHost){
+        itemsHost.innerHTML=renderFeedListMarkup(row,feedState());
+        return;
+      }
       const oldList=feed.querySelector?.('.roll-feed-list'),oldTop=oldList?.scrollTop||0,oldHeight=oldList?.scrollHeight||0;
-      const expanded=new Set([...feed.querySelectorAll('details[open]')].map(item=>item.closest('[data-roll-id]')?.dataset.rollId));
+      const expanded=new Set([...(feed.querySelectorAll?.('details[open]')||[])].map(item=>item.closest('[data-roll-id]')?.dataset.rollId));
       feed.innerHTML=html;
-      for(const item of feed.querySelectorAll('[data-roll-id]'))if(expanded.has(item.dataset.rollId)){const detail=item.querySelector('details');if(detail)detail.open=true;}
+      for(const item of feed.querySelectorAll?.('[data-roll-id]')||[])if(expanded.has(item.dataset.rollId)){const detail=item.querySelector('details');if(detail)detail.open=true;}
       const list=feed.querySelector?.('.roll-feed-list');if(list&&oldTop>0)list.scrollTop=Math.max(0,oldTop+list.scrollHeight-oldHeight);
     }
   }
@@ -1329,9 +1870,10 @@ export function createTabletop({microphoneControl=()=>'',action,openCharacter,op
     movingPoints=null;
     routeDraft=null;
     if(gesture?.kind==='token')sendTokenPreview(gesture,'cancel');
+    clearDragRuler();
     visionGeneration++;if(visionFrame!==null)globalThis.cancelAnimationFrame?.(visionFrame);visionFrame=null;visionPending=false;pendingRotation=null;rotationAnimations.clear();drawnRotations.clear();
     events?.abort();resize?.disconnect();for(const timer of pingTimers)clearTimeout(timer);pingTimers.clear();clearRemoteMoves();gesture=null;touches.clear();rotationPreview=null;localPlacement=null;root=null;viewport=null;world=null;
   }
 
-  return {aim(kind,name,length=0){effect=kind;effectName=name;effectLength=length;switchTool('effect');},explorationMotion,syncPoints,render,mount,syncRolls,syncScene,receiveRealtime,resetRealtime,setConnectionStatus,isInteracting:()=>Boolean(gesture)||busy||rotationSending,dispose};
+  return {aim(kind,name,length=0){effect=kind;effectName=name;effectLength=length;switchTool('effect');},explorationMotion,syncPoints,focusToken,render,mount,syncRolls,syncScene,receiveRealtime,resetRealtime,setConnectionStatus,isInteracting:()=>Boolean(gesture)||busy||rotationSending,dispose};
 }

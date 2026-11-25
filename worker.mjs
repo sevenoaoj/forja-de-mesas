@@ -1,6 +1,9 @@
 import {api} from './api.mjs';
+import {createMemoryStaticHandler} from './etag.mjs';
 import {database} from './storage.mjs';
 import assets from './assets.mjs';
+
+const serveAsset = createMemoryStaticHandler(assets);
 
 // The Worker has no SSE room. Share expiring speaking leases across isolates in D1.
 const voiceStores=new WeakMap();
@@ -56,11 +59,6 @@ export default {
   async fetch(request,env) {
     const {pathname} = new URL(request.url);
     if (pathname.startsWith('/api/')) return api(request,getStore(env));
-    const file = Object.hasOwn(assets,pathname) && assets[pathname];
-    if (!file) return new Response('Página não encontrada.',{status:404});
-    const [contentType,base64] = file;
-    return new Response(Uint8Array.from(atob(base64),char=>char.charCodeAt(0)),{
-      headers:{'Content-Type':contentType,'X-Content-Type-Options':'nosniff','Referrer-Policy':'strict-origin-when-cross-origin'}
-    });
+    return serveAsset(request,pathname);
   }
 };

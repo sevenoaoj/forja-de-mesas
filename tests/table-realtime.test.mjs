@@ -53,7 +53,7 @@ async function fixture(t){
 }
 test('conexão autorizada recebe snapshot imediato filtrado e fecha ao desconectar',async t=>{
  const f=await fixture(t);await f.act('tokenUpdate',{id:'dorian',hidden:true});const p=await f.listen(f.a),gm=await f.listen(f.created.key);
- assert.equal(p.events[0].type,'ready');const scene=p.events.find(e=>e.type==='scene');assert.deepEqual(Object.keys(scene.state).sort(),['activeSceneId','checkRequests','cinematic','investigationReceipts','journalVersion','map','narrations','rolls','scene','sceneId','sessionClocks','sessionName','sheetTemplatesVersion','table','tokens']);assert.ok(!scene.state.tokens.some(token=>token.id==='dorian'));assert.equal(scene.state.tokens[0].canMove,true);assert.equal(scene.state.characters,undefined);assert.ok(gm.events.find(e=>e.type==='scene').state.tokens.some(token=>token.id==='dorian'));
+ assert.equal(p.events[0].type,'ready');const scene=p.events.find(e=>e.type==='scene');assert.deepEqual(Object.keys(scene.state).sort(),['activeSceneId','checkRequests','cinematic','investigationReceipts','journalVersion','map','messages','narrations','rolls','scene','sceneId','sessionClocks','sessionName','sheetTemplatesVersion','table','tokens']);assert.ok(!scene.state.tokens.some(token=>token.id==='dorian'));assert.equal(scene.state.tokens[0].canMove,true);assert.equal(scene.state.characters,undefined);assert.ok(gm.events.find(e=>e.type==='scene').state.tokens.some(token=>token.id==='dorian'));
  assert.equal((await f.call(f.base+'/events','GET','invalid')).status,403);assert.equal(f.hub.connectionCount,2);p.abort.abort();await p.pumping;assert.equal(f.hub.connectionCount,1);
 });
 test('dois jogadores recebem prévias simultâneas sem gravações e finais persistem separadamente',async t=>{
@@ -134,6 +134,14 @@ test('rolagem pública envia mesma cor e resultado aos clientes; mestre privado 
  for(const stream of [p,q,gm]){const scene=stream.events.filter(e=>e.type==='scene').at(-1);assert.deepEqual(scene.state.rolls[0],roll);assert.ok(scene.rollVersion);}
  const secret=await(await f.act('roll',{formula:'1d20',characterId:'lyra'})).json();await flush();
  for(const stream of [p,q])assert.ok(!JSON.stringify(stream.events).includes(secret.state.rolls[0].id));
+ const gmPublic=await(await f.act('roll',{formula:'1d12+4',visibility:'public'})).json(),publicMasterRoll=gmPublic.state.rolls[0];
+ await flush();
+ for(const stream of [p,q,gm]){const scene=stream.events.filter(e=>e.type==='scene').at(-1);assert.equal(scene.state.rolls[0].id,publicMasterRoll.id);}
+ const playerSecret=await(await f.act('roll',{formula:'1d20+77',visibility:'gm'},f.a)).json();await flush();
+ assert.ok(!JSON.stringify(playerSecret).includes('1d20+77'));
+ for(const stream of [p,q])assert.ok(!JSON.stringify(stream.events).includes('1d20+77'));
+ const gmLatest=gm.events.filter(e=>e.type==='scene').at(-1);
+ assert.equal(gmLatest.state.rolls[0].rolledBy,'player');assert.equal(gmLatest.state.rolls[0].visibility,'gm');
 });
 
 test('PC e celular recebem a mesma posição sob névoa e reconexão restaura snapshot completo',async t=>{

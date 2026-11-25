@@ -1,5 +1,5 @@
-import {resolveTokenPath} from './token-motion.mjs';
-export {slideToken} from './token-motion.mjs';
+import {resolveTokenPath,slideToken} from './token-motion.mjs';
+export {slideToken};
 import {publicItemToken} from './loot-data.mjs';
 import {visionSources,tokenInVision,recordExploration,normalizeVision,normalizeDarkness,normalizeRotation} from './vision-model.mjs';
 export {normalizeVision,normalizeDarkness,normalizeRotation} from './vision-model.mjs';
@@ -18,7 +18,7 @@ export {weatherLevels};
 const distanceModes = new Set(['euclidean','chebyshev','manhattan']);
 const tableActions = new Set([
   'tableEffect','tableAtmosphere','tableLightSet','tableLightDelete','tableWallAdd','tableWallDelete','tableDoorSet','tableSettings','tableFog','tableDrawingAdd','tableDrawingDelete','tableDrawingClear',
-  'tablePing','tokenCondition','tokenPatrol','tokenAdd','tokenMove','tokenRotate','tokenUpdate','tokenDelete','combatSet','combatNext','combatEndOwn'
+  'tablePing','tokenCondition','tokenPatrol','tableSceneLife','tokenAdd','tokenMove','tokenRotate','tokenUpdate','tokenDelete','combatSet','combatNext','combatEndOwn'
 ]);
 export const tableSceneActions=tableActions;
 const sharedActions = new Set(['tableEffect','tablePing','tokenMove','tokenRotate','combatEndOwn']);
@@ -64,28 +64,223 @@ function eligibleForPatrol(state,token){
   return token.kind!=='item'&&(!token.characterId||state.characters?.some(c=>c.id===token.characterId&&!isPlayerCharacter(c)));
 }
 
-// Time, rather than a background job or an open GM tab, determines the NPC's position.
-export function patrolSample(route,now){
-  const points=route.points,legs=[];
-  const add=(a,b)=>{
-    const dx=b.x-a.x,dy=b.y-a.y,duration=Math.hypot(dx,dy)*1000/route.speed;
-    if(duration>0)legs.push({a,dx,dy,duration});
-  };
-  for(let i=1;i<points.length;i++)add(points[i-1],points[i]);
-  if(route.mode==='loop')add(points.at(-1),points[0]);
-  else for(let i=points.length-1;i>0;i--)add(points[i],points[i-1]);
-  if(!legs.length)return {...points[0]};
-  const elapsed=route.offset+(route.started?Math.max(0,now-route.started):0);
-  let time=elapsed%legs.reduce((sum,l)=>sum+l.duration,0);
-  for(const leg of legs){
-    if(time<leg.duration){
-      const {a,dx,dy,duration}=leg;
-      return {x:a.x+dx*time/duration,y:a.y+dy*time/duration,rotation:normalizeRotation(Math.atan2(dy,dx)*180/Math.PI+90),
-        ...(route.started?{motion:{at:now,ms:Math.min(1200,duration-time),vx:dx/duration,vy:dy/duration}}:{})};
-    }
-    time-=leg.duration;
+function seededFraction(seed, index) {
+  let x = (Math.imul((Number(seed) || 0) + 1, 2654435761) ^ Math.imul((index || 0) + 1, 2246822519)) >>> 0;
+  x = Math.imul(x ^ (x >>> 15), 1 | x);
+  x ^= x + Math.imul(x ^ (x >>> 7), 61 | x);
+  return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+}
+
+const ambientPalette = [...palette];
+const ambientIcons = ['auto', 'initial', 'shield', 'magic', 'target', 'hammer', 'healer', 'leaf', 'music', 'rogue', 'fist', 'book', 'compass', 'anchor', 'balance'].filter(id => tokenIconIds.has(id));
+export const ambientPresets = Object.freeze({
+  stroll: Object.freeze({label: 'Cidadão passeando', mode: 'wander', speed: 0.6, pause: 8, activity: 'Passeando', ambient: true}),
+  play: Object.freeze({label: 'Crianças brincando', mode: 'wander', speed: 2.2, pause: 1.5, activity: 'Brincando', ambient: true}),
+  idle: Object.freeze({label: 'Estacionário vivo', mode: 'idle', speed: 0.5, pause: 6, activity: 'Conversando', ambient: true}),
+  guard: Object.freeze({label: 'Guarda em ronda', mode: 'return', speed: 1.1, pause: 3, activity: 'Em ronda', ambient: false}),
+  passerby: Object.freeze({label: 'Transeuntes (entrar e sair)', mode: 'pass', speed: 1, pause: 0, cooldown: 15, varyAppearance: true, activity: 'Caminhando', ambient: true})
+});
+
+export function pointInPolygon(point, polygon) {
+  if (!Array.isArray(polygon) || polygon.length < 3) return true;
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x, yi = polygon[i].y;
+    const xj = polygon[j].x, yj = polygon[j].y;
+    const intersect = ((yi > point.y) !== (yj > point.y)) &&
+      (point.x < (xj - xi) * (point.y - yi) / ((yj - yi) || 1e-12) + xi);
+    if (intersect) inside = !inside;
   }
-  return {...points[0]};
+  return inside;
+}
+
+export function polygonBounds(area, grid = null) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of area) {
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  if (!Number.isFinite(minX)) return null;
+  const x = grid ? clamp(minX, 0, grid.columns) : minX;
+  const y = grid ? clamp(minY, 0, grid.rows) : minY;
+  const width = grid ? clamp(maxX - minX, 0, grid.columns - x) : maxX - minX;
+  const height = grid ? clamp(maxY - minY, 0, grid.rows - y) : maxY - minY;
+  return {x, y, width, height};
+}
+
+export function generateWanderPoints(bounds, tokenSize, table, seed, startPoint = null, steps = 10, area = null) {
+  const maxX = Math.max(0, table.grid.columns - tokenSize);
+  const maxY = Math.max(0, table.grid.rows - tokenSize);
+  const hasPoly = Array.isArray(area) && area.length >= 3;
+  // Quando há polígono livre desenhado no mapa, permite coordenadas onde o centro do token fique dentro do desenho
+  const minX = clamp(hasPoly ? bounds.x - tokenSize / 2 : bounds.x, 0, maxX);
+  const minY = clamp(hasPoly ? bounds.y - tokenSize / 2 : bounds.y, 0, maxY);
+  const hiX = clamp(hasPoly ? bounds.x + bounds.width - tokenSize / 2 : bounds.x + bounds.width - tokenSize, minX, maxX);
+  const hiY = clamp(hasPoly ? bounds.y + bounds.height - tokenSize / 2 : bounds.y + bounds.height - tokenSize, minY, maxY);
+  const spanX = hiX - minX, spanY = hiY - minY;
+  const insideZone = pos => {
+    if (pos.x < minX - 1e-6 || pos.x > hiX + 1e-6 || pos.y < minY - 1e-6 || pos.y > hiY + 1e-6) return false;
+    if (!hasPoly) return true;
+    return pointInPolygon({x: pos.x + tokenSize / 2, y: pos.y + tokenSize / 2}, area);
+  };
+  const segmentInside = (from, to) => {
+    if (!hasPoly) return true;
+    for (const t of [0.25, 0.5, 0.75, 1]) {
+      if (!insideZone({x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t})) return false;
+    }
+    return true;
+  };
+  let start = null;
+  if (startPoint) {
+    const clamped = {x: clamp(startPoint.x, minX, hiX), y: clamp(startPoint.y, minY, hiY)};
+    if (insideZone(clamped)) start = clamped;
+  }
+  if (!start) {
+    for (let i = 0; i < 80 && !start; i++) {
+      const cand = {x: minX + spanX * seededFraction(seed, i * 2 + 1), y: minY + spanY * seededFraction(seed, i * 2 + 2)};
+      if (insideZone(cand)) start = cand;
+    }
+  }
+  if (!start && hasPoly) {
+    const cx = area.reduce((s, p) => s + p.x, 0) / area.length - tokenSize / 2;
+    const cy = area.reduce((s, p) => s + p.y, 0) / area.length - tokenSize / 2;
+    const centroid = {x: clamp(cx, minX, hiX), y: clamp(cy, minY, hiY)};
+    if (insideZone(centroid)) start = centroid;
+    else {
+      for (const v of area) {
+        const cand = {x: clamp((v.x - tokenSize / 2) * 0.8 + centroid.x * 0.2, minX, hiX), y: clamp((v.y - tokenSize / 2) * 0.8 + centroid.y * 0.2, minY, hiY)};
+        if (insideZone(cand)) { start = cand; break; }
+      }
+    }
+  }
+  if (!start) start = {x: minX + spanX * 0.5, y: minY + spanY * 0.5};
+  const points = [start];
+  let current = start;
+  const maxAttempts = hasPoly ? steps * 14 : steps * 4;
+  for (let attempt = 0; attempt < maxAttempts && points.length < steps; attempt++) {
+    const candidate = {
+      x: minX + spanX * seededFraction(seed, attempt * 2 + 101),
+      y: minY + spanY * seededFraction(seed, attempt * 2 + 102)
+    };
+    if (!insideZone(candidate)) continue;
+    const reached = slideToken(current, candidate, tokenSize, table);
+    const boundedReached = {x: clamp(reached.x, minX, hiX), y: clamp(reached.y, minY, hiY)};
+    if (!insideZone(boundedReached) || !segmentInside(current, boundedReached)) continue;
+    if (Math.hypot(boundedReached.x - current.x, boundedReached.y - current.y) >= 0.35) {
+      points.push(boundedReached);
+      current = boundedReached;
+    }
+  }
+  return points;
+}
+
+function patrolSegments(route) {
+  const points = route.points, segments = [];
+  const pauseSec = Number.isFinite(route.pause) && route.pause > 0 ? clamp(route.pause, 0, 60) : 0;
+  const seed = Number.isInteger(route.seed) ? route.seed : 0;
+  if (route.mode === 'idle') {
+    const origin = points[0];
+    const baseRot = normalizeRotation(route.baseRotation || 0);
+    const baseMs = Math.max(2, pauseSec || 5) * 1000;
+    for (let i = 0; i < 6; i++) {
+      const delta = (seededFraction(seed, i * 2 + 3) - 0.5) * 70;
+      const factor = 0.65 + 0.7 * seededFraction(seed, i * 2 + 4);
+      segments.push({kind: 'wait', a: origin, rotation: normalizeRotation(baseRot + delta), duration: Math.round(baseMs * factor)});
+    }
+    const activeMs = segments.reduce((sum, s) => sum + s.duration, 0);
+    return {segments, activeMs};
+  }
+  let stopIndex = 0;
+  const addLeg = (a, b, allowPause) => {
+    const dx = b.x - a.x, dy = b.y - a.y, duration = Math.hypot(dx, dy) * 1000 / route.speed;
+    if (duration <= 0) return;
+    const rotation = normalizeRotation(Math.atan2(dy, dx) * 180 / Math.PI + 90);
+    segments.push({kind: 'move', a, dx, dy, rotation, duration});
+    if (allowPause && pauseSec > 0) {
+      const factor = 0.6 + 0.8 * seededFraction(seed, stopIndex++);
+      segments.push({kind: 'wait', a: b, rotation, duration: Math.round(pauseSec * 1000 * factor)});
+    }
+  };
+  if (route.mode === 'pass') {
+    for (let i = 1; i < points.length; i++) addLeg(points[i - 1], points[i], i < points.length - 1);
+    const activeMs = segments.reduce((sum, s) => sum + s.duration, 0);
+    const cooldownSec = Number.isFinite(route.cooldown) ? clamp(route.cooldown, 2, 300) : 15;
+    const firstRot = segments[0]?.rotation ?? 0;
+    segments.push({kind: 'absent', a: points[0], rotation: firstRot, duration: Math.round(cooldownSec * 1000)});
+    return {segments, activeMs};
+  }
+  for (let i = 1; i < points.length; i++) addLeg(points[i - 1], points[i], true);
+  if (route.mode === 'loop') addLeg(points.at(-1), points[0], true);
+  else for (let i = points.length - 1; i > 0; i--) addLeg(points[i], points[i - 1], true);
+  const activeMs = segments.reduce((sum, s) => sum + s.duration, 0);
+  return {segments, activeMs};
+}
+
+export function patrolCycleDuration(route) {
+  return patrolSegments(route).segments.reduce((sum, s) => sum + s.duration, 0);
+}
+
+// Time, rather than a background job or an open GM tab, determines the NPC's position.
+export function patrolSample(route, now, portraitOptions = null) {
+  const {segments, activeMs} = patrolSegments(route);
+  if (!segments.length) return {...route.points[0]};
+  const total = segments.reduce((sum, s) => sum + s.duration, 0);
+  if (total <= 0) return {...route.points[0]};
+  const elapsed = (route.offset || 0) + (route.started ? Math.max(0, now - route.started) : 0);
+  const cycle = Math.floor(elapsed / total);
+  let time = elapsed % total;
+  const elapsedInCycle = time;
+  const activity = typeof route.activity === 'string' && route.activity.trim() ? route.activity.trim() : '';
+  const pool = Array.isArray(portraitOptions?.portraits) ? portraitOptions.portraits.filter(p => p?.id) : [];
+  const hasPortrait = pool.length > 0 || Boolean(portraitOptions?.portrait?.id);
+  const appearance = route.mode === 'pass' && route.varyAppearance
+    ? {
+        color: ambientPalette[Math.floor(seededFraction(route.seed || 0, cycle * 2 + 17) * ambientPalette.length)],
+        ...(pool.length > 0
+          ? {portrait: pool[Math.floor(seededFraction(route.seed || 0, cycle * 2 + 43) * pool.length)], icon: 'auto'}
+          : hasPortrait
+            ? {icon: 'auto'}
+            : {icon: ambientIcons[Math.floor(seededFraction(route.seed || 0, cycle * 2 + 31) * ambientIcons.length)] || 'auto'})
+      }
+    : null;
+  for (const seg of segments) {
+    if (time < seg.duration) {
+      const remaining = seg.duration - time;
+      if (seg.kind === 'absent') {
+        return {
+          x: seg.a.x, y: seg.a.y, rotation: seg.rotation, ambientAbsent: true,
+          ...(route.started ? {motion: {at: now, ms: Math.min(1200, remaining), vx: 0, vy: 0}} : {})
+        };
+      }
+      const fadeMs = route.mode === 'pass' ? Math.min(700, activeMs / 3) : 0;
+      const ambientPhase = route.mode === 'pass' && fadeMs > 0
+        ? (elapsedInCycle < fadeMs ? 'entering' : elapsedInCycle > activeMs - fadeMs ? 'exiting' : '')
+        : '';
+      if (seg.kind === 'wait') {
+        return {
+          x: seg.a.x, y: seg.a.y, rotation: seg.rotation,
+          ...(appearance || {}),
+          ...(ambientPhase ? {ambientPhase} : {}),
+          ...(activity ? {ambientActivity: activity} : {}),
+          ...(route.started ? {motion: {at: now, ms: Math.min(1200, remaining), vx: 0, vy: 0}} : {})
+        };
+      }
+      const {a, dx, dy, duration, rotation} = seg;
+      return {
+        x: a.x + dx * time / duration,
+        y: a.y + dy * time / duration,
+        rotation,
+        ...(appearance || {}),
+        ...(ambientPhase ? {ambientPhase} : {}),
+        ...(activity && !(route.pause > 0) ? {ambientActivity: activity} : {}),
+        ...(route.started ? {motion: {at: now, ms: Math.min(1200, remaining), vx: dx / duration, vy: dy / duration}} : {})
+      };
+    }
+    time -= seg.duration;
+  }
+  return {...route.points[0]};
 }
 
 // Keep expiry coordinates in the saved scene. A rewind of initiative restores the
@@ -118,17 +313,42 @@ export function conditionSummary(token){
 export function normalizeToken(token,grid) {
   const size=integer(token.size,1,4,1);
   const patrol=token.patrol;
-  const validRoute=patrol&&['return','loop'].includes(patrol.mode)&&Number.isFinite(patrol.speed)&&patrol.speed>=.25&&patrol.speed<=4&&Number.isFinite(patrol.started)&&Number.isFinite(patrol.offset)&&Array.isArray(patrol.points)&&patrol.points.length>=2&&patrol.points.length<=48&&patrol.points.every(p=>Number.isFinite(p?.x)&&Number.isFinite(p?.y));
+  const minPoints=patrol?.mode==='idle'?1:2;
+  const validRoute=patrol&&['return','loop','pass','wander','idle'].includes(patrol.mode)&&Number.isFinite(patrol.speed)&&patrol.speed>=.25&&patrol.speed<=4&&Number.isFinite(patrol.started)&&Number.isFinite(patrol.offset)&&Array.isArray(patrol.points)&&patrol.points.length>=minPoints&&patrol.points.length<=48&&patrol.points.every(p=>Number.isFinite(p?.x)&&Number.isFinite(p?.y));
+  const validBounds=patrol?.mode==='wander'&&patrol.bounds&&['x','y','width','height'].every(k=>Number.isFinite(patrol.bounds[k]))&&patrol.bounds.width>0&&patrol.bounds.height>0
+    ? {x:bounded(patrol.bounds.x,0,grid.columns,0),y:bounded(patrol.bounds.y,0,grid.rows,0),width:clamp(patrol.bounds.width,.5,grid.columns),height:clamp(patrol.bounds.height,.5,grid.rows)}
+    : null;
+  const validArea=patrol?.mode==='wander'&&Array.isArray(patrol.area)&&patrol.area.length>=3&&patrol.area.length<=64&&patrol.area.every(p=>Number.isFinite(p?.x)&&Number.isFinite(p?.y))
+    ? patrol.area.map(p=>({x:bounded(p.x,0,grid.columns,0),y:bounded(p.y,0,grid.rows,0)}))
+    : null;
+  const cleanPatrol=validRoute?{
+    points:patrol.points,mode:patrol.mode,speed:patrol.speed,started:patrol.started,offset:patrol.offset,
+    ...(Number.isFinite(patrol.pause)&&patrol.pause>0?{pause:clamp(patrol.pause,0,60)}:{}),
+    ...(patrol.mode==='pass'&&Number.isFinite(patrol.cooldown)?{cooldown:clamp(patrol.cooldown,2,300)}:{}),
+    ...(validBounds?{bounds:validBounds}:{}),
+    ...(validArea?{area:validArea}:{}),
+    ...(patrol.mode==='idle'&&Number.isFinite(patrol.baseRotation)?{baseRotation:normalizeRotation(patrol.baseRotation)}:{}),
+    ...(Number.isInteger(patrol.seed)&&patrol.seed>=0&&patrol.seed<=999999?{seed:patrol.seed}:{}),
+    ...(clean(patrol.activity,32)?{activity:clean(patrol.activity,32)}:{}),
+    ...(patrol.mode==='pass'&&patrol.varyAppearance===true?{varyAppearance:true}:{})
+  }:null;
+  const ambient=!token.characterId&&token.kind!=='item'&&token.ambient===true;
+  const cleanPortraits=Array.isArray(token.portraits)
+    ? token.portraits.filter(p=>p&&typeof p.id==='string'&&p.id&&typeof p.type==='string'&&Number.isFinite(p.size)).slice(0,12).map(p=>({id:clean(p.id,80),name:clean(p.name,180)||'Arquivo',type:p.type,size:p.size}))
+    : [];
   return {
     id:clean(token.id,80),name:clean(token.name,80)||'Token',
     ...(!token.characterId&&token.kind!=='item'&&clean(token.realName,80)?{realName:clean(token.realName,80)}:{}),
     color:palette.has(token.color)?token.color:'violet',icon:tokenIconIds.has(token.icon)?token.icon:'auto', size,
     x:bounded(token.x,0,grid.columns-size,0),y:bounded(token.y,0,grid.rows-size,0),
-    hidden:token.hidden===true,locked:token.locked===true,rotation:normalizeRotation(token.rotation),vision:normalizeVision(token.vision),
+    hidden:token.hidden===true,locked:token.locked===true,rotation:normalizeRotation(token.rotation),
+    vision:ambient?{enabled:false,range:0,angle:360}:normalizeVision(token.vision),
     characterId:clean(token.characterId,80),
-    ...(validRoute?{patrol}:{}),
+    ...(ambient?{ambient:true}:{}),
+    ...(cleanPatrol?{patrol:cleanPatrol}:{}),
     ...(Array.isArray(token.conditionSchedule)?{conditionSchedule:token.conditionSchedule.filter(validConditionTimer).slice(-24)}:{}),
     ...(token.portrait?{portrait:token.portrait}:{}),
+    ...(cleanPortraits.length?{portraits:cleanPortraits}:{}),
     ...(token.kind==='item'&&token.loot?{kind:'item',loot:token.loot,characterId:'',vision:{enabled:false,range:0,angle:360}}:{}),
     statuses:Array.isArray(token.statuses) ? [...new Set(token.statuses.map(status=>clean(status,24)).filter(Boolean))].slice(0,6) : []
   };
@@ -195,9 +415,11 @@ export function tableView(state,master) {
   if (master && table.combat.active<0) table.combat.active=0;
   const allTokens=(state.tokens||[]).map(token=>normalizeToken({...token,characterId:tokenCharacterId(state,token)},table.grid));
   const now=Date.now();
+  let patrolRunning=0,patrolPaused=0;
   for(const token of allTokens){
     if(token.patrol&&eligibleForPatrol(state,token)){
-      Object.assign(token,patrolSample(token.patrol,now));
+      if(token.patrol.started)patrolRunning++;else patrolPaused++;
+      Object.assign(token,patrolSample(token.patrol,now,token));
       token.x=clamp(token.x,0,table.grid.columns-token.size);token.y=clamp(token.y,0,table.grid.rows-token.size);
     }
     if(token.conditionSchedule){
@@ -205,9 +427,11 @@ export function tableView(state,master) {
       if(timers.length)token.timedStatuses=timers;
       delete token.conditionSchedule;
     }
-    if(!master)delete token.patrol;
+    if(!master){delete token.patrol;delete token.portraits;}
   }
-  const tokens=master ? allTokens : allTokens.filter(token=>tokenVisible(token,table)).map(token=>publicItemToken(token));
+  if(patrolRunning>0)table.hasPatrols=true;
+  if(master){table.patrolRunning=patrolRunning;table.patrolPaused=patrolPaused;}
+  const tokens=master ? allTokens : allTokens.filter(token=>tokenVisible(token,table)&&!token.ambientAbsent).map(token=>publicItemToken(token));
   if (!master) {
     delete table.exploration;delete table.fog.history;table.lootEvents=table.lootEvents.filter(e=>e.public);
     const hidden=new Set(allTokens.filter(token=>!tokenVisible(token,table)).map(token=>token.id));
@@ -403,8 +627,9 @@ function changeToken(state,table,action,data,master) {
   if(data.realName!==undefined&&(typeof data.realName!=='string'||data.realName.length>80))fail(400,'Use até 80 caracteres no nome verdadeiro.');
   if(data.patrol!==undefined)fail(400,'Use a ferramenta de rota.');
   if(data.loot!==undefined||data.kind!==undefined)fail(400,'Use o catálogo para colocar itens na mesa.');
-  if(data.portrait!==undefined)fail(400,'Envie o retrato pelo importador de imagens.');
+  if(data.portrait!==undefined||data.portraits!==undefined)fail(400,'Envie o retrato pelo importador de imagens.');
   if(data.removePortrait!==undefined&&typeof data.removePortrait!=='boolean')fail(400,'Opção de retrato inválida.');
+  if(data.removePortraitPool!==undefined&&typeof data.removePortraitPool!=='boolean')fail(400,'Opção de galeria inválida.');
   if(data.rotation!==undefined)requireRange(data.rotation,0,360,'Direção');
   if(data.vision!==undefined){
     if(!data.vision||typeof data.vision!=='object'||Array.isArray(data.vision))fail(400,'Visão inválida.');
@@ -435,11 +660,82 @@ function changeToken(state,table,action,data,master) {
   if(action==='tokenPatrol'){
     if(!eligibleForPatrol(state,token))fail(400,'Escolha um NPC ou um token sem ficha.');
     const now=Date.now(),route=token.patrol;
+    if(data.operation==='promote'){
+      if(route){const {x,y,rotation}=patrolSample(route,now);Object.assign(token,{x,y,rotation});delete token.patrol;}
+      delete token.ambient;
+      return;
+    }
     if(data.operation==='start'){
-      if(!Array.isArray(data.points)||data.points.length<2||data.points.length>48||!['loop','return'].includes(data.mode))fail(400,'Marque de 2 a 48 pontos e escolha o percurso.');
-      const points=data.points.map(p=>({x:requireRange(p?.x,0,table.grid.columns-token.size,'Posição X'),y:requireRange(p?.y,0,table.grid.rows-token.size,'Posição Y')}));
-      if(!points.some(p=>p.x!==points[0].x||p.y!==points[0].y))fail(400,'Escolha dois lugares diferentes.');
-      token.patrol={points,mode:data.mode,speed:requireRange(data.speed,.25,4,'Velocidade'),started:now,offset:0};
+      if(!['loop','return','pass','wander','idle'].includes(data.mode))fail(400,'Escolha um modo de percurso válido.');
+      const pause=data.pause!==undefined&&data.pause!==''?requireRange(data.pause,0,60,'Pausa'):(data.mode==='idle'?6:0);
+      const cooldown=data.mode==='pass'?(data.cooldown!==undefined&&data.cooldown!==''?requireRange(data.cooldown,2,300,'Intervalo fora da cena'):15):undefined;
+      const activity=data.activity!==undefined?clean(data.activity,32):'';
+      const varyAppearance=data.mode==='pass'&&data.varyAppearance===true;
+      const count=data.mode==='idle'?1:(data.count!==undefined&&data.count!==''?requireRange(data.count,1,6,'Quantidade de figurantes',true):1);
+      if(count>1&&state.tokens.length+count-1>100)fail(409,'Limite de 100 tokens na cena atingido.');
+      const baseSeed=Number.isInteger(data.seed)&&data.seed>=0&&data.seed<=999999?data.seed:Math.floor(Math.random()*900000)+1;
+      const speed=data.mode==='idle'?0.5:requireRange(data.speed,.25,4,'Velocidade');
+      let points,bounds,area;
+      if(data.mode==='idle'){
+        points=[{x:token.x,y:token.y}];
+      }else if(data.mode==='wander'){
+        if(Array.isArray(data.area)&&data.area.length>=3){
+          if(data.area.length>64)fail(400,'Área desenhada com muitos pontos.');
+          area=data.area.map(p=>({x:requireRange(p?.x,0,table.grid.columns,'Ponto X da área'),y:requireRange(p?.y,0,table.grid.rows,'Ponto Y da área')}));
+          bounds=polygonBounds(area,table.grid);
+          if(!bounds||bounds.width<0.5&&bounds.height<0.5)fail(400,'Desenhe uma área maior no mapa para os figurantes caminharem.');
+        }else{
+          if(!data.bounds||typeof data.bounds!=='object')fail(400,'Desenhe a área de vagueio livremente no mapa.');
+          const bx=requireRange(data.bounds.x,0,table.grid.columns,'Início X da zona');
+          const by=requireRange(data.bounds.y,0,table.grid.rows,'Início Y da zona');
+          const bw=requireRange(data.bounds.width,token.size,table.grid.columns,'Largura da zona');
+          const bh=requireRange(data.bounds.height,token.size,table.grid.rows,'Altura da zona');
+          bounds={x:bx,y:by,width:Math.min(bw,table.grid.columns-bx),height:Math.min(bh,table.grid.rows-by)};
+          if(bounds.width<token.size+0.4&&bounds.height<token.size+0.4)fail(400,'Amplie a área de vagueio para permitir movimento.');
+        }
+        points=generateWanderPoints(bounds,token.size,table,baseSeed,{x:token.x,y:token.y},10,area);
+        if(points.length<2)fail(400,'A área desenhada é estreita demais ou bloqueada por paredes. Desenhe um espaço um pouco mais amplo.');
+        token.x=points[0].x;token.y=points[0].y;
+      }else{
+        if(!Array.isArray(data.points)||data.points.length<2||data.points.length>48)fail(400,'Marque de 2 a 48 pontos e escolha o percurso.');
+        points=data.points.map(p=>({x:requireRange(p?.x,0,table.grid.columns-token.size,'Posição X'),y:requireRange(p?.y,0,table.grid.rows-token.size,'Posição Y')}));
+        if(!points.some(p=>p.x!==points[0].x||p.y!==points[0].y))fail(400,'Escolha dois lugares diferentes.');
+      }
+      const baseRoute={
+        points,mode:data.mode,speed,started:now,offset:0,seed:baseSeed,
+        ...(pause>0?{pause}:{}),
+        ...(cooldown!==undefined?{cooldown}:{}),
+        ...(bounds?{bounds}:{}),
+        ...(area?{area}:{}),
+        ...(data.mode==='idle'?{baseRotation:normalizeRotation(token.rotation)}:{}),
+        ...(activity?{activity}:{}),
+        ...(varyAppearance?{varyAppearance:true}:{})
+      };
+      token.patrol=baseRoute;
+      if(data.color&&palette.has(data.color))token.color=data.color;
+      if(data.icon&&tokenIconIds.has(data.icon))token.icon=data.icon;
+      if((token.portrait||token.portraits?.length)&&(!data.icon||data.icon==='auto'))token.icon='auto';
+      if(data.ambient===true&&!token.characterId&&token.kind!=='item'){token.ambient=true;token.vision={enabled:false,range:0,angle:360};}
+      if(count>1){
+        const cycleMs=Math.max(1000,patrolCycleDuration(baseRoute));
+        const pool=Array.isArray(token.portraits)&&token.portraits.length?token.portraits:token.portrait?[token.portrait]:[];
+        for(let i=1;i<count;i++){
+          const copySeed=(baseSeed+i*7919)%999999;
+          const copyPoints=data.mode==='wander'?generateWanderPoints(bounds,token.size,table,copySeed,null,10,area):points;
+          const copyRoute={...baseRoute,points:copyPoints.length>=2?copyPoints:points,seed:copySeed,offset:Math.round(cycleMs*i/count)};
+          const copyColor=ambientPalette[(ambientPalette.indexOf(token.color)+i)%ambientPalette.length];
+          const copyPortrait=pool.length?pool[i%pool.length]:token.portrait;
+          const originPoint=copyRoute.points[0];
+          const copy=normalizeToken({
+            id:uid(),name:token.name,color:copyColor,icon:copyPortrait?'auto':token.icon,size:token.size,
+            x:originPoint.x,y:originPoint.y,hidden:token.hidden,locked:token.locked,rotation:token.rotation,
+            ...(copyPortrait?{portrait:copyPortrait}:{}),
+            ...(token.portraits?.length?{portraits:token.portraits}:{}),
+            ambient:true,patrol:copyRoute
+          },table.grid);
+          state.tokens.push(copy);
+        }
+      }
     }else if(route){
       const {x,y,rotation}=patrolSample(route,now);Object.assign(token,{x,y,rotation});
       if(data.operation==='pause'){if(route.started)route.offset+=Math.max(0,now-route.started);route.started=0;}
@@ -504,7 +800,15 @@ function changeToken(state,table,action,data,master) {
     token.name=name;
   }
   if(data.icon!==undefined)token.icon=data.icon;
-  if(data.removePortrait)delete token.portrait;
+  if(data.removePortraitPool){delete token.portraits;delete token.portrait;}
+  else if(data.removePortrait){
+    const removedId=token.portrait?.id;
+    delete token.portrait;
+    if(removedId&&Array.isArray(token.portraits)){
+      token.portraits=token.portraits.filter(p=>p.id!==removedId);
+      if(token.portraits.length)token.portrait=token.portraits[0];else delete token.portraits;
+    }
+  }
   if (data.size!==undefined) token.size=requireRange(data.size,1,4,'Tamanho',true);
   if (data.color!==undefined) {
     if (!palette.has(data.color)) fail(400,'Cor de token inválida.');
@@ -613,6 +917,26 @@ export function mutateTable(state,action,data,master,actorName=master?'Mestre':'
     }
   }
   else if (action==='tableFog') changeFog(table,data);
+  else if (action==='tableSceneLife') {
+    const now=Date.now();
+    if(data.operation==='clearAmbient'){
+      const removedIds=new Set(state.tokens.filter(t=>t.ambient).map(t=>t.id));
+      state.tokens=state.tokens.filter(t=>!t.ambient);
+      if(removedIds.size){
+        const active=table.combat.entries[table.combat.active];
+        table.combat.entries=table.combat.entries.filter(e=>!removedIds.has(e.tokenId));
+        table.combat.active=Math.max(0,table.combat.entries.findIndex(e=>e.id===active?.id));
+      }
+    } else {
+      if(!['pauseAll','resumeAll'].includes(data.operation))fail(400,'Operação de vida da cena inválida.');
+      for(const token of state.tokens){
+        if(!token.patrol||!eligibleForPatrol(state,token))continue;
+        const {x,y,rotation}=patrolSample(token.patrol,now,token);Object.assign(token,{x,y,rotation});
+        if(data.operation==='pauseAll'){if(token.patrol.started)token.patrol.offset+=Math.max(0,now-token.patrol.started);token.patrol.started=0;}
+        else if(!token.patrol.started)token.patrol.started=now;
+      }
+    }
+  }
   else if (action.startsWith('token')) changeToken(state,table,action,data,master);
   else if (action==='tablePing') {
     const now=Date.now();

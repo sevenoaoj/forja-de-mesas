@@ -5,7 +5,7 @@ import {validateSheetAppearance,sheetAppearance} from './sheet-layout.mjs';
 export const sheetHistoryLimits=Object.freeze({entries:20,snapshotBytes:64*1024,characterBytes:96*1024,campaignBytes:384*1024});
 export const sheetHistoryActions=new Set(['character','sheetValue','schema','sheetFields','sheetCounter','sheetEntry','sheetMastery','sheetMasteryRefresh','sheetAppearance','dndAdd','dndRest','dndCast','roll','checkRespond','sheetTemplateApply']);
 export const isSheetHistoryRelevant=action=>sheetHistoryActions.has(action);
-const editable=['name','concept','color','skills','abilities','rollButtons','masteries','dnd','preset','appearance'];
+const editable=['name','concept','color','skills','abilities','rollButtons','masteries','dnd','preset','appearance','fieldLabels'];
 const clone=value=>structuredClone(value);
 const bytes=value=>new TextEncoder().encode(JSON.stringify(value)).length;
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
@@ -76,7 +76,7 @@ export function mutateSheetHistory(state,action,data={},access={}){
  const before=snapshot(state,character),saved=entry.before;
  // Restore only sheet content. Access, portrait and other campaign references always remain current.
  const candidate={...character};
- for(const key of editable){if(Object.hasOwn(saved,key))candidate[key]=clone(saved[key]);else delete candidate[key];}
+ for(const key of editable){if(key==='fieldLabels'&&!access.master)continue;if(Object.hasOwn(saved,key))candidate[key]=clone(saved[key]);else delete candidate[key];}
  candidate.layout=clone(saved.layout);candidate.values=clone(saved.values);delete candidate.fields;
  candidate.appearance={...validateSheetAppearance(sheetAppearance(state,candidate),state,candidate),version:(character.appearance?.version||0)+1};
  const after=snapshot(state,candidate);

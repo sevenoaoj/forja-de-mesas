@@ -89,6 +89,8 @@ button.card:hover{border-color:#6b508d}
 .token:active{cursor:grabbing;z-index:2}
 .roll-list{list-style:none;padding:0;margin:0;display:grid;gap:7px;max-height:340px;overflow:auto}
 .roll-list li{border-bottom:1px solid var(--line);padding:8px 0;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.roll-list-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.roll-list-side{display:grid;justify-items:end;gap:4px;flex:none}
 .roll-list strong{font-size:18px;color:var(--accent)}
 .library-card{display:grid;gap:12px;align-content:start}
 label{display:grid;gap:6px;color:#e1d9eb;font-weight:600}
@@ -540,6 +542,7 @@ dialog::backdrop{background:#080710c9}
 .recap-entry {padding:.75rem 0}.recap-entry p {white-space:pre-wrap;overflow-wrap:anywhere}
 
 #investigation-inbox:not([hidden]) {position:fixed;inset:auto;margin:0;z-index:65;right:max(.8rem,env(safe-area-inset-right));top:max(.8rem,env(safe-area-inset-top));width:min(22rem,calc(100vw - 1.6rem));max-height:35dvh;overflow:auto;display:grid;gap:.5rem;padding:1rem;border:1px solid #dda867;border-left:4px solid #efa95b;border-radius:.75rem;background:#292134;color:#fff2d8;box-shadow:0 8px 30px #0008}
+@media(min-width:731px){#investigation-inbox:not([hidden]){top:calc(70px + .6rem)}}
 
 .investigation-rewards{list-style:none;padding:0;display:grid;gap:.5rem}
 .investigation-rewards li{display:flex;justify-content:space-between;align-items:baseline;gap:1rem;padding:.65rem .9rem;border:1px solid #756341;border-radius:.5rem;background:#302933}

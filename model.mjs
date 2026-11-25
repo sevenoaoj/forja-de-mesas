@@ -82,7 +82,9 @@ export function sheetFields(state,character) {
   if(state.sheetModelVersion){
     const common=state.fields||[];
     const ids=new Set(common.map(field=>field.id));
-    return [...common,...(character?.layout||character?.fields||[]).filter(field=>!ids.has(field.id))];
+    const labels=character?.fieldLabels;
+    const shared=labels?common.map(field=>Object.hasOwn(labels,field.id)?{...field,label:labels[field.id]}:field):common;
+    return [...shared,...(character?.layout||character?.fields||[]).filter(field=>!ids.has(field.id))];
   }
   return character?.layout ? [...character.layout] : [...(state.fields||[]),...(character?.fields||[])];
 }
@@ -100,6 +102,18 @@ export function injuredPortrait(state,character){
   if(parts.length!==2||parts.some(p=>!p.trim()||!Number.isFinite(Number(p))))return null;
   const [value,max]=parts.map(Number);
   return max>0&&value>=0&&value*100<=max*rule.threshold?rule.image:null;
+}
+
+export function primaryCharacterResource(state,character){
+  if(!character)return null;
+  const counters=sheetFields(state,character).filter(field=>field.type==='counter');
+  if(!counters.length)return null;
+  const field=(character.injury?.resource&&counters.find(item=>item.id===character.injury.resource))||counters[0];
+  const parts=String(sheetValue(character,field)??'').split('/');
+  if(parts.length!==2||parts.some(p=>!p.trim()||!Number.isFinite(Number(p))))return null;
+  const [current,maximum]=parts.map(Number);
+  if(maximum<=0||current<0)return null;
+  return {fieldId:field.id,label:field.label,current,maximum};
 }
 
 export function skillValues(character,skill,state) {
@@ -222,6 +236,7 @@ export function sheetRequestOptions(state,character){
  ].map(option=>({...option,key:option.kind+':'+normalizedName(option.name)}));
 }
 export function requestedTest(state,character,target){
+ if(target.kind==='free')return {label:target.label||'Teste',formula:target.formula};
  if(target.kind==='attribute')return sheetAttributeTest(state,character,target.testId);
  if(target.kind==='skill')return sheetSkillTest(state,character,target.testId);
  const saved=character.rollButtons?.find(b=>b.id===target.testId);

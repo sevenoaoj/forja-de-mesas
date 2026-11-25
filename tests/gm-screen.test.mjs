@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {api} from '../api.mjs';
 import {newCampaign} from '../model.mjs';
 import {mutateGmScreen} from '../gm-screen-model.mjs';
-import {renderGmScreen,renderGmCards,gmCardEditor} from '../public/gm-screen.mjs';
+import {renderGmScreen,renderGmCards,gmCardEditor,prepList,initiativeRollSpec,rollDiceFormulaLocal} from '../public/gm-screen.mjs';
+import {canRepeatRoll} from '../public/rolls.mjs';
+import {dndCharacter} from '../dnd.mjs';
 async function room(){
  const rows=new Map();
  const store={async create(row){rows.set(row.id,structuredClone(row));},async get(id){return structuredClone(rows.get(id));},async save(row){await Promise.resolve();if(rows.get(row.id).rev!==row.rev)return false;rows.set(row.id,structuredClone({...row,rev:row.rev+1}));return true;}};
@@ -63,10 +65,16 @@ test('sorteio usa o servidor, armazena a entrada escolhida e integra o históric
  const r=await room(),card=(await r.save({kind:'table',title:'Encontro secreto',body:'Patrulha\nMercador\nViajante'})).state.gmScreen.cards[0];
  const response=await r.action('gmTableRoll',{id:card.id});assert.equal(response.status,200);
  const row=await response.json(),roll=row.state.rolls[0],last=row.state.gmScreen.cards[0].lastRoll;
- assert.equal(roll.formula,'1d3');assert.equal(roll.rolledBy,'master');assert.equal(roll.visibility,'gm');
+ assert.equal(roll.formula,'1d3');assert.equal(roll.rolledBy,'master');assert.equal(roll.visibility,'gm');assert.equal(roll.kind,'table');
+ assert.equal(canRepeatRoll(roll,row),false);
  assert.equal(last.rollId,roll.id);assert.equal(last.text,card.items[roll.total-1].text);assert.ok(roll.label.includes(last.text));
  assert.equal((await r.action('gmTableRoll',{id:'sumiu'})).status,404);
  assert.equal((await r.action('gmCardSave',{title:'Inválida',kind:'table',category:'session',body:'Só uma'})).status,400);
+ const bigEntries=Array.from({length:11},(_,i)=>({text:'Entrada '+(i+1),weight:100}));
+ const bigCard=(await r.save({kind:'table',title:'Tabela grande',entries:bigEntries})).state.gmScreen.cards.at(-1);
+ const bigResponse=await r.action('gmTableRoll',{id:bigCard.id});assert.equal(bigResponse.status,200);
+ const bigRow=await bigResponse.json(),bigRoll=bigRow.state.rolls[0];
+ assert.equal(bigRoll.formula,'1d1100');assert.equal(bigRoll.kind,'table');assert.equal(canRepeatRoll(bigRoll,bigRow),false);
 });
 test('referências validam destinos e preservam o número da página',async()=>{
  const r=await room();
@@ -208,4 +216,88 @@ test('apagar material remove o vínculo de todas as sessões e mantém as outras
  const deleted=await(await r.action('characterDelete',{id:'lyra'})).json();
  assert.equal(deleted.state.sceneLibrary.version,before+1);
  for(const session of deleted.state.sceneLibrary.sessions)assert.deepEqual(session.materials,[{kind:'character',id:'dorian'}]);
+});
+
+test('sorteios ponderados usam os intervalos dos pesos e preservam o ciclo ao editar',async()=>{
+ const r=await room();
+ const entries=[{text:'Patrulha',weight:3},{text:'Fantasma',weight:1}];
+ let card=(await r.save({kind:'table',entries,noRepeat:true})).state.gmScreen.cards[0];
+ const draw=()=>r.action('gmTableRoll',{id:card.id});
+ let row=await (await draw()).json();
+ card=row.state.gmScreen.cards[0];
+ assert.equal(row.state.rolls[0].formula,'1d4');
+ assert.equal(card.lastRoll.index,row.state.rolls[0].total<=3?1:2);
+ const picked=card.items.find(item=>item.drawn);
+ card=(await r.save({...card,entries:card.items.map(item=>({...item,text:item.text+'!'}))})).state.gmScreen.cards[0];
+ assert.equal(card.items.find(item=>item.id===picked.id).drawn,true);
+ const replies=await Promise.all([draw(),draw()]);
+ assert.deepEqual(replies.map(reply=>reply.status).sort(),[200,409]);
+ row=await (await r.view());
+ card=row.state.gmScreen.cards[0];
+ assert.ok(card.items.every(item=>item.drawn));
+ const html=renderGmCards(row,ui);
+ assert.ok(html.includes('0 de 2 disponíveis'));assert.ok(!html.includes('Sortear em segredo'));
+ assert.equal((await r.action('gmTableReset',{id:card.id,version:card.version-1})).status,409);
+ assert.equal((await r.action('gmTableReset',{id:card.id,version:card.version},r.created.invite)).status,403);
+ const reset=await r.action('gmTableReset',{id:card.id,version:card.version});
+ assert.ok((await reset.json()).state.gmScreen.cards[0].items.every(item=>!item.drawn));
+ for(const weight of [0,1.5,101]){
+  assert.equal((await r.action('gmCardSave',{kind:'table',title:'Inválida',category:'world',entries:[entries[0],{text:'Teste',weight}]})).status,400);
+ }
+});
+
+test('roteiro segue a ordem do mestre em novas visitas e recusa reordenar uma versão antiga',async()=>{
+ const r=await room(),sessionId='session-initial';
+ const add=id=>r.action('sessionMaterial',{sessionId,kind:'character',id,attached:true});
+ await add('lyra');await add('dorian');
+ const row=await r.view(),version=row.state.sceneLibrary.version;
+ const plan=prepList(row,ui,{prepTab:'plan'});
+ assert.ok(plan.indexOf('data-prep-material="character:lyra"')<plan.indexOf('data-prep-material="character:dorian"'));
+ assert.match(plan,/aria-label="Subir Lyra Vesper no roteiro" disabled/);
+ const move={sessionId,id:'dorian',kind:'character',direction:-1,expectedVersion:version};
+ assert.equal((await r.action('sessionMaterialMove',move,r.created.invite)).status,403);
+ const responses=await Promise.all([r.action('sessionMaterialMove',move),r.action('sessionMaterialMove',move)]);
+ assert.deepEqual(responses.map(res=>res.status).sort(),[200,409]);
+ const reopened=await r.view();
+ assert.deepEqual(reopened.state.sceneLibrary.sessions[0].materials.map(ref=>ref.id),['dorian','lyra']);
+ const reordered=prepList(reopened,ui,{prepTab:'plan'});
+ assert.ok(reordered.indexOf('data-prep-material="character:dorian"')<reordered.indexOf('data-prep-material="character:lyra"'));
+ assert.equal((await r.action('sessionMaterialMove',{...move,expectedVersion:version+1})).status,409);
+});
+
+test('preparação identifica o alcance da edição e do combate antes de abrir o mapa',async()=>{
+ const r=await room(),row=await r.view();
+ const live=renderGmScreen(row,ui);
+ assert.ok(live.includes('Preparar cópia privada'));assert.ok(live.includes('Editar mapa ao vivo'));
+ assert.ok(live.includes('Ordem ao vivo.'));
+ const response=await r.action('sceneDuplicate',{id:row.state.sceneId,expectedVersion:row.state.sceneLibrary.version});
+ const copy=(await response.json()).state.sceneLibrary.scenes.at(-1);
+ const viewed=await(await r.request(r.base+'?scene='+copy.id,'GET',r.created.key)).json(),prepared=renderGmScreen(viewed,ui);
+ assert.ok(prepared.includes('Editar mapa privado'));assert.ok(prepared.includes('Ordem privada desta cena.'));
+ assert.ok(!prepared.includes('Editar mapa ao vivo'));assert.equal((await r.view(r.created.invite)).state.sceneId,row.state.sceneId);
+});
+
+test('escudo oferece seletor de visibilidade e helpers de iniciativa rápida cobrem D&D, livre e fallback',()=>{
+ const state=newCampaign('Iniciativa',true);
+ const screen=renderGmScreen({master:true,state},ui);
+ assert.ok(screen.includes('Rolagem rápida'));
+ assert.ok(screen.includes('<select name="visibility">'));
+ assert.ok(screen.includes('Privada (só mestre)'));
+ assert.ok(screen.includes('Pública (mesa)'));
+ const sage=dndCharacter({classId:'wizard',speciesId:'human',backgroundId:'sage',scoreMethod:'array',scores:{str:8,dex:14,con:13,int:15,wis:12,cha:10},boost2:'int',boost1:'wis',skills:['insight','investigation']});
+ const criminal=dndCharacter({classId:'rogue',speciesId:'human',backgroundId:'criminal',scoreMethod:'array',scores:{str:8,dex:14,con:13,int:12,wis:10,cha:15},boost2:'dex',boost1:'con',skills:['acrobatics','athletics','deception','perception'],expertise:['stealth','perception']});
+ const dndNoButton={...sage,rollButtons:[]};
+ const withInitSkill={id:'skill-char',name:'Ágil',values:{f2:'3'},skills:[{id:'init',name:'Iniciativa',attribute:'f2',base:0,bonus:2,other:0}]};
+ assert.equal(initiativeRollSpec(state,sage),'1d20+2');
+ assert.equal(initiativeRollSpec(state,criminal),'1d20+3+2');
+ assert.equal(initiativeRollSpec(state,dndNoButton),'1d20+2');
+ assert.equal(initiativeRollSpec(state,withInitSkill),'1d20+3+2');
+ assert.equal(initiativeRollSpec(state,state.characters[0]),'1d20+3');
+ assert.equal(initiativeRollSpec(state,null),'1d20');
+ const rolled=rollDiceFormulaLocal('1d20+3');
+ assert.equal(rolled.formula,'1d20+3');
+ assert.equal(rolled.modifier,3);
+ assert.equal(rolled.dice.length,1);
+ assert.ok(rolled.dice[0]>=1&&rolled.dice[0]<=20);
+ assert.equal(rolled.total,rolled.dice[0]+3);
 });

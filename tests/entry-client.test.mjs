@@ -44,7 +44,7 @@ test('convite abre escolha, seleção abre só ficha própria e ocultação revo
   globalThis.document=documentNode;
   document.hidden=false;
   globalThis.location={origin:'http://192.168.0.211:3000',hostname:'192.168.0.211',pathname:'/',search:'',hash:'#mesa='+master.id+'.'+master.invite};
-  globalThis.history={replaceState(){}};
+  globalThis.history={replaceState(){location.hash='';}};
   globalThis.window={scrollTo(){},YT:{Player:class {destroy(){}}}};
   globalThis.localStorage={getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)};
   globalThis.setInterval=(fn,ms)=>intervals.set(ms,fn);
@@ -82,12 +82,34 @@ test('convite abre escolha, seleção abre só ficha própria e ocultação revo
     assert.ok(predicate(),document.querySelector('#notice').textContent||document.querySelector('#dialog-notice').textContent||'A tela esperada não abriu.');
   };
   try {
+    const fetchCampaign=globalThis.fetch;
+    let interrupt;
+    globalThis.fetch=(url,options)=>String(url).endsWith('/session')
+      ?new Promise((_resolve,reject)=>{interrupt=()=>reject(new TypeError('NetworkError'));})
+      :fetchCampaign(url,options);
     await import(moduleURL(app));
+    await waitFor(()=>Boolean(interrupt));
+    assert.ok(main.innerHTML.includes('Entrando na campanha'));assert.ok(!main.innerHTML.includes('Nova campanha'));
+    interrupt();await waitFor(()=>main.innerHTML.includes('Tentar novamente'));
+    assert.ok(location.hash.startsWith('#mesa='));assert.ok(!main.innerHTML.includes('Nova campanha'));
+    globalThis.fetch=fetchCampaign;
+    const campaignBeforeJoin=rows.get(master.id),exampleCharacters=campaignBeforeJoin.state.characters;
+    campaignBeforeJoin.state.characters=[];
+    dispatch('click',new Element({act:'entryRetry'}));
     await waitFor(()=>main.innerHTML.includes('Escolha seu personagem'));
+    assert.ok(main.innerHTML.includes('Crie seu personagem para começar'));assert.ok(!main.innerHTML.includes('vinculada ao acesso anterior'));
+    assert.equal(location.hash,'');
+    const audioIndicator=document.querySelector('#audio-controls').querySelector('[data-audio-panel-toggle]');
+    assert.match(audioIndicator.title,/silenciado/);
+    dispatch('click',new Element({act:'character'}));
+    assert.match(audioIndicator.title,/silenciado/);document.querySelector('#dialog').close();
+    const afterJoin=rows.get(master.id);afterJoin.state.characters=exampleCharacters;afterJoin.rev++;
+    await intervals.get(2500)();
     assert.ok(!main.innerHTML.includes('1d20'));
     dispatch('click',new Element({act:'characterClaim',id:'lyra'}));
     await waitFor(()=>main.innerHTML.includes('<h1>Lyra Vesper</h1>'));
-    assert.ok(main.innerHTML.includes('Percepção'));
+    assert.match(audioIndicator.title,/silenciado/);
+    assert.ok(main.innerHTML.includes('Percepção'));assert.match(main.innerHTML,/>Rolar [+-]\d+</);
     receiveLive({type:'scene',id:master.id,rev:rows.get(master.id).rev,rollVersion:'public-live',state:{rolls:[{id:'another-player-roll',actor:'Outra jogadora',formula:'1d20',total:12,modifier:0,groups:[{faces:20,dice:[12]}],rolledBy:'player',visibility:'public',kind:'check',diceColor:'#34d399'}]}});
     const popup=document.querySelector('#dice-display');assert.equal(popup.hidden,false);assert.ok(popup.innerHTML.includes('Outra jogadora'));assert.ok(popup.innerHTML.includes('--dice-accent:#34d399'));assert.ok(main.innerHTML.includes('Percepção'));
     const dismiss=new Event('click');Object.defineProperty(dismiss,'target',{value:{closest:()=>true}});popup.dispatchEvent(dismiss);
@@ -129,8 +151,8 @@ test('convite abre escolha, seleção abre só ficha própria e ocultação revo
     const mana={id:'local-'+'5'.repeat(32),label:'Mana',type:'counter',group:'Recursos',initial:'8/8'};
     const structure=rows.get(master.id).state.fields.filter(field=>field.id!=='f2').concat(mana);
     dispatch('click',new Element({act:'sheetFields'}));
-    const layoutForm=new Element({form:'sheetFields'});layoutForm.inDialog=true;layoutForm.values={};
-    layoutForm.querySelectorAll=()=>structure.map(field=>{
+    const layoutForm=new Element({form:'sheetFields'});layoutForm.inDialog=true;layoutForm.values={id:hero.id};
+    layoutForm.querySelectorAll=selector=>selector!=='[data-field]'?[]:structure.map(field=>{
       const node=new Element({field:field.id});
       node.querySelector=selector=>({value:field[/name=([^\]]+)/.exec(selector)[1]]});
       return node;
@@ -186,6 +208,32 @@ test('convite abre escolha, seleção abre só ficha própria e ocultação revo
     const masterDrop=rows.get(master.id).state.tokens.find(t=>t.kind==='item');assert.equal(masterDrop.hidden,true);assert.equal(masterDrop.loot.quantity,2);
 
     dispatch('click',new Element({act:'character',id:hero.id}));assert.ok(main.innerHTML.includes('Visualização padronizada'));assert.ok(!main.innerHTML.includes('data-sheet-leaf='));
+    dispatch('click',new Element({act:'gmResourceEdit'}));
+    const resourceDialog=document.querySelector('#dialog'),privateForm=new Element({form:'gmResourceSave'});
+    privateForm.inDialog=true;privateForm.values={id:hero.id,name:'Fôlego',color:'#bb4499',current:'50',maximum:'10'};
+    const currentAmount=new Element(),error=privateForm.querySelector('#resource-form-error');
+    privateForm.elements={namedItem:key=>key==='current'?currentAmount:null};
+    const postCount=networkCalls.length;
+    dispatch('submit',privateForm,{submitter:new Element()});
+    assert.equal(networkCalls.length,postCount);assert.ok(resourceDialog.open);
+    assert.equal(document.activeElement,currentAmount);assert.equal(currentAmount['aria-describedby'],'resource-form-error');
+    assert.equal(currentAmount['aria-invalid'],'true');assert.match(error.textContent,/Atual.*Máximo.*10/);
+    privateForm.values.current='2';dispatch('submit',privateForm,{submitter:new Element()});
+    await waitFor(()=>rows.get(master.id).state.gmResources?.[hero.id]?.length===1&&!resourceDialog.open);
+    assert.equal(error.hidden,true);
+    const privateId=rows.get(master.id).state.gmResources[hero.id][0].id;
+    const decrement=new Element({act:'gmResourceStep',id:privateId,step:'-1'});
+    const increment=new Element({act:'gmResourceStep',id:privateId,step:'1'});
+    const queryAll=main.querySelectorAll;
+    main.querySelectorAll=function(selector){
+      if(selector!=='[data-act=gmResourceStep]')return queryAll.call(this,selector);
+      decrement.disabled=rows.get(master.id).state.gmResources[hero.id][0].current===0;
+      return [decrement,increment];
+    };
+    dispatch('click',decrement);await waitFor(()=>document.activeElement===decrement);
+    dispatch('click',decrement);await waitFor(()=>document.activeElement===increment);
+    assert.equal(rows.get(master.id).state.gmResources[hero.id][0].current,0);
+    main.querySelectorAll=queryAll;
     dispatch('click',new Element({act:'sheetReadingView',id:'custom'}));assert.ok(main.innerHTML.includes('data-sheet-leaf="identity"'));assert.ok(!main.innerHTML.includes('data-sheet-leaf="portrait"'));assert.equal(rows.get(master.id).state.characters.find(c=>c.id===hero.id).appearance.version,2);
     dispatch('click',new Element({act:'sheetReadingView',id:'standard'}));
     dispatch('click',new Element({act:'create'}));
@@ -388,6 +436,8 @@ test('convite abre escolha, seleção abre só ficha própria e ocultação revo
     try{dispatch('click',new Element({act:'campaignBackup'}));await waitFor(()=>downloaded instanceof Blob);}finally{URL.createObjectURL=originalObjectURL;document.createElement=originalCreateElement;document.body=originalBody;}
     document.querySelector('#dialog').close();
     rows.delete(dndRoom.id);await intervals.get(2500)();
+    assert.ok(main.innerHTML.includes('Voltar às campanhas'));
+    dispatch('click',new Element({act:'entryCancel'}));
     assert.ok(main.innerHTML.includes('Importar backup'));
     dispatch('click',new Element({act:'campaignImport'}));
     assert.ok(document.querySelector('#dialog-content').innerHTML.includes('sem substituir nenhuma existente'));
@@ -411,6 +461,102 @@ test('convite abre escolha, seleção abre só ficha própria e ocultação revo
     dispatch('submit',soundSession,{submitter:new Element()});await waitFor(()=>rows.get(restored.id).state.audio?.soundboard?.sessions.some(s=>s.name==='Caverna preparada'));
     assert.ok(!document.querySelector('#master-soundboard').querySelector('[data-sound-dock-body]').innerHTML.includes('data-act="soundPlay"'));
 
+    // Confirmação modal para ações destrutivas da mesa sem toast prematuro.
+    dispatch('click',new Element({act:'nav',id:'table'}));
+    await call('/'+restored.id+'/action','POST',rows.get(restored.id).owner,{action:'tableDrawingAdd',data:{kind:'line',x:1,y:1,toX:3,toY:3,color:'#bd9afc'}});
+    await intervals.get(2500)();
+    assert.equal(rows.get(restored.id).state.table.drawings.length,1);
+    const clearButton=new Element({tableAction:'tableDrawingClear'});
+    clearButton.closest=selector=>selector==='[data-table-action]'?clearButton:null;
+    const clickClear=()=>{const e=new Event('click',{cancelable:true});Object.defineProperty(e,'target',{value:clearButton});main.dispatchEvent(e);};
+    clickClear();
+    assert.equal(document.querySelector('#dialog').open,true);
+    assert.match(document.querySelector('#dialog-content').innerHTML,/Limpar todos os desenhos\?/);
+    dispatch('click',new Element({act:'close'}));
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(document.querySelector('#dialog').open,false);
+    assert.equal(rows.get(restored.id).state.table.drawings.length,1);
+    clickClear();
+    document.querySelector('#notice').textContent='';
+    const confirmForm=new Element({form:'tableConfirm'});confirmForm.inDialog=true;
+    dispatch('submit',confirmForm,{submitter:new Element()});
+    await waitFor(()=>rows.get(restored.id).state.table.drawings.length===0);
+    assert.equal(document.querySelector('#dialog').open,false);
+    assert.equal(document.querySelector('#notice').textContent,'');
+
+    // Regressão: evento 'close' assíncrono atrasado de <dialog> da confirmação #1 não liquida confirmação #2 aberta em microtask.
+    {
+      const dialogNode=document.querySelector('#dialog');
+      const originalClose=dialogNode.close;
+      dialogNode.close=function(){
+        this.open=false;
+        originalTimeout(()=>this.dispatchEvent(new Event('close')),0);
+      };
+      try {
+        await call('/'+restored.id+'/action','POST',rows.get(restored.id).owner,{action:'tableDrawingAdd',data:{kind:'line',x:2,y:2,toX:4,toY:4,color:'#bd9afc'}});
+        await call('/'+restored.id+'/action','POST',rows.get(restored.id).owner,{action:'tableFog',data:{enabled:true,operation:'reveal',x:0,y:0,width:1,height:1}});
+        await intervals.get(2500)();
+        assert.equal(rows.get(restored.id).state.table.drawings.length,1);
+        assert.equal(rows.get(restored.id).state.table.fog.revealed.length,1);
+        const fogResetButton=new Element({tableAction:'fogReset'});
+        fogResetButton.closest=selector=>selector==='[data-table-action]'?fogResetButton:null;
+        const clickFogReset=()=>{const e=new Event('click',{cancelable:true});Object.defineProperty(e,'target',{value:fogResetButton});main.dispatchEvent(e);};
+        const originalFetchForRace=globalThis.fetch;
+        let chained=false,fogResetCalls=0;
+        globalThis.fetch=(url,options={})=>{
+          if(options.body&&typeof options.body==='string'){
+            const parsed=JSON.parse(options.body);
+            if(parsed.action==='tableDrawingClear'){chained=true;clickFogReset();}
+            if(parsed.action==='tableFog'&&parsed.data?.operation==='reset')fogResetCalls++;
+          }
+          return originalFetchForRace(url,options);
+        };
+        try {
+          clickClear();
+          assert.equal(dialogNode.open,true);
+          const firstConfirm=new Element({form:'tableConfirm'});firstConfirm.inDialog=true;
+          dispatch('submit',firstConfirm,{submitter:new Element()});
+          await waitFor(()=>chained);
+          assert.equal(dialogNode.open,true);
+          assert.match(document.querySelector('#dialog-content').innerHTML,/Cobrir todo o mapa\?/);
+          await new Promise(resolve=>originalTimeout(resolve,25));
+          assert.equal(dialogNode.open,true);
+          assert.equal(fogResetCalls,0);
+          const secondConfirm=new Element({form:'tableConfirm'});secondConfirm.inDialog=true;
+          dispatch('submit',secondConfirm,{submitter:new Element()});
+          await waitFor(()=>fogResetCalls===1);
+          await waitFor(()=>rows.get(restored.id).state.table.fog.revealed.length===0);
+          await new Promise(resolve=>originalTimeout(resolve,25));
+          assert.equal(dialogNode.open,false);
+
+          // Fechamento nativo (ex.: Esc -> dialog.close()) quando dialog.open === false liquida confirmação pendente via 'close'.
+          clickFogReset();
+          assert.equal(dialogNode.open,true);
+          dialogNode.close();
+          await new Promise(resolve=>originalTimeout(resolve,25));
+          assert.equal(dialogNode.open,false);
+          const strayConfirm=new Element({form:'tableConfirm'});strayConfirm.inDialog=true;
+          dispatch('submit',strayConfirm,{submitter:new Element()});
+          await new Promise(resolve=>originalTimeout(resolve,25));
+          assert.equal(fogResetCalls,1);
+        } finally {
+          globalThis.fetch=originalFetchForRace;
+        }
+      } finally {
+        dialogNode.close=originalClose;
+      }
+    }
+
+    // Polling periódico é pausado em aba oculta e retomado imediatamente ao voltar à visibilidade.
+    document.hidden=true;
+    const hiddenCalls=networkCalls.length;
+    await intervals.get(2500)();
+    await intervals.get(400)();
+    assert.equal(networkCalls.length,hiddenCalls);
+    await new Promise(resolve=>originalTimeout(resolve,270));
+    document.hidden=false;
+    document.dispatchEvent(new Event('visibilitychange'));
+    await waitFor(()=>networkCalls.slice(hiddenCalls).some(c=>c.method==='GET'&&c.url.includes('/'+restored.id+'/sync'))&&networkCalls.slice(hiddenCalls).some(c=>c.method==='GET'&&c.url.includes('/'+restored.id)&&!c.url.includes('/sync')));
 
   } finally {
     delete globalThis.__captureForjaLive;

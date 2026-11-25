@@ -167,45 +167,86 @@ test('tokens antigos de exemplo seguem a ficha e vínculos removidos continuam i
   assert.equal((await r.action(a,'tokenMove',{id:'lyra',x:2,y:2})).status,403);
 });
 
-test('rolagens do mestre e legado sem autor ficam fora das respostas dos jogadores',async()=>{
+test('rolagens configuram visibilidade segura entre mestre, jogadores e legado',async()=>{
  const r=await room(),a=await r.join('a'),b=await r.join('b');
  await r.action(a,'characterClaim',{id:'lyra'});await r.action(b,'characterClaim',{id:'dorian'});
  const stored=r.rows.get(r.created.id);
- stored.state.rolls=[{id:'legacy-private',actor:'Lyra Vesper',formula:'1d20+7777',total:7778,dice:[1]}];
- const privateResponse=await r.action(r.created.key,'roll',{formula:'1d20+9999',actor:'Lyra Vesper',characterId:'lyra',visibility:'public',rolledBy:'player'});
- assert.equal(privateResponse.status,200);
- const privateRoll=(await privateResponse.json()).state.rolls[0];
- assert.equal(privateRoll.visibility,'gm');assert.equal(privateRoll.rolledBy,'master');
- const publicResponse=await r.action(a,'roll',{formula:'2d6+3',actor:'Mestre',visibility:'gm',rolledBy:'master'});
+ stored.state.rolls=[{id:'legacy-private',label:'segredo-legado-unico',actor:'Lyra Vesper',formula:'1d20+7777',total:7778,dice:[1]}];
+ const gmInvalid=await r.action(r.created.key,'roll',{formula:'1d20+9999',label:'segredo-mestre-invalido-unico',actor:'Lyra Vesper',characterId:'lyra',visibility:'invalida',rolledBy:'player'});
+ assert.equal(gmInvalid.status,200);
+ const gmPrivate=(await gmInvalid.json()).state.rolls[0];
+ assert.equal(gmPrivate.visibility,'gm');assert.equal(gmPrivate.rolledBy,'master');assert.equal(gmPrivate.label,'segredo-mestre-invalido-unico');
+ const gmPublicResponse=await r.action(r.created.key,'roll',{formula:'1d20+5555',label:'publico-mestre-unico',actor:'Mestre',visibility:'public'});
+ assert.equal(gmPublicResponse.status,200);
+ const gmPublic=(await gmPublicResponse.json()).state.rolls[0];
+ assert.equal(gmPublic.visibility,'public');assert.equal(gmPublic.rolledBy,'master');assert.equal(gmPublic.label,'publico-mestre-unico');
+ const playerSecretResponse=await r.action(a,'roll',{formula:'2d6+4444',label:'segredo-jogador-gm-unico',actor:'Mestre',visibility:'gm',rolledBy:'master'});
+ assert.equal(playerSecretResponse.status,200);
+ const playerSecretBody=await playerSecretResponse.json();
+ assert.ok(!JSON.stringify(playerSecretBody).includes('segredo-jogador-gm-unico'));
+ assert.ok(!JSON.stringify(playerSecretBody).includes('2d6+4444'));
+ const publicResponse=await r.action(a,'roll',{formula:'2d6+3',label:'publico-alice-unico',actor:'Mestre',visibility:'todos',rolledBy:'master'});
  const publicRoll=(await publicResponse.json()).state.rolls[0];
- assert.equal(publicRoll.visibility,'public');assert.equal(publicRoll.rolledBy,'player');assert.equal(publicRoll.actor,'Lyra Vesper');
+ assert.equal(publicRoll.visibility,'public');assert.equal(publicRoll.rolledBy,'player');assert.equal(publicRoll.actor,'Lyra Vesper');assert.equal(publicRoll.label,'publico-alice-unico');
  for(const key of [a,b,r.created.invite]) {
    const full=await r.view(key);
-   assert.deepEqual(full.state.rolls.map(roll=>roll.id),[publicRoll.id]);
+   assert.deepEqual(full.state.rolls.map(roll=>roll.id),[publicRoll.id,gmPublic.id]);
    const sync=await(await r.request(r.base+'/sync','GET',key)).json();
-   assert.deepEqual(sync.state.rolls.map(roll=>roll.id),[publicRoll.id]);
-   assert.ok(!JSON.stringify(sync).includes(privateRoll.id));
-   assert.ok(!JSON.stringify(full).includes('7777'));
-   assert.ok(!JSON.stringify(full).includes('9999'));
+   assert.deepEqual(sync.state.rolls.map(roll=>roll.id),[publicRoll.id,gmPublic.id]);
+   const fullJson=JSON.stringify(full),syncJson=JSON.stringify(sync);
+   for(const marker of ['legacy-private','segredo-legado-unico','1d20+7777',gmPrivate.id,'segredo-mestre-invalido-unico','1d20+9999','segredo-jogador-gm-unico','2d6+4444']) {
+     assert.ok(!fullJson.includes(marker),marker);
+     assert.ok(!syncJson.includes(marker),marker);
+   }
  }
  const actionResult=await(await r.action(b,'tablePing',{x:1,y:1})).json();
- assert.deepEqual(actionResult.state.rolls.map(roll=>roll.id),[publicRoll.id]);
- assert.equal((await r.view(r.created.key)).state.rolls.length,3);
+ assert.deepEqual(actionResult.state.rolls.map(roll=>roll.id),[publicRoll.id,gmPublic.id]);
+ const masterRolls=(await r.view(r.created.key)).state.rolls;
+ assert.equal(masterRolls.length,5);
+ const playerSecret=masterRolls.find(roll=>roll.rolledBy==='player'&&roll.visibility==='gm');
+ assert.equal(playerSecret?.actor,'Lyra Vesper');
+ assert.equal(playerSecret?.label,'segredo-jogador-gm-unico');
+ for(const key of [a,b,r.created.invite]) assert.ok(!JSON.stringify(await r.view(key)).includes(playerSecret.id));
+ const lyraPublic=(await(await r.action(r.created.key,'roll',{formula:'1d20+3333',label:'lyra-publico-visivel-unico',characterId:'lyra',visibility:'public'})).json()).state.rolls[0];
+ assert.ok((await r.view(b)).state.rolls.some(roll=>roll.id===lyraPublic.id&&roll.label==='lyra-publico-visivel-unico'&&roll.total>=3334));
+ await r.action(r.created.key,'characterVisibility',{id:'lyra',hidden:true});
+ const bAfterHide=JSON.stringify(await r.view(b));
+ assert.ok(!bAfterHide.includes(lyraPublic.id));
+ assert.ok(!bAfterHide.includes('lyra-publico-visivel-unico'));
+ assert.ok(!bAfterHide.includes('1d20+3333'));
+ await r.action(r.created.key,'character',{name:'Sombra Oculta',characterType:'npc',hidden:true});
+ const shadowResp=await r.action(r.created.key,'roll',{formula:'1d20+2222',label:'sombra-oculta-unico',actor:'sombra oculta',visibility:'public'});
+ assert.equal(shadowResp.status,200);
+ const shadowRoll=(await shadowResp.json()).state.rolls[0];
+ assert.equal(shadowRoll.label,'sombra-oculta-unico');
+ assert.ok((await r.view(r.created.key)).state.rolls.some(roll=>roll.id===shadowRoll.id&&roll.label==='sombra-oculta-unico'));
+ for(const key of [a,b,r.created.invite]) {
+   const fullHidden=JSON.stringify(await r.view(key));
+   const syncHidden=JSON.stringify(await(await r.request(r.base+'/sync','GET',key)).json());
+   for(const marker of [shadowRoll.id,'sombra-oculta-unico','1d20+2222']) {
+     assert.ok(!fullHidden.includes(marker),marker);
+     assert.ok(!syncHidden.includes(marker),marker);
+   }
+ }
 });
 
 test('rolagens privadas não substituem o histórico público nem geram eventos para jogadores',async()=>{
  const r=await room(),a=await r.join('a');await r.action(a,'characterClaim',{id:'lyra'});
  await r.action(a,'roll',{formula:'1d6'});
+ await r.action(r.created.key,'roll',{formula:'1d8',visibility:'public'});
  const before=await(await r.request(r.base+'/sync','GET',a)).json();
- for(let i=0;i<43;i++)assert.equal((await r.action(r.created.key,'roll',{formula:'1d20+9'})).status,200);
+ for(let i=0;i<22;i++){
+   assert.equal((await r.action(r.created.key,'roll',{formula:'1d20+9'})).status,200);
+   assert.equal((await r.action(a,'roll',{formula:'1d20+8',visibility:'gm'})).status,200);
+ }
  const unchanged=await(await r.request(r.base+'/sync?rollVersion='+before.rollVersion,'GET',a)).json();
  assert.equal(unchanged.rollVersion,before.rollVersion);assert.equal(unchanged.state.rolls,undefined);
  const master=await r.view(r.created.key),player=await r.view(a);
- assert.equal(master.state.rolls.length,41);assert.equal(player.state.rolls.length,1);
- assert.equal(player.state.rolls[0].id,before.state.rolls[0].id);
+ assert.equal(master.state.rolls.length,42);assert.equal(player.state.rolls.length,2);
+ assert.deepEqual(player.state.rolls.map(roll=>roll.id),before.state.rolls.map(roll=>roll.id));
  await r.action(r.created.key,'characterVisibility',{id:'lyra',hidden:true});
  const withdrawn=await(await r.request(r.base+'/sync?rollVersion='+before.rollVersion,'GET',a)).json();
- assert.deepEqual(withdrawn.state.rolls,[]);assert.notEqual(withdrawn.rollVersion,before.rollVersion);
+ assert.equal(withdrawn.state.rolls.length,1);assert.notEqual(withdrawn.rollVersion,before.rollVersion);
 });
 
 
@@ -249,6 +290,7 @@ test('grupos rivais separam fichas e rolagens; revelar nome não concede acesso 
  assert.equal((await assign('dorian',south)).status,200);
  assert.equal((await assign('dorian',north,true,b)).status,403);
  await r.action(b,'roll',{formula:'1d6'});
+ await r.action(master,'roll',{formula:'1d8+100',characterId:'dorian',visibility:'public'});
  await r.action(b,'tablePing',{x:1,y:1});
  for(const key of [a,r.created.invite]){
   const {state}=await r.view(key);
@@ -258,6 +300,7 @@ test('grupos rivais separam fichas e rolagens; revelar nome não concede acesso 
   assert.equal(state.table.pings.at(-1).name,'???');
   assert.ok(!state.rolls.some(roll=>roll.characterId==='dorian'));
  }
+ assert.equal((await r.view(b)).state.rolls.filter(roll=>roll.characterId==='dorian').length,2);
  assert.equal((await r.view(b)).state.characters.find(c=>c.id==='dorian').access,'full');
  const d=(await r.view(master)).state.characters.find(c=>c.id==='dorian');
  await assign('dorian',south,true);

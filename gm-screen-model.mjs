@@ -1,7 +1,7 @@
 import {sheetFields} from './model.mjs';
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
 const text=(value,max)=>typeof value==='string'?value.trim().slice(0,max):'';
-export const gmScreenActions=new Set(['gmNotePin','gmNotePosition','gmCanvasLayout','gmCanvasEdge','gmPartyFields','gmCardSave','gmCardDelete','gmCardPin','gmCardMove','gmCardToggle','gmCardCollapse','gmTableRoll']);
+export const gmScreenActions=new Set(['gmNotePin','gmNotePosition','gmCanvasLayout','gmCanvasEdge','gmPartyFields','gmCardSave','gmCardDelete','gmCardPin','gmCardMove','gmCardToggle','gmCardCollapse','gmTableRoll','gmTableReset']);
 export function gmBoard(state){return state.gmScreen||{cards:[]};}
 export function mutateGmScreen(state,action,data,master){
  if(!gmScreenActions.has(action))return false;
@@ -67,10 +67,32 @@ export function mutateGmScreen(state,action,data,master){
   if(!['note','checklist','table','reference'].includes(data.kind)||!['session','rules','world'].includes(data.category))fail(400,'Tipo ou categoria inválida.');
   const title=text(data.title,100);if(!title)fail(400,'Informe um título.');
   const card={id:old?.id||crypto.randomUUID(),version:(old?.version||0)+1,title,kind:data.kind,category:data.category,pinned:old?.pinned||false,collapsed:old?.collapsed||false,wide:data.wide===true,body:text(data.body,6000)};
-  if(['checklist','table'].includes(card.kind)){
+  if(card.kind==='checklist'){
    const lines=card.body.split('\n').map(line=>line.trim()).filter(Boolean);
-   if(lines.length>100||card.kind==='table'&&lines.length<2)fail(400,'Use até 100 linhas; tabelas precisam de pelo menos duas entradas.');
-   card.items=lines.map(line=>({id:crypto.randomUUID(),text:line.replace(/^\[[ xX]\]\s*/,''),done:card.kind==='checklist'&&/^\[[xX]\]/.test(line)}));
+   if(lines.length>100)fail(400,'Use até 100 tarefas.');
+   card.items=lines.map(line=>({id:crypto.randomUUID(),text:line.replace(/^\[[ xX]\]\s*/,''),done:/^\[[xX]\]/.test(line)}));
+   delete card.body;
+  }
+  if(card.kind==='table'){
+   const prior=old?.kind==='table'?old.items:[];
+   const rows=data.entries??card.body.split('\n').map(line=>line.trim()).filter(Boolean).map(line=>({text:line}));
+   if(!Array.isArray(rows)||rows.length<2||rows.length>100)fail(400,'Use de 2 a 100 entradas na tabela.');
+   if(data.noRepeat!==undefined&&typeof data.noRepeat!=='boolean')fail(400,'Modo de sorteio inválido.');
+   card.noRepeat=data.noRepeat??old?.noRepeat??false;
+   const used=new Set();
+   let length=0;
+   card.items=rows.map(row=>{
+    const label=typeof row?.text==='string'?row.text.trim():'';
+    length+=label.length;
+    if(!label||length>6000)fail(400,'Preencha as entradas e use até 6000 caracteres no total.');
+    const previous=row.id?prior.find(item=>item.id===row.id):data.entries?null:prior.find(item=>item.text===label&&!used.has(item.id));
+    if(row.id&&!previous||previous&&used.has(previous.id))fail(400,'Entrada inválida ou duplicada.');
+    if(previous)used.add(previous.id);
+    const weight=row.weight??previous?.weight??1;
+    if(!Number.isInteger(weight)||weight<1||weight>100)fail(400,'Use um peso inteiro entre 1 e 100.');
+    return {id:previous?.id||crypto.randomUUID(),text:label,weight,drawn:card.noRepeat&&previous?.drawn===true};
+   });
+   if(old?.kind==='table'&&old.lastRoll)card.lastRoll=old.lastRoll;
    delete card.body;
   }
   if(card.kind==='reference'){
@@ -85,6 +107,11 @@ export function mutateGmScreen(state,action,data,master){
   if(action==='gmCardDelete'){
    if(data.version!==old.version)fail(409,'Este cartão mudou. Confira o conteúdo antes de remover.');
    board.cards=cards.filter(card=>card!==old);
+  }else if(action==='gmTableReset'){
+   if(old.kind!=='table'||!old.noRepeat)fail(400,'Escolha uma tabela sem repetição.');
+   if(data.version!==old.version)fail(409,'A tabela mudou. Confira as entradas antes de reiniciar.');
+   for(const item of old.items)item.drawn=false;
+   delete old.lastRoll;old.version++;
   }else if(action==='gmCardToggle'){
    const item=old.kind==='checklist'&&old.items.find(item=>item.id===data.itemId);
    if(!item||typeof data.done!=='boolean')fail(400,'Tarefa inválida.');

@@ -6,7 +6,7 @@ import {mutateTable,normalizeTable} from '../table-model.mjs';
 
 const source=await readFile(new URL('../public/table.mjs',import.meta.url),'utf8');
 const modelURL=new URL('../table-model.mjs',import.meta.url).href;
-const {createTabletop}=await import('data:text/javascript;base64,'+
+const {createTabletop,measureGridDistance,focusedViewportOffset}=await import('data:text/javascript;base64,'+
   Buffer.from(source.replace("'./loot.mjs'",JSON.stringify(new URL('../public/loot.mjs',import.meta.url).href)).replace("'./table-vision.mjs'",JSON.stringify(new URL('../public/table-vision.mjs',import.meta.url).href)).replace("'./token-icons.mjs'",JSON.stringify(new URL('../token-icons.mjs',import.meta.url).href)).replace("'./table-rolls.mjs'",JSON.stringify(new URL('../public/table-rolls.mjs',import.meta.url).href)).replace("'./rolls.mjs'",JSON.stringify(new URL('../public/rolls.mjs',import.meta.url).href)).replace("'./table-model.mjs'",JSON.stringify(modelURL)).replace("'./model.mjs'",JSON.stringify(new URL('../model.mjs',import.meta.url).href))).toString('base64'));
 
 class Element extends EventTarget {
@@ -24,18 +24,21 @@ class Element extends EventTarget {
   closest(selector) {
     if (selector==='[data-table-token]' && this.dataset.tableToken) return this;
     const attributes={
-      '[data-table-tool]':'tableTool','[data-table-zoom]':'tableZoom',
+      '[data-tool-list-toggle]':'toolListToggle','[data-table-tool]':'tableTool','[data-table-zoom]':'tableZoom',
       '[data-table-action]':'tableAction','[data-table-select]':'tableSelect',
       '[data-table-character]':'tableCharacter','[data-table-move]':'tableMove',
       '[data-table-sheet-roll]':'tableSheetRoll','[data-table-roll-attribute]':'tableRollAttribute',
       '[data-table-skill-roll]':'tableSkillRoll','[data-table-roll-resource]':'tableRollResource',
-      '[data-table-roll-tab]':'tableRollTab','[data-table-insert-field]':'tableInsertField'
+      '[data-table-roll-tab]':'tableRollTab','[data-table-insert-field]':'tableInsertField',
+      '[data-roll-repeat]':'rollRepeat','[data-table-roll-visibility]':'tableRollVisibility',
+      '[data-table-dnd-cast]':'tableDndCast'
     };
     return this.dataset[attributes[selector]] ? this : null;
   }
   matches(selector) {return selector.split(',').some(item=>{const match=/^\[data-([a-z-]+)\]$/.exec(item.trim());return match&&Object.hasOwn(this.dataset,match[1].replace(/-([a-z])/g,(_,ch)=>ch.toUpperCase()));});}
   querySelectorAll(){return [];}
   setAttribute(name,value) {this[name]=value;}
+  getAttribute(name){return this[name]??null;}
   replaceChildren() {this.innerHTML='';}
   setPointerCapture(id) {this.captures.add(id);}
   hasPointerCapture(id) {return this.captures.has(id);}
@@ -43,7 +46,7 @@ class Element extends EventTarget {
   focus() {document.activeElement=this;}
 }
 
-function fixture({master=true,columns=16,rows=10,distance='euclidean',failMove=false,remountOnAction=false,holdRotations=false}={}) {
+function fixture({master=true,columns=16,rows=10,distance='euclidean',failMove=false,remountOnAction=false,holdRotations=false,confirm}={}) {
   const row={id:'test-room',rev:0,master,state:newCampaign('Teste',true)};
   mutateTable(row.state,'tableSettings',{grid:{columns,rows,size:2,distance}},true);
   const nodes=new Map();
@@ -86,6 +89,7 @@ function fixture({master=true,columns=16,rows=10,distance='euclidean',failMove=f
         controller.mount(root,row);
       }
     },
+    ...(confirm?{confirm}:{}),
     realtime:event=>previews.push(event),
     openCharacter(){},openLoot:id=>openedLoot.push(id),report:message=>reports.push(message),
     requestAsset:async()=>new Response('')
@@ -109,6 +113,24 @@ function fixture({master=true,columns=16,rows=10,distance='euclidean',failMove=f
 }
 
 globalThis.document={activeElement:null};
+
+test('lista móvel apresenta as ferramentas do papel e acompanha o modo escolhido',()=>{
+  for(const master of [true,false]){
+    const f=fixture({master});
+    const html=f.controller.render(f.row);
+    assert.ok(html.includes('aria-controls="vtt-tool-list"'));
+    assert.equal(html.includes('data-table-tool="fog"'),master);
+    const toggle=f.get('[data-tool-list-toggle]');
+    toggle.dataset.toolListToggle='toggle';toggle.offsetWidth=120;
+    f.dispatch(f.root,'click',{},toggle);
+    assert.equal(toggle.getAttribute('aria-expanded'),'true');
+    f.click({tableTool:master?'fog':'measure'});
+    assert.equal(toggle.getAttribute('aria-expanded'),'false');
+    assert.equal(f.get('[data-active-tool]').textContent,master?'Névoa':'Medir');
+    assert.equal(document.activeElement,toggle);
+    f.controller.dispose();
+  }
+});
 
 test('régua mantém a medida ao soltar e respeita a regra da campanha',()=>{
   for (const [distance,result] of [['euclidean','10 m'],['chebyshev','8 m'],['manhattan','14 m']]) {
@@ -314,7 +336,7 @@ test('mesa executa rolagem salva com maestria e troca recursos ao selecionar tok
   f.dispatch(f.root,'change',{},mastery);
   f.click({tableSheetRoll:'attack'});
   await new Promise(resolve=>setImmediate(resolve));
-  assert.deepEqual(f.calls[0],{name:'roll',data:{rollId:'attack',characterId:'lyra',actor:'Lyra Vesper',masteryId:'mastery'}});
+  assert.deepEqual(f.calls[0],{name:'roll',data:{rollId:'attack',characterId:'lyra',actor:'Lyra Vesper',visibility:'gm',masteryId:'mastery'}});
   f.click({tableSelect:'dorian'});
   assert.ok(!f.get('[data-table-rolls]').innerHTML.includes('Golpe da ficha'));
   f.click({tableRollResource:'f4',step:'-1'});
@@ -330,7 +352,7 @@ test('rolagem livre e perícia usam a ficha selecionada e preservam a visão do 
   const before=f.world.style.transform;
   f.click({tableRollAttribute:'f1'});
   await new Promise(resolve=>setImmediate(resolve));
-  assert.deepEqual(f.calls[0],{name:'roll',data:{attributeId:'f1',characterId:'lyra',actor:'Lyra Vesper',testDice:'1d20'}});
+  assert.deepEqual(f.calls[0],{name:'roll',data:{attributeId:'f1',characterId:'lyra',actor:'Lyra Vesper',visibility:'gm',testDice:'1d20'}});
   f.click({tableRollTab:'free'});
   f.click({tableInsertField:'f1'});
   assert.equal(f.get('[data-table-roll-formula]').value,'1d20+@{f1}');
@@ -338,11 +360,11 @@ test('rolagem livre e perícia usam a ficha selecionada e preservam a visão do 
   f.dispatch(f.root,'input',{},formula);
   f.dispatch(f.root,'submit',{},new Element({tableRollForm:''}));
   await new Promise(resolve=>setImmediate(resolve));
-  assert.deepEqual(f.calls[1],{name:'roll',data:{formula:'2d6 + Força',characterId:'lyra',actor:'Lyra Vesper'}});
+  assert.deepEqual(f.calls[1],{name:'roll',data:{formula:'2d6 + Força',characterId:'lyra',actor:'Lyra Vesper',visibility:'gm'}});
   assert.equal(f.world.style.transform,before);
   f.click({tableSkillRoll:'athletics'});
   await new Promise(resolve=>setImmediate(resolve));
-  assert.deepEqual(f.calls[2],{name:'roll',data:{skillId:'athletics',characterId:'lyra',actor:'Lyra Vesper',testDice:'1d20'}});
+  assert.deepEqual(f.calls[2],{name:'roll',data:{skillId:'athletics',characterId:'lyra',actor:'Lyra Vesper',visibility:'gm',testDice:'1d20'}});
   f.controller.dispose();
 });
 
@@ -736,4 +758,240 @@ test('jogador mede percurso por vários pontos, desfaz e limpa sem alterar a cen
  assert.match(f.get('[data-table-help]').textContent,/14 m.*1 trecho/);
  f.click({tableAction:'measureClear'});
  assert.equal(f.get('.vtt-preview').innerHTML,'');assert.equal(f.calls.length,0);f.controller.dispose();
+});
+
+test('seletor de visibilidade, aviso discreto em rolagem secreta e repetir rolagem no histórico da mesa',async()=>{
+ const player=fixture({master:false});
+ player.row.characterId='lyra';player.row.state.characters[0].access='full';
+ player.controller.render(player.row);player.controller.mount(player.root,player.row);
+ const vis=new Element({tableRollVisibility:''});vis.value='gm';
+ player.dispatch(player.root,'change',{},vis);
+ player.click({tableRollAttribute:'f1'});
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(player.calls[0].data.visibility,'gm');
+ assert.equal(player.reports.at(-1),'Rolagem secreta enviada ao mestre.');
+ player.controller.syncRolls({id:player.row.id,rev:2,state:{rolls:[{id:'rep-1',actor:'Lyra Vesper',characterId:'lyra',formula:'2d20kh1+3+1d4',mode:'advantage',mastery:{name:'Maestria',die:'1d4'},label:'Teste de Força',total:19,dice:[16,8,3],visibility:'public',rolledBy:'player'}]}});
+ assert.ok(player.get('[data-table-roll-history]').innerHTML.includes('data-roll-repeat="rep-1"'));
+ player.click({rollRepeat:'rep-1'});
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(player.calls[1],{name:'roll',data:{formula:'1d20+3',actor:'Lyra Vesper',visibility:'public',characterId:'lyra',mode:'advantage',label:'Teste de Força'}});
+ player.controller.dispose();
+});
+
+test('measureGridDistance calcula regras euclidean, chebyshev e manhattan em pt-BR',()=>{
+  const points=[{x:1.5,y:1.5},{x:4.5,y:5.5}];
+  assert.equal(measureGridDistance(points,{size:1.5,unit:'m',distance:'euclidean'}).text,'7,5 m');
+  assert.equal(measureGridDistance(points,{size:2,unit:'m',distance:'chebyshev'}).text,'8 m');
+  assert.equal(measureGridDistance(points,{size:2,unit:'m',distance:'manhattan'}).text,'14 m');
+  assert.equal(measureGridDistance([{x:1,y:1}],{size:2,unit:'m'}).distance,0);
+  assert.equal(measureGridDistance([{x:0,y:0},{x:1,y:1},{x:2,y:1}],{size:1.5,unit:'q',distance:'manhattan'}).text,'4,5 q');
+});
+
+test('régua automática ao arrastar inicia desativada por padrão e funciona quando ligada pelo toggle',async()=>{
+  // Desativada por padrão: arrastar token não polui a mesa com linha nem rótulo
+  const offFixture=fixture({distance:'euclidean'});
+  offFixture.dispatch(offFixture.viewport,'pointerdown',offFixture.point(4.5,4.5),offFixture.tokens[0]);
+  offFixture.dispatch(offFixture.viewport,'pointermove',offFixture.point(7.5,8.5));
+  assert.equal(offFixture.get('.vtt-drag-label').hidden,true);
+  assert.equal(offFixture.get('.vtt-preview').innerHTML,'');
+  offFixture.dispatch(offFixture.viewport,'pointerup',offFixture.point(7.5,8.5));
+  await Promise.resolve();
+  assert.equal(offFixture.calls[0].name,'tokenMove');
+  offFixture.controller.dispose();
+
+  for (const [distance,expected] of [['euclidean','10 m'],['chebyshev','8 m'],['manhattan','14 m']]) {
+    const f=fixture({distance});
+    f.click({tableAction:'dragRulerToggle'});
+    f.dispatch(f.viewport,'pointerdown',f.point(4.5,4.5),f.tokens[0]);
+    f.dispatch(f.viewport,'pointermove',f.point(4.51,4.51));
+    assert.equal(f.get('.vtt-drag-label').hidden,true);
+    assert.equal(f.get('.vtt-preview').innerHTML,'');
+
+    f.dispatch(f.viewport,'pointermove',f.point(7.5,8.5));
+    const preview=f.get('.vtt-preview').innerHTML;
+    assert.match(preview,/<line[^>]*stroke-dasharray="6 4"/);
+    assert.match(preview,/vector-effect="non-scaling-stroke"/);
+    assert.match(preview,/<circle[^>]*cx="4\.5" cy="4\.5"/);
+    assert.equal(f.get('.vtt-drag-label').hidden,false);
+    assert.equal(f.get('.vtt-drag-label').textContent,expected);
+    assert.equal(f.get('.vtt-drag-label').style.left,6/16*100+'%');
+    assert.equal(f.get('.vtt-drag-label').style.top,6.5/10*100+'%');
+    assert.match(f.get('[data-table-help]').textContent,new RegExp(expected));
+    assert.equal(f.calls.length,0);
+    assert.equal(f.previews.at(-1).phase,'move');
+
+    f.dispatch(f.viewport,'pointerup',f.point(7.5,8.5));
+    await Promise.resolve();
+    assert.equal(f.calls[0].name,'tokenMove');
+    assert.equal(f.previews.at(-1).phase,'end');
+    assert.equal(f.get('.vtt-drag-label').hidden,true);
+    assert.equal(f.get('.vtt-drag-label').textContent,'');
+    assert.equal(f.get('.vtt-preview').innerHTML,'');
+    f.controller.dispose();
+  }
+
+  const f=fixture();
+  f.click({tableAction:'dragRulerToggle'});
+  f.dispatch(f.viewport,'pointerdown',f.point(4.5,4.5),f.tokens[0]);
+  f.dispatch(f.viewport,'pointermove',f.point(6.5,4.5));
+  assert.equal(f.get('.vtt-drag-label').hidden,false);
+  f.dispatch(f.viewport,'keydown',{key:'Escape'});
+  assert.equal(f.get('.vtt-drag-label').hidden,true);
+  assert.equal(f.get('.vtt-preview').innerHTML,'');
+  assert.equal(f.calls.length,0);
+
+  f.dispatch(f.viewport,'pointerdown',f.point(4.5,4.5),f.tokens[0]);
+  f.dispatch(f.viewport,'pointermove',f.point(6.5,4.5));
+  f.dispatch(f.viewport,'pointercancel',f.point(6.5,4.5));
+  assert.equal(f.get('.vtt-drag-label').hidden,true);
+  assert.equal(f.get('.vtt-preview').innerHTML,'');
+
+  // Desliga pelo toggle e confirma que volta a não exibir régua no arrasto
+  f.click({tableAction:'dragRulerToggle'});
+  f.dispatch(f.viewport,'pointerdown',f.point(4.5,4.5),f.tokens[0]);
+  f.dispatch(f.viewport,'pointermove',f.point(6.5,4.5));
+  assert.equal(f.get('.vtt-drag-label').hidden,true);
+  assert.equal(f.get('.vtt-preview').innerHTML,'');
+  f.dispatch(f.viewport,'keydown',{key:'Escape'});
+
+  f.click({tableTool:'measure'});
+  f.dispatch(f.viewport,'pointerdown',f.point(1,1));
+  f.dispatch(f.viewport,'pointermove',f.point(4,5));
+  assert.equal(f.get('.vtt-drag-label').hidden,true);
+  assert.match(f.get('.vtt-preview').innerHTML,/<line/);
+  f.dispatch(f.viewport,'pointerup',f.point(4,5));
+  f.controller.dispose();
+});
+
+test('focusedViewportOffset centraliza token com clamping seguro e preserva mapa vertical',()=>{
+  const grid={columns:16,rows:10};
+  assert.deepEqual(focusedViewportOffset({token:{x:4,y:4,size:1},grid,viewportWidth:800,viewportHeight:500,zoom:1}),{x:0,y:0});
+  const baseWidth=Math.min(776,476*16/10),baseHeight=baseWidth*10/16;
+  const originX=(800-baseWidth)/2,originY=(500-baseHeight)/2;
+  const centered=focusedViewportOffset({token:{x:7,y:4,size:2},grid,viewportWidth:800,viewportHeight:500,zoom:2});
+  assert.ok(Math.abs(originX+centered.x+(8/16)*baseWidth*2-400)<1e-6);
+  assert.ok(Math.abs(originY+centered.y+(5/10)*baseHeight*2-250)<1e-6);
+  const corner=focusedViewportOffset({token:{x:0,y:0,size:1},grid,viewportWidth:800,viewportHeight:500,zoom:2});
+  assert.deepEqual(corner,{x:-originX,y:-originY});
+  const far=focusedViewportOffset({token:{x:15,y:9,size:1},grid,viewportWidth:800,viewportHeight:500,zoom:2});
+  assert.ok(Math.abs(far.x-(800-originX-baseWidth*2))<1e-6);
+  assert.ok(Math.abs(far.y-(500-originY-baseHeight*2))<1e-6);
+
+  const tall={columns:4,rows:80};
+  const vertical=focusedViewportOffset({token:{x:1,y:78,size:1},grid:tall,viewportWidth:800,viewportHeight:500,zoom:2});
+  const tallWidth=476*4/80;
+  const tallOriginX=(800-tallWidth)/2;
+  assert.ok(Math.abs((tallOriginX+vertical.x)+tallWidth-400)<1e-6);
+  assert.equal(vertical.y,500-12-476*2);
+});
+
+test('focusToken, lista de tokens e iniciativa centralizam token visível sem mover câmera ao clicar no mapa',()=>{
+  const f=fixture();
+  f.row.state.table.combat={round:1,active:0,entries:[
+    {id:'c1',name:'Lyra',value:18,tokenId:'lyra'},
+    {id:'c2',name:'Sem token',value:12,tokenId:''}
+  ]};
+  f.controller.dispose();
+  const html=f.controller.render(f.row);
+  assert.match(html,/class="vtt-combat-select[^"]*" data-table-select="lyra"/);
+  assert.doesNotMatch(html,/data-table-select=""/);
+  f.controller.mount(f.root,f.row);
+
+  f.click({tableZoom:'in'});
+  f.click({tableZoom:'in'});
+  f.click({tableSelect:'lyra'});
+  const focused=f.world.style.transform;
+  assert.notEqual(focused,'translate(0px,0px) scale(1.5625)');
+  assert.equal(f.tokens[0].classList.contains('is-selected'),true);
+
+  assert.equal(f.controller.focusToken('inexistente'),false);
+  assert.equal(f.controller.focusToken('dorian'),true);
+  assert.notEqual(f.world.style.transform,focused);
+
+  const beforeCanvasClick=f.world.style.transform;
+  f.dispatch(f.viewport,'pointerdown',f.point(4.5,4.5),f.tokens[0]);
+  assert.equal(f.world.style.transform,beforeCanvasClick);
+  assert.equal(f.tokens[0].classList.contains('is-selected'),true);
+  f.dispatch(f.viewport,'pointerup',f.point(4.5,4.5));
+  f.controller.dispose();
+
+  const player=fixture({master:false});
+  player.row.characterId='lyra';
+  player.row.state.table.darkness={enabled:true,mode:'individual'};
+  player.row.state.tokens[0].vision={enabled:true,range:4,angle:60,rotation:180};
+  player.row.state.table.combat={round:1,active:0,entries:[
+    {id:'c1',name:'Lyra',value:18,tokenId:'lyra'},
+    {id:'c2',name:'Dorian',value:15,tokenId:'dorian'}
+  ]};
+  const playerHtml=player.controller.render(player.row);
+  assert.match(playerHtml,/data-table-select="lyra"/);
+  assert.doesNotMatch(playerHtml,/class="vtt-combat-select[^"]*" data-table-select="dorian"/);
+  player.controller.mount(player.root,player.row);
+  player.click({tableZoom:'in'});
+  const playerBefore=player.world.style.transform;
+  assert.equal(player.controller.focusToken('dorian'),false);
+  assert.equal(player.world.style.transform,playerBefore);
+  assert.equal(player.controller.focusToken('lyra'),true);
+  assert.notEqual(player.world.style.transform,playerBefore);
+  player.controller.dispose();
+});
+
+test('ações destrutivas da mesa pedem confirmação em português e mantêm compatibilidade sem callback',async()=>{
+  const compat=fixture();
+  compat.click({tableAction:'tableDrawingClear'});
+  await Promise.resolve();
+  assert.equal(compat.calls[0].name,'tableDrawingClear');
+  compat.controller.dispose();
+
+  const prompts=[];
+  let answer=false;
+  const f=fixture({confirm:async options=>{prompts.push(options);return answer;}});
+  f.click({tableAction:'tableDrawingClear'});
+  f.click({tableAction:'fogRevealAll'});
+  f.click({tableAction:'fogReset'});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.calls.length,0);
+  assert.equal(prompts.length,3);
+  assert.match(prompts[0].confirmLabel,/Limpar desenhos/);
+  assert.match(prompts[1].confirmLabel,/Revelar tudo/);
+  assert.match(prompts[2].confirmLabel,/Cobrir tudo/);
+  assert.doesNotMatch(prompts[2].message,/memória de exploração/);
+
+  f.row.state.table.fog={...f.row.state.table.fog,mode:'war',enabled:true};
+  f.controller.syncScene({...f.row,rev:1});
+  answer=true;
+  f.click({tableAction:'fogReset'});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(prompts[3].message,/memória de exploração/);
+  assert.deepEqual(f.calls.at(-1),{name:'tableFog',data:{operation:'reset',enabled:true}});
+
+  f.click({tableAction:'tableDrawingClear'});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.calls.at(-1).name,'tableDrawingClear');
+
+  f.click({tableAction:'fogRevealAll'});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(f.calls.at(-1),{name:'tableFog',data:{operation:'reveal',enabled:true,x:0,y:0,width:16,height:10}});
+  f.controller.dispose();
+});
+
+test('botões de rotação ficam acessíveis no desktop e popovers em tela cheia não colidem no CSS',async()=>{
+  const f=fixture();
+  f.click({tableSelect:'lyra'});
+  const selectionHtml=f.get('[data-table-selection]').innerHTML;
+  assert.match(selectionHtml,/data-table-action="rotateLeft"/);
+  assert.match(selectionHtml,/data-table-action="rotateRight"/);
+  f.controller.dispose();
+
+  const tableCss=await readFile(new URL('../public/table.css',import.meta.url),'utf8');
+  const styleCss=await readFile(new URL('../public/style.css',import.meta.url),'utf8');
+  assert.doesNotMatch(tableCss,/@media\s*\(\s*pointer:\s*fine\s*\)\s*\{\s*\.vtt-rotation-controls\s+button\s*\{\s*display:\s*none\s*\}/);
+  assert.match(tableCss,/\.vtt-drag-label\{[^}]*var\(--vtt-label-scale,1\)/);
+  assert.match(tableCss,/\.vtt-combat-select/);
+  const checkRule=/\.table-expanded #check-inbox:not\(\[hidden\]\)\s*\{([^}]*)\}/.exec(tableCss)?.[1]||'';
+  assert.ok(checkRule);
+  assert.doesNotMatch(checkRule,/position:\s*fixed/);
+  assert.match(tableCss,/\.table-expanded #investigation-inbox:not\(\[hidden\]\)\s*\{[^}]*left:[^}]*bottom:/);
+  assert.match(tableCss,/@media\(max-width:730px\)\{[^}]*\.table-expanded #investigation-inbox:not\(\[hidden\]\)[^}]*bottom:calc\(/);
+  assert.match(styleCss,/@media\(min-width:731px\)\{#investigation-inbox:not\(\[hidden\]\)\{top:calc\(/);
 });

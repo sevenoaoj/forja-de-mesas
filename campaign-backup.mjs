@@ -4,6 +4,7 @@ import {validateSessionLog} from './session-log.mjs';
 import {itemPortraits} from './item-assets.mjs';
 import {validConditionTimer} from './table-model.mjs';
 import {sceneMaps,sceneTokenPortraits} from './scene-model.mjs';
+import {validateMessages} from './chat-model.mjs';
 const encoder=new TextEncoder(),decoder=new TextDecoder('utf-8',{fatal:true});
 const magic=encoder.encode('FORJA-BACKUP/1\n');
 export const backupLimit=100_000_000;
@@ -16,6 +17,7 @@ const mime=new Set(['video/mp4','video/webm','application/pdf','image/png','imag
 function validateState(state){
  if(!object(state)||typeof state.name!=='string'||!state.name.trim()||state.name.length>100)fail(400,'O backup não contém uma campanha válida.');
  validateSessionLog(state.sessionLog);
+ validateMessages(state.messages);
  for(const key of ['characters','fields','tokens','books','rolls','initiative'])if(!Array.isArray(state[key]))fail(400,'Estrutura da campanha inválida: '+key+'.');
  if(state.characters.length>100||state.books.length>30)fail(400,'O backup excede os limites da campanha.');
  for(const key of ['characters','fields','tokens']){
@@ -87,6 +89,7 @@ export function backupAssets(state){
 }
 function portableState(source){
  const state=structuredClone(source);state.members=[];delete state.cinematicRun;delete state.checkRequests;delete state.materialShares;delete state.investigationReceipts;
+ if(state.messages!==undefined)state.messages=[];
  if(state.table?.lootEvents)state.table.lootEvents=[];for(const scene of state.sceneLibrary?.scenes||[])if(scene.table?.lootEvents)scene.table.lootEvents=[];
  for(const c of state.characters)delete c.ownerId;
  for(const item of state.sheetTemplates?.items||[])item.owner='gm';

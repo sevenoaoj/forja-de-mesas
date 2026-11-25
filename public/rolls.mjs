@@ -1,6 +1,10 @@
 import {startDiceScene,diceDuration} from './dice-scene.mjs';
+import {parseDiceFormula} from '../model.mjs';
+import {chatChannels,chatTextLimit,chatSpeakerLimit} from '../chat-model.mjs';
 
 export {createNarrationDisplay} from './narration.mjs';
+export {chatChannels,chatTextLimit,chatSpeakerLimit};
+export const feedFilterOptions = Object.freeze({all:'Tudo',rolls:'Rolagens',messages:'Mensagens'});
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 export function diceEffectsEnabled() {try{return localStorage.getItem('forja.diceEffects')!=='false';}catch{return true;}}
 export function rollDiceList(roll) {
@@ -27,14 +31,110 @@ export function rollBreakdown(roll) {
   const groups=(roll.groups||[]).map(g=>(g.sign<0?'−':'')+g.dice.length+'d'+g.faces+' ['+g.dice.join(', ')+']'+(g.kept?' → '+g.kept.join(', '):'')).join(' · ');
   return (groups||roll.dice?.join(', ')||'')+(roll.modifier?' · '+(roll.modifier>0?'+':'')+roll.modifier:'');
 }
-export function renderRollHistory(row) {
-  const rolls=(row.state.rolls||[]).filter(roll=>row.master||roll.rolledBy==='player'&&roll.visibility==='public');
-  const items=rolls.map(roll=>{
-    const privateRoll=roll.visibility!=='public'||roll.rolledBy!=='player';
+export function rollVisibilityOptions(master){
+  return master
+    ? {gm:'Privada (só mestre)',public:'Pública (mesa)'}
+    : {public:'Pública (mesa)',gm:'Secreta (só mestre)'};
+}
+export function rollVisibilityBadge(roll){
+  if(roll.visibility==='public')return {privateRoll:false,secret:false,label:'Mesa'};
+  if(roll.rolledBy==='player')return {privateRoll:true,secret:true,label:'Secreta · só mestre'};
+  return {privateRoll:true,secret:false,label:'Só mestre'};
+}
+export function canRepeatRoll(roll,row={}){
+  if(!roll?.formula||roll.kind==='table')return false;
+  if(!row.master&&!(!row.needsCharacter&&Boolean(row.characterId)&&roll.visibility==='public'&&roll.rolledBy==='player'&&(!roll.characterId||roll.characterId===row.characterId)))return false;
+  try{parseDiceFormula(repeatRollPayload(roll,row).formula);return true;}catch{return false;}
+}
+export function repeatRollPayload(roll,row={}){
+  let formula=String(roll.formula||'').trim();
+  if(roll.help?.effect&&roll.help.effect!=='advantage'){
+    const suffix='+'+String(roll.help.effect).replace(/\s/g,'').toLowerCase();
+    if(formula.toLowerCase().endsWith(suffix))formula=formula.slice(0,-suffix.length);
+  }
+  if(roll.mastery?.die){
+    const suffix='+'+String(roll.mastery.die).replace(/\s/g,'').toLowerCase();
+    if(formula.toLowerCase().endsWith(suffix))formula=formula.slice(0,-suffix.length);
+  }
+  const mode=roll.mode==='advantage'||roll.mode==='disadvantage'?roll.mode:undefined;
+  if(mode&&/^2d20k[hl]1(?:[+-]|$)/i.test(formula))formula=formula.replace(/^2d20k[hl]1/i,'1d20');
+  const validMode=mode&&/^1?d20(?:[+-]|$)/i.test(formula)?mode:undefined;
+  const characterId=row.master
+    ? (roll.characterId&&row.state?.characters?.some(c=>c.id===roll.characterId)?roll.characterId:undefined)
+    : (row.characterId||undefined);
+  return {
+    formula,
+    actor:roll.actor||(row.master?'Mestre':'Jogador'),
+    visibility:roll.visibility==='gm'?'gm':'public',
+    ...(characterId?{characterId}:{}),
+    ...(validMode?{mode:validMode}:{}),
+    ...(roll.label?{label:roll.label}:{})
+  };
+}
+export function messageChannelBadge(msg){
+  if(msg?.channel==='whisper')return {channel:'whisper',label:msg.targetName?'Sussurro · para '+msg.targetName:'Sussurro'};
+  if(msg?.channel==='ic')return {channel:'ic',label:'Em personagem'};
+  return {channel:'public',label:'Mesa'};
+}
+export function visibleFeedMessages(row){
+  return (row.state?.messages||[]).filter(msg=>{
+    if(!msg||!Object.hasOwn(chatChannels,msg.channel))return false;
+    if(row.master)return true;
+    if(msg.channel==='whisper')return Boolean(!row.needsCharacter&&row.characterId&&(msg.senderCharacterId===row.characterId||msg.targetCharacterId===row.characterId));
+    return true;
+  });
+}
+export function renderFeedItems(row,{filter='all'}={}){
+  const rolls=filter==='messages'?[]:(row.state?.rolls||[]).filter(roll=>row.master||roll.visibility==='public');
+  const messages=filter==='rolls'?[]:visibleFeedMessages(row);
+  const unified=[
+    ...rolls.map(item=>({kind:'roll',at:Number.isFinite(item.at)?item.at:0,item})),
+    ...messages.map(item=>({kind:'message',at:Number.isFinite(item.at)?item.at:0,item}))
+  ];
+  if(rolls.length&&messages.length)unified.sort((a,b)=>b.at-a.at);
+  return unified.map(entry=>{
+    if(entry.kind==='message'){
+      const msg=entry.item,badge=messageChannelBadge(msg);
+      const time=Number.isFinite(msg.at)?new Date(msg.at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'';
+      return '<li class="roll-feed-card is-message is-channel-'+esc(badge.channel)+'" data-message-id="'+esc(msg.id)+'"><div class="roll-feed-info"><div class="roll-feed-meta"><strong>'+esc(msg.actor)+'</strong><span class="roll-feed-privacy is-msg-'+esc(badge.channel)+'">'+esc(badge.label)+'</span>'+(time?'<time>'+esc(time)+'</time>':'')+'</div><p class="roll-feed-message-text">'+esc(msg.text)+'</p></div></li>';
+    }
+    const roll=entry.item,badge=rollVisibilityBadge(roll);
     const time=Number.isFinite(roll.at)?new Date(roll.at).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'';
-    return '<li class="roll-feed-card'+(privateRoll?' is-private':'')+'" data-roll-id="'+esc(roll.id)+'"><div class="roll-feed-info"><div class="roll-feed-meta"><strong>'+esc(roll.actor)+'</strong><span class="roll-feed-privacy">'+(privateRoll?'Só mestre':'Mesa')+'</span>'+(time?'<time>'+esc(time)+'</time>':'')+'</div>'+(roll.label?'<h3>'+esc(roll.label)+'</h3>':'')+'<p>'+esc(roll.expression||roll.formula)+'</p><details><summary>Ver dados e cálculo</summary><p>'+esc(roll.formula)+' · '+esc(rollBreakdown(roll))+'</p>'+(roll.mastery?'<p>'+esc(roll.mastery.name)+' · '+esc(roll.mastery.die)+'</p>':'')+'</details></div><strong class="roll-feed-total">'+esc(roll.total)+'</strong></li>';
+    const repeat=canRepeatRoll(roll,row)?'<button type="button" class="btn small ghost roll-repeat-btn" data-roll-repeat="'+esc(roll.id)+'">↻ Rolar novamente</button>':'';
+    return '<li class="roll-feed-card'+(badge.privateRoll?' is-private':'')+(badge.secret?' is-secret':'')+'" data-roll-id="'+esc(roll.id)+'"><div class="roll-feed-info"><div class="roll-feed-meta"><strong>'+esc(roll.actor)+'</strong><span class="roll-feed-privacy'+(badge.secret?' is-secret':'')+'">'+badge.label+'</span>'+(time?'<time>'+esc(time)+'</time>':'')+'</div>'+(roll.label?'<h3>'+esc(roll.label)+'</h3>':'')+'<p>'+esc(roll.expression||roll.formula)+'</p><details><summary>Ver dados e cálculo</summary><p>'+esc(roll.formula)+' · '+esc(rollBreakdown(roll))+'</p>'+(roll.mastery?'<p>'+esc(roll.mastery.name)+' · '+esc(roll.mastery.die)+'</p>':'')+'</details></div><div class="roll-feed-side"><strong class="roll-feed-total">'+esc(roll.total)+'</strong>'+repeat+'</div></li>';
   }).join('');
-  return '<div class="roll-feed-heading"><div><h2>Histórico de rolagens</h2><p>'+(row.master?'Suas rolagens são privadas. As dos jogadores são compartilhadas.':'Aqui aparecem as rolagens dos jogadores. As do mestre são privadas.')+'</p></div><label class="check"><input type="checkbox" data-dice-effects '+(diceEffectsEnabled()?'checked':'')+'> Animar dados</label></div>'+(items?'<ol class="roll-feed-list">'+items+'</ol>':'<p class="roll-feed-empty">As próximas rolagens aparecerão aqui.</p>');
+}
+export function renderChatComposer(row,draft={}){
+  const canSend=Boolean(row.master||!row.needsCharacter&&row.characterId);
+  if(!canSend)return '';
+  const channel=Object.hasOwn(chatChannels,draft.channel)?draft.channel:'public';
+  const characters=row.state?.characters||[];
+  const whisperTargets=row.master
+    ? characters.filter(c=>!c.hidden&&c.characterType!=='npc').map(c=>[c.id,c.name])
+    : [['gm','Mestre'],...characters.filter(c=>c.id!==row.characterId&&!c.hidden&&c.characterType!=='npc').map(c=>[c.id,c.name])];
+  const selectedTarget=whisperTargets.some(([id])=>id===draft.targetId)?draft.targetId:(whisperTargets[0]?.[0]||'');
+  const speakerOptions=row.master&&channel==='ic'
+    ? '<select name="speakerCharacterId" data-chat-speaker-id aria-label="Personagem em cena"><option value="">Mestre / nome livre</option>'+characters.map(c=>'<option value="'+esc(c.id)+'" '+(draft.speakerCharacterId===c.id?'selected':'')+'>'+esc(c.name)+'</option>').join('')+'</select>'+
+      (!draft.speakerCharacterId?'<input type="text" name="speaker" data-chat-speaker value="'+esc(draft.speaker||'')+'" maxlength="'+chatSpeakerLimit+'" placeholder="Nome em cena (opcional)" aria-label="Nome personalizado em cena">':'')
+    : '';
+  const targetSelect=channel==='whisper'
+    ? (whisperTargets.length
+      ? '<select name="targetId" data-chat-target aria-label="Destinatário do sussurro">'+whisperTargets.map(([id,name])=>'<option value="'+esc(id)+'" '+(id===selectedTarget?'selected':'')+'>Para: '+esc(name)+'</option>').join('')+'</select>'
+      : '<span class="roll-chat-hint">Sem destinatários disponíveis</span>')
+    : '';
+  const disableSubmit=channel==='whisper'&&!whisperTargets.length;
+  return '<form class="roll-chat-form" data-table-chat-form><div class="roll-chat-controls"><select name="channel" data-chat-channel aria-label="Modo da mensagem">'+Object.entries(chatChannels).map(([id,label])=>'<option value="'+esc(id)+'" '+(id===channel?'selected':'')+'>'+esc(label)+'</option>').join('')+'</select>'+speakerOptions+targetSelect+'</div><div class="roll-chat-Compose"><input type="text" name="text" data-chat-text value="'+esc(draft.text||'')+'" maxlength="'+chatTextLimit+'" required placeholder="'+(channel==='ic'?'Fala ou ação em personagem…':channel==='whisper'?'Sussurro discreto…':'Mensagem rápida para a mesa…')+'" aria-label="Mensagem da mesa"><button type="submit" class="btn small primary" '+(disableSubmit?'disabled':'')+'>Enviar</button></div></form>';
+}
+export function renderFeedListMarkup(row,options={}){
+  const filter=Object.hasOwn(feedFilterOptions,options.filter)?options.filter:'all';
+  const items=renderFeedItems(row,{filter});
+  const emptyLabel=filter==='messages'?'Nenhuma mensagem enviada ainda.':filter==='rolls'?'As próximas rolagens aparecerão aqui.':'As próximas rolagens e mensagens aparecerão aqui.';
+  return items?'<ol class="roll-feed-list" data-feed-list>'+items+'</ol>':'<p class="roll-feed-empty" data-feed-empty>'+emptyLabel+'</p>';
+}
+export function renderRollHistory(row,options={}) {
+  const filter=Object.hasOwn(feedFilterOptions,options.filter)?options.filter:'all';
+  const filters='<div class="roll-feed-filters" role="group" aria-label="Filtrar histórico">'+Object.entries(feedFilterOptions).map(([id,label])=>'<button type="button" class="btn small '+(filter===id?'primary':'ghost')+'" data-feed-filter="'+id+'" aria-pressed="'+(filter===id)+'">'+label+'</button>').join('')+'</div>';
+  return '<div class="roll-feed-heading"><div><h2>Histórico de rolagens</h2><p>'+(row.master?'Suas rolagens começam privadas; você pode abrir qualquer rolagem ou enviar mensagens à mesa.':'Aqui aparecem as rolagens e mensagens compartilhadas na mesa. Sussurros e rolagens secretas são privados.')+'</p></div><div class="roll-feed-toolbar">'+filters+'<label class="check"><input type="checkbox" data-dice-effects '+(diceEffectsEnabled()?'checked':'')+'> Animar dados</label></div></div>'+renderChatComposer(row,options)+'<div data-feed-items>'+renderFeedListMarkup(row,options)+'</div>';
 }
 function dieShape(faces) {
   const outlines={4:'50,5 96,88 4,88',6:'20,10 80,10 94,24 94,78 80,92 20,92 6,78 6,24',8:'50,3 92,50 50,97 8,50',10:'50,3 90,30 90,72 50,97 10,72 10,30',12:'50,3 83,14 97,46 80,88 20,88 3,46 17,14',20:'50,3 92,27 92,73 50,97 8,73 8,27',100:'50,3 92,28 92,73 50,97 8,73 8,28'};
@@ -43,13 +143,14 @@ function dieShape(faces) {
 }
 export const rollAccent=roll=>/^#[a-f0-9]{6}$/i.test(roll.diceColor||'')?roll.diceColor:'#bd94ff';
 export function rollPopupEligible(roll,row={}) {
+  if(!row.master&&roll.visibility!=='public')return false;
   const initiative=roll.kind==='initiative'||roll.kind===undefined&&/^iniciativa$/i.test(roll.label?.trim()||'');
   if(!initiative)return true;
   return roll.rolledBy==='master'?Boolean(row.master):!row.master&&Boolean(row.characterId)&&roll.characterId===row.characterId;
 }
 export function renderDiceRoll(roll,limit=16) {
   const dice=rollDiceList(roll),visible=dice.slice(0,limit);
-  return '<div class="dice-palette" style="--dice-accent:'+rollAccent(roll)+'"><div class="dice-show-heading"><div class="dice-show-identity"><strong class="dice-show-actor">'+esc(roll.actor)+'</strong><span class="dice-show-visibility">'+(roll.visibility==='public'&&roll.rolledBy==='player'?'Mesa':'Rolagem privada')+'</span></div><button type="button" class="dice-dismiss" data-dice-dismiss aria-label="Fechar resultado">×</button></div><p class="dice-show-label">'+esc(roll.label||roll.expression||roll.formula)+'</p><div class="dice-stage"><canvas data-dice-canvas hidden aria-hidden="true"></canvas><div class="dice-toss-area" data-dice-fallback aria-hidden="true">'+visible.map((die,index)=>'<div class="dice-throw" style="--die-delay:'+index*25+'ms;--die-turn:'+((index%2?1:-1)*(380+index*17))+'deg;--die-shift:'+((index%5-2)*27)+'px"><div class="animated-die'+(!die.kept?' is-discarded':'')+'">'+dieShape(die.faces)+'<span class="die-face">'+esc(die.value)+'</span><small>'+(die.sign<0?'− ':'')+(die.faces?'d'+die.faces:'dado')+'</small></div></div>').join('')+'</div></div>'+(dice.length>visible.length?'<p class="dice-extra">+'+(dice.length-visible.length)+' dados no histórico</p>':'')+'<p class="dice-show-result" data-dice-result role="status" aria-live="polite">Rolando dados…</p><p class="dice-natural" data-dice-natural hidden></p></div>';
+  return '<div class="dice-palette" style="--dice-accent:'+rollAccent(roll)+'"><div class="dice-show-heading"><div class="dice-show-identity"><strong class="dice-show-actor">'+esc(roll.actor)+'</strong><span class="dice-show-visibility">'+(roll.visibility==='public'?'Mesa':'Rolagem privada')+'</span></div><button type="button" class="dice-dismiss" data-dice-dismiss aria-label="Fechar resultado">×</button></div><p class="dice-show-label">'+esc(roll.label||roll.expression||roll.formula)+'</p><div class="dice-stage"><canvas data-dice-canvas hidden aria-hidden="true"></canvas><div class="dice-toss-area" data-dice-fallback aria-hidden="true">'+visible.map((die,index)=>'<div class="dice-throw" style="--die-delay:'+index*25+'ms;--die-turn:'+((index%2?1:-1)*(380+index*17))+'deg;--die-shift:'+((index%5-2)*27)+'px"><div class="animated-die'+(!die.kept?' is-discarded':'')+'">'+dieShape(die.faces)+'<span class="die-face">'+esc(die.value)+'</span><small>'+(die.sign<0?'− ':'')+(die.faces?'d'+die.faces:'dado')+'</small></div></div>').join('')+'</div></div>'+(dice.length>visible.length?'<p class="dice-extra">+'+(dice.length-visible.length)+' dados no histórico</p>':'')+'<p class="dice-show-result" data-dice-result role="status" aria-live="polite">Rolando dados…</p><p class="dice-natural" data-dice-natural hidden></p></div>';
 }
 export function createDiceDisplay(root,{schedule=setTimeout,cancel=clearTimeout,reducedMotion=()=>Boolean(globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches)}={}) {
   let identity='',revision=-1,seen=new Set(),queue=[],active=null,enabled=diceEffectsEnabled();
@@ -82,7 +183,7 @@ export function createDiceDisplay(root,{schedule=setTimeout,cancel=clearTimeout,
       const key=row.id?row.id+'/'+Boolean(row.master):'';
       if(key!==identity){stop();identity=key;revision=-1;seen=new Set();queue=[];}
       if(!key||!Array.isArray(row.state?.rolls)||row.rev<revision)return;
-      const rolls=row.state.rolls.filter(roll=>row.master||roll.rolledBy==='player'&&roll.visibility==='public'),allowed=new Set(rolls.map(r=>r.id));
+      const rolls=row.state.rolls.filter(roll=>row.master||roll.visibility==='public'),allowed=new Set(rolls.map(r=>r.id));
       if(active&&active.visibility!=='requested'&&!allowed.has(active.id))stop();
       queue=queue.filter(r=>r.visibility==='requested'||allowed.has(r.id));
       if(revision<0){seen=allowed;revision=row.rev;return;}

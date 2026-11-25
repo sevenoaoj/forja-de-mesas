@@ -1,12 +1,49 @@
 export {mountVaultCanvas} from './vault-canvas.mjs';
 import {noteProperties,noteConnections} from './journal.mjs';
 import {sheetResourceStyle} from '../sheet-layout.mjs';
-import {sheetFields,sheetValue} from '../model.mjs';
+import {sheetFields,sheetValue,parseDiceFormula,resolveSheetFormula,sheetSkillTest,sheetSavedRollFormula} from '../model.mjs';
 import {conditionSummary,normalizeTable} from '../table-model.mjs';
 import {dndCatalog} from '../dnd.mjs';
+import {rollVisibilityOptions} from './rolls.mjs';
 export const gmCategories={all:'Tudo',session:'Sessão',rules:'Regras',world:'Personagens e mundo'};
 export const gmKinds={note:'Anotação',checklist:'Lista de tarefas',table:'Tabela sorteável',reference:'Referência vinculada'};
 const normal=value=>String(value||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase();
+const initiativeFieldNames=new Set(['agilidade','destreza','agi','des','dex','agility','dexterity']);
+function randomDieLocal(faces){
+ const buffer=new Uint32Array(1),limit=2**32-(2**32%faces);
+ do{crypto.getRandomValues(buffer);}while(buffer[0]>=limit);
+ return buffer[0]%faces+1;
+}
+export function initiativeRollSpec(state,character){
+ if(!character)return '1d20';
+ const button=(character.rollButtons||[]).find(b=>b.id==='dd-initiative'||normal(b.name?.trim())==='iniciativa');
+ if(button){
+  try{return resolveSheetFormula(sheetSavedRollFormula(character,button),state,character).formula;}catch{}
+ }
+ const skill=(character.skills||[]).find(s=>normal(s.name?.trim())==='iniciativa');
+ if(skill){
+  try{return resolveSheetFormula(sheetSkillTest(state,character,skill.id).formula,state,character).formula;}catch{}
+ }
+ const fields=sheetFields(state,character).filter(field=>field.type==='number');
+ const field=fields.find(f=>f.id==='dd-dex')||fields.find(f=>initiativeFieldNames.has(normal(f.label?.trim())));
+ if(field){
+  const expr=character.dnd||field.id==='dd-dex'?'1d20+@{'+field.id+'|mod}':'1d20+@{'+field.id+'}';
+  try{return resolveSheetFormula(expr,state,character).formula;}catch{}
+ }
+ return '1d20';
+}
+export function rollDiceFormulaLocal(formula){
+ const {formula:normalized,terms,modifier}=parseDiceFormula(formula);
+ const dice=[];
+ let total=modifier;
+ for(const {count,faces,sign,keep} of terms){
+  const rolled=Array.from({length:count},()=>randomDieLocal(faces));
+  dice.push(...rolled);
+  const used=keep==='kh1'?[Math.max(...rolled)]:keep==='kl1'?[Math.min(...rolled)]:rolled;
+  total+=sign*used.reduce((sum,value)=>sum+value,0);
+ }
+ return {formula:normalized,total,dice,modifier};
+}
 const cardsOf=row=>row.state.gmScreen?.cards||[];
 function targetFor(card,state){
  if(card.targetKind==='journal'){const note=state.journal?.find(n=>n.id===card.targetId);return note&&{name:note.title};}
@@ -21,7 +58,7 @@ export function renderGmCards(row,ui,view={}){
  return cards.length?cards.map(card=>{
   const target=card.kind==='reference'?targetFor(card,row.state):null;
   const done=(card.items||[]).filter(item=>item.done).length;
-  const body=card.kind==='checklist'?'<ul class="gm-tasks">'+card.items.map(item=>'<li><label class="check"><input type="checkbox" data-gm-task="'+esc(card.id)+'" data-gm-item="'+esc(item.id)+'" '+(item.done?'checked':'')+'><span'+(item.done?' class="is-done"':'')+'>'+esc(item.text)+'</span></label></li>').join('')+'</ul><p class="gm-card-meta">'+done+'/'+card.items.length+' concluídas</p>':card.kind==='table'?(card.lastRoll?'<div class="gm-table-result"><span>Último sorteio · '+card.lastRoll.index+'</span><strong>'+esc(card.lastRoll.text)+'</strong></div>':'')+button('Sortear em segredo','gmTableRoll','small primary','',card.id)+'<details class="gm-table-entries"><summary>Ver '+card.items.length+' entradas</summary><ol>'+card.items.map(item=>'<li>'+esc(item.text)+'</li>').join('')+'</ol></details>':card.kind==='reference'?(target?'<div class="gm-reference"><span>'+esc({journal:'Nota do cofre',book:'Livro · página '+card.page,character:'Ficha'+(target.hidden?' · oculta dos jogadores':''),rule:'SRD 5.2.1 · página '+target.page}[card.targetKind])+'</span><strong>'+esc(target.name)+'</strong>'+button('Abrir referência','gmReference','small','',card.id)+'</div>':'<p class="muted">Referência removida. Edite o cartão para escolher outra.</p>')+(card.body?'<p class="gm-card-text">'+esc(card.body)+'</p>':''):'<p class="gm-card-text">'+esc(card.body||'Edite para adicionar informações.')+'</p>';
+  const body=card.kind==='checklist'?'<ul class="gm-tasks">'+card.items.map(item=>'<li><label class="check"><input type="checkbox" data-gm-task="'+esc(card.id)+'" data-gm-item="'+esc(item.id)+'" '+(item.done?'checked':'')+'><span'+(item.done?' class="is-done"':'')+'>'+esc(item.text)+'</span></label></li>').join('')+'</ul><p class="gm-card-meta">'+done+'/'+card.items.length+' concluídas</p>':card.kind==='table'?gmTableBody(card,ui):card.kind==='reference'?(target?'<div class="gm-reference"><span>'+esc({journal:'Nota do cofre',book:'Livro · página '+card.page,character:'Ficha'+(target.hidden?' · oculta dos jogadores':''),rule:'SRD 5.2.1 · página '+target.page}[card.targetKind])+'</span><strong>'+esc(target.name)+'</strong>'+button('Abrir referência','gmReference','small','',card.id)+'</div>':'<p class="muted">Referência removida. Edite o cartão para escolher outra.</p>')+(card.body?'<p class="gm-card-text">'+esc(card.body)+'</p>':''):'<p class="gm-card-text">'+esc(card.body||'Edite para adicionar informações.')+'</p>';
   return '<article class="gm-card'+(card.wide?' gm-wide':'')+(card.pinned?' is-pinned':'')+'"><div class="gm-card-heading"><div><p class="gm-card-meta">'+(card.pinned?'Fixado · ':'')+esc(gmKinds[card.kind])+' · '+esc(gmCategories[card.category])+'</p><h3>'+esc(card.title)+'</h3></div><button type="button" class="btn small ghost" data-act="gmCardCollapse" data-id="'+esc(card.id)+'" aria-expanded="'+!card.collapsed+'" aria-label="'+esc((card.collapsed?'Expandir ':'Recolher ')+card.title)+'">'+(card.collapsed?'＋':'−')+'</button></div>'+
    (!card.collapsed?'<div class="gm-card-content">'+body+'</div>':'')+'<div class="gm-card-actions">'+button('Editar','gmCardEdit','small ghost','',card.id)+button(card.pinned?'Desafixar':'Fixar','gmCardPin','small ghost','',card.id)+'<span class="gm-move"><button type="button" class="btn small ghost" data-act="gmCardMove" data-id="'+esc(card.id)+'/up" aria-label="Mover '+esc(card.title)+' para antes">↑</button><button type="button" class="btn small ghost" data-act="gmCardMove" data-id="'+esc(card.id)+'/down" aria-label="Mover '+esc(card.title)+' para depois">↓</button></span>'+button('Remover','gmCardDelete','small ghost danger','',card.id)+'</div></article>';
  }).join(''):'<div class="gm-empty"><h3>'+(cardsOf(row).length?'Nenhum cartão encontrado':'Seu escudo, do seu jeito')+'</h3><p>'+(cardsOf(row).length?'Mude a busca ou a categoria.':'Adicione a abertura da sessão, pistas, NPCs, tarefas e regras que você quer ter à mão.')+'</p>'+button('Adicionar cartão','gmCardEdit','primary','plus')+'</div>';
@@ -45,35 +82,58 @@ function party(row,ui){
   const numbers=fields.filter(field=>field.type==='number');
   const selected=partyFieldIds(character,row.state),summary=selected.map(id=>numbers.find(field=>field.id===id)).filter(Boolean),other=numbers.filter(field=>!selected.includes(field.id));
   const numberLine=fields=>fields.map(field=>'<span><small>'+esc(field.label)+'</small><strong>'+esc(sheetValue(character,field))+'</strong></span>').join('');
+  const privateResources=row.state.gmResources?.[character.id]||[];
   return '<article class="gm-character"><div class="gm-character-heading">'+(character.portrait?'<span class="avatar '+esc(character.color)+'"><img alt="" hidden data-portrait="'+esc(character.portrait.id)+'"></span>':'')+'<div><h3>'+esc(character.name)+'</h3><p>'+esc(character.concept)+(character.hidden?' · <span class="gm-secret">Oculto dos jogadores</span>':'')+'</p></div>'+button('Abrir','character','small','',character.id)+'</div>'+
    '<div class="gm-character-stats">'+numberLine(summary)+'</div>'+counters.map(field=>{
     const [value,max]=String(sheetValue(character,field)||'').split('/'),percent=Number(max)>0?Math.max(0,Math.min(100,Number(value)/Number(max)*100)):0;
-    return '<div class="gm-resource"><div><span>'+esc(field.label)+'</span><strong>'+esc(value)+' / '+esc(max||'—')+'</strong><div class="actions">'+button('−','gmResource','small','',character.id+'/'+field.id+'/-1')+button('+','gmResource','small','',character.id+'/'+field.id+'/1')+'</div></div><meter style="--resource-color:'+esc(sheetResourceStyle(character,field).color)+'" min="0" max="100" value="'+percent+'" aria-label="'+esc(field.label)+'"></meter></div>';
-   }).join('')+button('Configurar resumo','gmPartyFields','small ghost','',character.id)+(other.length?'<details><summary>Mais atributos</summary><div class="gm-character-stats">'+numberLine(other)+'</div></details>':'')+
+    return '<div class="gm-resource"><div><span>'+esc(field.label)+'</span><strong>'+esc(value)+' / '+esc(max||'—')+'</strong><div class="actions">'+button('−5','gmResource','small','',character.id+'/'+field.id+'/-5')+button('−','gmResource','small','',character.id+'/'+field.id+'/-1')+button('+','gmResource','small','',character.id+'/'+field.id+'/1')+button('+5','gmResource','small','',character.id+'/'+field.id+'/5')+'</div></div><meter style="--resource-color:'+esc(sheetResourceStyle(character,field).color)+'" min="0" max="100" value="'+percent+'" aria-label="'+esc(field.label)+'"></meter><form class="gm-delta-form" data-form="gmCounterDelta"><input type="hidden" name="id" value="'+esc(character.id)+'"><input type="hidden" name="field" value="'+esc(field.id)+'"><input type="number" name="amount" min="1" max="1000000" step="1" value="1" aria-label="Ajuste em '+esc(field.label)+'"><button type="submit" class="btn small ghost danger" data-sign="-1">− Dano</button><button type="submit" class="btn small ghost" data-sign="1">+ Cura</button></form></div>';
+   }).join('')+(privateResources.length?'<div class="gm-private-resources"><small class="gm-secret">Recursos privados do mestre</small>'+privateResources.map(res=>{
+    const percent=res.maximum>0?Math.max(0,Math.min(100,res.current/res.maximum*100)):0;
+    const baseKey=character.id+'/'+res.id+'/'+res.version;
+    return '<div class="gm-resource is-private-resource"><div><span>'+esc(res.name)+'</span><strong>'+esc(res.current)+' / '+esc(res.maximum)+'</strong><div class="actions">'+button('−5','gmPrivateDelta','small','',baseKey+'/-5')+button('−','gmPrivateDelta','small','',baseKey+'/-1')+button('+','gmPrivateDelta','small','',baseKey+'/1')+button('+5','gmPrivateDelta','small','',baseKey+'/5')+'</div></div><meter style="--resource-color:'+esc(res.color||'#bd94ff')+'" min="0" max="100" value="'+percent+'" aria-label="'+esc(res.name)+'"></meter><form class="gm-delta-form" data-form="gmPrivateDelta"><input type="hidden" name="id" value="'+esc(character.id)+'"><input type="hidden" name="resourceId" value="'+esc(res.id)+'"><input type="hidden" name="version" value="'+esc(res.version)+'"><input type="number" name="amount" min="1" max="1000000" step="1" value="1" aria-label="Ajuste em '+esc(res.name)+'"><button type="submit" class="btn small ghost danger" data-sign="-1">− Dano</button><button type="submit" class="btn small ghost" data-sign="1">+ Cura</button></form></div>';
+   }).join('')+'</div>':'')+button('Configurar resumo','gmPartyFields','small ghost','',character.id)+(other.length?'<details><summary>Mais atributos</summary><div class="gm-character-stats">'+numberLine(other)+'</div></details>':'')+
    ((character.rollButtons||[]).length?'<details><summary>Rolagens da ficha · só mestre</summary><div class="actions">'+character.rollButtons.map(roll=>button(roll.name,'gmCharacterRoll','small','',character.id+'/'+roll.id)).join('')+'</div></details>':'')+'</article>';
  }).join(''):'<p class="muted">As fichas criadas na campanha aparecerão aqui, com seus atributos e recursos.</p>')+'</div></section>';
 }
 function combat(row,ui){
  const {esc,button}=ui,{combat}=normalizeTable(row.state);
- return '<section class="panel gm-combat"><div class="section-head"><h2>Combate da mesa</h2>'+button('Editar ordem','tableCombat','small')+'</div><p class="muted">Mesma ordem e rodada da mesa virtual.</p>'+(combat.entries.length?'<p class="gm-round">Rodada '+combat.round+'</p><ol class="gm-turns">'+combat.entries.map((entry,index)=>{
+ return '<section class="panel gm-combat"><div class="section-head"><h2>Combate da mesa</h2>'+button('Editar ordem','tableCombat','small')+'</div><p class="muted">'+combatAudience(row.state)+'</p>'+(combat.entries.length?'<p class="gm-round">Rodada '+combat.round+'</p><ol class="gm-turns">'+combat.entries.map((entry,index)=>{
   const token=row.state.tokens.find(token=>token.id===entry.tokenId);
   const conditions=token?conditionSummary(token):'';
   return '<li'+(index===combat.active?' class="is-active" aria-current="step"':'')+'><strong>'+entry.value+'</strong><span>'+esc(entry.name)+(token?.hidden?' <small class="gm-secret">Oculto</small>':'')+(conditions?'<small>'+esc(conditions)+'</small>':'')+'</span>'+(index===combat.active?'<small>Em ação</small>':'')+(token&&token.kind!=='item'?button('Condições','tableConditions','small ghost','',token.id):'')+'</li>';
  }).join('')+'</ol><div class="actions">'+button('Anterior','gmCombatNext','small','','-1')+button('Próximo turno','gmCombatNext','primary','','1')+'</div>':'<p class="gm-muted-empty">Configure a ordem para acompanhar o encontro sem abrir o mapa.</p>')+
  ((row.state.initiative||[]).length?'<details><summary>Iniciativa antiga · '+row.state.initiative.length+' participantes</summary><p class="muted">Use “Importar iniciativa do escudo” ao editar o combate para aproveitar esta preparação.</p>'+button('Editar preparação antiga','initiative','small')+'</details>':'')+'</section>';
 }
+export function combatAudience(state){
+ const live=state.sceneId===state.activeSceneId;
+ return live?'Ordem ao vivo. Os jogadores veem os participantes visíveis da cena.':'Ordem privada desta cena. Os jogadores continuam no combate da cena ao vivo.';
+}
 export function renderGmScreen(row,ui,view={}){
  if(!row.master)return '';
- const {esc,head,button,area,input,submit}=ui;
+ const {esc,head,button,area,input,select,submit}=ui;
  if(view.prepTab==='note')return head('Cofre de notas',row.state.name,button('‹ Escudo do mestre','prepTab','small','','plan'))+preparation(row,ui,view);
  return head('Escudo do mestre','Sua preparação e as informações da mesa, sempre à mão.',button('Pedir teste','checkCompose','small')+button('Cofre de notas','vaultOpen','','','')+button('Ir para a mesa','nav','','table','table')+button('Adicionar cartão','gmCardEdit','primary','plus'))+
   '<div class="gm-banner"><span class="gm-secret">Somente o mestre</span><span>'+esc(row.state.scene)+' · '+esc(row.state.system)+'</span><div class="actions">'+button('Consultar regras','dndReference','small')+button('Biblioteca','nav','small','','library')+'</div></div>'+
-  preparation(row,ui,view)+'<div class="gm-layout"><div class="gm-workspace"><section class="gm-board"><div class="gm-board-toolbar">'+input('gmSearch','Buscar no escudo',view.query||'','search','data-gm-search placeholder="Pista, NPC, regra…" autocomplete="off"')+'<nav aria-label="Categorias do escudo">'+Object.entries(gmCategories).map(([id,label])=>'<button type="button" class="btn small '+((view.category||'all')===id?'primary':'ghost')+'" data-act="gmCategory" data-id="'+id+'" aria-pressed="'+((view.category||'all')===id)+'">'+label+'</button>').join('')+'</nav></div><div class="gm-card-grid" data-gm-cards>'+renderGmCards(row,ui,view)+'</div></section>'+(view.sessionTools||'')+party(row,ui)+'</div><aside class="gm-sidebar"><section data-gm-checks aria-label="Pedidos de teste" hidden></section>'+combat(row,ui)+'<section class="panel gm-roll"><h2>Rolagem privada</h2><form class="stack" data-form="roll"><input type="hidden" name="actor" value="Mestre">'+input('formula','Expressão','1d20','text','required maxlength="240" placeholder="1d20+3 ou 2d6"')+submit('Rolar em segredo')+'</form>'+button('Ver histórico privado','tableRoll','small')+'</section><section class="panel gm-notes"><div class="section-head"><h2>Bloco de notas</h2></div><p class="muted">Suas anotações anteriores continuam aqui.</p><form class="stack" data-form="notes">'+area('text','Notas privadas',view.notes??row.state.notes??'','data-gm-notes maxlength="12000" rows="8"')+'<p class="gm-card-meta" data-gm-notes-status>'+(view.notes!==undefined&&view.notes!==row.state.notes?'Rascunho não salvo · preservado ao navegar nesta aba.':'Notas salvas na campanha.')+'</p>'+submit('Salvar notas')+'</form></section></aside></div>';
+  preparation(row,ui,view)+'<div class="gm-layout"><div class="gm-workspace"><section class="gm-board"><div class="gm-board-toolbar">'+input('gmSearch','Buscar cartões',view.query||'','search','data-gm-search placeholder="Título ou conteúdo do cartão" autocomplete="off"')+'<nav aria-label="Categorias do escudo">'+Object.entries(gmCategories).map(([id,label])=>'<button type="button" class="btn small '+((view.category||'all')===id?'primary':'ghost')+'" data-act="gmCategory" data-id="'+id+'" aria-pressed="'+((view.category||'all')===id)+'">'+label+'</button>').join('')+'</nav></div><div class="gm-card-grid" data-gm-cards>'+renderGmCards(row,ui,view)+'</div></section>'+(view.sessionTools||'')+party(row,ui)+'</div><aside class="gm-sidebar"><section data-gm-checks aria-label="Pedidos de teste" hidden></section>'+combat(row,ui)+'<section class="panel gm-roll"><h2>Rolagem rápida</h2><form class="stack" data-form="roll"><input type="hidden" name="actor" value="Mestre">'+input('formula','Expressão','1d20','text','required maxlength="240" placeholder="1d20+3 ou 2d6"')+select('visibility','Visibilidade da rolagem',rollVisibilityOptions(true),'gm')+submit('Rolar dados')+'</form>'+button('Ver histórico','tableRoll','small')+'</section><section class="panel gm-notes"><div class="section-head"><h2>Bloco de notas</h2></div><p class="muted">Suas anotações anteriores continuam aqui.</p><form class="stack" data-form="notes">'+area('text','Notas privadas',view.notes??row.state.notes??'','data-gm-notes maxlength="12000" rows="8"')+'<p class="gm-card-meta" data-gm-notes-status>'+(view.notes!==undefined&&view.notes!==row.state.notes?'Rascunho não salvo · preservado ao navegar nesta aba.':'Notas salvas na campanha.')+'</p>'+submit('Salvar notas')+'</form></section></aside></div>';
 }
+function gmTableBody(card,{esc,button}){
+ const remaining=card.items.filter(item=>!item.drawn).length;
+ const result=card.lastRoll?'<div class="gm-table-result"><span>Último sorteio</span><strong>'+esc(card.lastRoll.text)+'</strong></div>':'';
+ const controls=(!card.noRepeat||remaining?button('Sortear em segredo','gmTableRoll','small primary','',card.id):'')+
+  (card.noRepeat&&remaining<card.items.length?button('Reiniciar sorteios','gmTableReset','small','',card.id):'');
+ return result+(card.noRepeat?'<p>'+remaining+' de '+card.items.length+' disponíveis</p>':'')+controls+
+  '<details class="gm-table-entries"><summary>Ver entradas</summary><ol>'+card.items.map(item=>'<li>'+esc(item.text)+' · peso '+(item.weight??1)+(card.noRepeat&&item.drawn?' · já saiu':'')+'</li>').join('')+'</ol></details>';
+}
+
+export function gmTableRow(item,{esc,input,button}){
+ return '<div class="form-grid" data-table-entry="'+esc(item?.id||'')+'">'+input('entryText','Resultado',item?.text||'','text','maxlength="6000"')+
+  input('entryWeight','Peso',item?.weight??1,'number','min="1" max="100" step="1"')+button('Remover entrada','gmTableRemove','small')+'</div>';
+}
+
 export function gmCardEditor(card,row,ui){
  const {esc,input,select,area,submit}=ui;
  const options={'':'Escolha uma referência',...Object.fromEntries((row.state.journal||[]).map(n=>['journal/'+n.id,'Nota · '+n.title])),...Object.fromEntries(row.state.books.map(book=>['book/'+book.id,'PDF · '+book.name])),...Object.fromEntries(row.state.characters.map(character=>['character/'+character.id,'Ficha · '+character.name])),...Object.fromEntries(dndCatalog.map(entry=>['rule/'+entry.id,'SRD · '+entry.name]))};
- return '<input type="hidden" name="id" value="'+esc(card?.id||'')+'"><input type="hidden" name="version" value="'+esc(card?.version||0)+'">'+input('title','Título',card?.title||'','text','required maxlength="100"')+'<div class="form-grid">'+select('kind','Tipo de cartão',gmKinds,card?.kind||'note')+select('category','Categoria',Object.fromEntries(Object.entries(gmCategories).filter(([id])=>id!=='all')),card?.category||'session')+'</div>'+area('body','Conteúdo ou entradas, uma por linha',card?.items?card.items.map(item=>(card.kind==='checklist'?(item.done?'[x] ':'[ ] '):'')+item.text).join('\n'):card?.body||'','maxlength="6000" rows="9"')+'<p class="muted">Tarefas: marque as concluídas com [x]. Tabelas: de 2 a 100 linhas, com a mesma chance por entrada. Nas anotações, o texto é livre.</p><div data-gm-reference '+(card?.kind==='reference'?'':'hidden')+'>'+select('target','Nota, ficha, livro ou regra',options,card?card.targetKind+'/'+card.targetId:'')+input('page','Página do PDF (para livros)',card?.page||1,'number','min="1" max="10000" step="1"')+'<p class="muted">O cartão é privado. Os PDFs da biblioteca continuam disponíveis aos jogadores.</p></div><label class="check"><input name="wide" type="checkbox" '+(card?.wide?'checked':'')+'> Cartão largo em telas grandes</label>'+submit('Salvar cartão');
+ return '<input type="hidden" name="id" value="'+esc(card?.id||'')+'"><input type="hidden" name="version" value="'+esc(card?.version||0)+'">'+input('title','Título',card?.title||'','text','required maxlength="100"')+'<div class="form-grid">'+select('kind','Tipo de cartão',gmKinds,card?.kind||'note')+select('category','Categoria',Object.fromEntries(Object.entries(gmCategories).filter(([id])=>id!=='all')),card?.category||'session')+'</div>'+'<div data-gm-body '+(card?.kind==='table'?'hidden':'')+'>'+area('body','Conteúdo ou tarefas, uma por linha',card?.kind==='checklist'?card.items.map(item=>(item.done?'[x] ':'[ ] ')+item.text).join('\n'):card?.body||'','maxlength="6000" rows="9"')+'</div><fieldset data-gm-table '+(card?.kind==='table'?'':'hidden disabled')+'><legend>Entradas do sorteio</legend><p>Quanto maior o peso, maior a chance de sair.</p><div data-table-entries>'+ (card?.kind==='table'?card.items:[{},{}]).map(item=>gmTableRow(item,ui)).join('')+'</div>'+ui.button('Adicionar entrada','gmTableAdd','small')+'<label class="check"><input type="checkbox" name="noRepeat" '+(card?.noRepeat?'checked':'')+'> Sortear sem repetição até reiniciar</label></fieldset><div data-gm-reference '+(card?.kind==='reference'?'':'hidden')+'>'+select('target','Nota, ficha, livro ou regra',options,card?card.targetKind+'/'+card.targetId:'')+input('page','Página do PDF (para livros)',card?.page||1,'number','min="1" max="10000" step="1"')+'<p class="muted">O cartão é privado. Os PDFs da biblioteca continuam disponíveis aos jogadores.</p></div><label class="check"><input name="wide" type="checkbox" '+(card?.wide?'checked':'')+'> Cartão largo em telas grandes</label>'+submit('Salvar cartão');
 }
 
 const prepTabs={plan:'Roteiro',note:'Anotações',character:'Personagens',item:'Itens'};
@@ -115,7 +175,8 @@ function noteCards(row,ui,view,entries){
    width:num(saved?.width,220,1500,248),height:num(saved?.height,160,1500,196),color:/^#[a-f0-9]{6}$/i.test(saved?.color)?saved.color:'#aa89d5'}];
  }));
  const visible=new Set(entries.map(m=>m.entry.id));
- const cards=entries.map(({entry,attached})=>{
+ const cards=entries.map(({entry,position})=>{
+  const attached=position!==undefined;
   const props=noteProperties(entry.body),pos=places.get(entry.id);
   return '<article class="vault-card" data-vault-card="'+esc(entry.id)+'" '+(canvas?'style="left:'+pos.x+'px;top:'+pos.y+'px;width:'+pos.width+'px;height:'+pos.height+'px;--card-tone:'+pos.color+'"':'')+'>'+
    (canvas?'<button class="vault-handle" type="button" data-vault-move aria-label="Mover '+esc(entry.title)+' com as setas" title="Arraste ou use as setas">⠿</button>':'')+
@@ -135,29 +196,37 @@ export function prepList(row,ui,view){
  if(!row.master)return '';
  const {esc,button}=ui,session=prepSession(row,view),tab=view.prepTab||'plan',refs=session?.materials||[];
  const targeted=row.state.sceneLibrary?.scenes.some(c=>c.id===row.state.sceneId&&c.sessionId===session?.id);
- const entries=prepEntries(row.state).map(m=>({...m,attached:refs.some(ref=>ref.id===m.entry.id&&ref.kind===m.kind)}))
+ const positions=new Map(refs.map((ref,index)=>[ref.kind+':'+ref.id,index]));
+ const entries=prepEntries(row.state).map(m=>({...m,position:positions.get(m.kind+':'+m.entry.id)}))
   .filter(m=>tab!=='note'||!view.folder||m.entry.sourcePath?.startsWith(view.folder+'/'))
-  .filter(m=>(tab==='plan'?m.attached:m.kind===tab)&&(tab==='note'&&view.prepQuery?.startsWith('#')?noteProperties(m.entry.body).tags.some(tag=>normal(tag.replace(/^#/,''))===normal(view.prepQuery.slice(1)))||normal(m.entry.body).includes(normal(view.prepQuery)):normal([m.name,m.detail,m.entry.body].join(' ')).includes(normal(view.prepQuery))))
-  .sort((a,b)=>tab==='note'&&view.vaultSort==='recent'?String(b.entry.updatedAt||'').localeCompare(String(a.entry.updatedAt||''))||a.name.localeCompare(b.name,'pt-BR'):a.name.localeCompare(b.name,'pt-BR'));
+  .filter(m=>(tab==='plan'?m.position!==undefined:m.kind===tab)&&(tab==='note'&&view.prepQuery?.startsWith('#')?noteProperties(m.entry.body).tags.some(tag=>normal(tag.replace(/^#/,''))===normal(view.prepQuery.slice(1)))||normal(m.entry.body).includes(normal(view.prepQuery)):normal([m.name,m.detail,m.entry.body].join(' ')).includes(normal(view.prepQuery))))
+  .sort((a,b)=>tab==='plan'?a.position-b.position:tab==='note'&&view.vaultSort==='recent'?String(b.entry.updatedAt||'').localeCompare(String(a.entry.updatedAt||''))||a.name.localeCompare(b.name,'pt-BR'):a.name.localeCompare(b.name,'pt-BR'));
  if(!entries.length&&!(tab==='note'&&view.vaultMode==='canvas'))return '<p class="muted">'+(view.prepQuery?'Nenhum material corresponde à busca.':tab==='plan'?'Escolha notas, personagens e itens nas abas ao lado e use “Incluir no roteiro”.':'Nenhum material nesta categoria.')+'</p>';
  if(tab==='note')return noteCards(row,ui,view,entries);
- return entries.map(({entry,kind,name,detail,attached})=>'<article class="prep-row"><div><small>'+esc(detail)+'</small><h3>'+esc(name)+'</h3></div><div class="actions">'+
+ return entries.map(({entry,kind,name,detail,position})=>{
+  const attached=position!==undefined,key=kind+':'+entry.id;
+  const move=(label,step,disabled)=>'<button type="button" class="btn small" data-act="prepMove" data-id="'+esc(key)+'" data-step="'+step+'" aria-label="'+esc(label+' '+name+' no roteiro')+'" '+(disabled?'disabled':'')+'>'+label+'</button>';
+  return '<article class="prep-row" data-prep-material="'+esc(key)+'"><div><small>'+(tab==='plan'?'Etapa '+(position+1)+' · ':'')+esc(detail)+'</small><h3>'+esc(name)+'</h3></div><div class="actions">'+
   button('Abrir',{note:'prepRead',item:'itemOpen',character:'character'}[kind],'small','',entry.id)+
   (kind==='character'&&targeted?button('Colocar token','prepToken','small','',entry.id):'')+
   (kind==='item'?(targeted?button('Colocar na cena','lootPlace','small','',entry.id):'')+button('Entregar','itemGrant','small','',entry.id):'')+
-  button(attached?'Retirar do roteiro':'Incluir no roteiro',attached?'prepDetach':'prepAttach','small ghost','',kind+':'+entry.id)+'</div></article>').join('');
+  (tab==='plan'?move('Subir',-1,position===0)+move('Descer',1,position===refs.length-1):'')+
+  button(attached?'Retirar do roteiro':'Incluir no roteiro',attached?'prepDetach':'prepAttach','small ghost','',key)+'</div></article>';
+ }).join('');
 }
 function preparation(row,ui,view){
  const {esc,button}=ui,lib=row.state.sceneLibrary,session=prepSession(row,view);
  if(!session)return '';
  const target=lib.scenes.find(c=>c.id===row.state.sceneId&&c.sessionId===session.id);
+ const live=target?.id===lib.activeId;
+ const mapActions=target?(live?button('Preparar cópia privada','prepMapCopy','primary','',target.id)+button('Editar mapa ao vivo','prepMap','small','table',target.id):button('Editar mapa privado','prepMap','primary','table',target.id)):'';
  const scenes=lib.scenes.filter(c=>c.sessionId===session.id),tab=view.prepTab||'plan';
  return '<section class="panel gm-preparation"><div class="section-head"><h2>Preparação por sessão</h2>'+button('Nova sessão','sessionEdit','small','plus')+'</div>'+
  '<div class="prep-context"><label>Sessão<select data-prep-session>'+lib.sessions.map(s=>'<option value="'+esc(s.id)+'" '+(s.id===session.id?'selected':'')+'>'+esc(s.name)+'</option>').join('')+'</select></label>'+
- button('Editar sessão','sessionEdit','small','',session.id)+'<label>Cena em preparação<select data-prep-scene '+(!scenes.length?'disabled':'')+'>'+(!scenes.some(c=>c.id===row.state.sceneId)?'<option value="">Escolher cena</option>':'')+scenes.map(c=>'<option value="'+esc(c.id)+'" '+(c.id===row.state.sceneId?'selected':'')+'>'+esc(c.name)+(c.id===lib.activeId?' · Ao vivo':'')+'</option>').join('')+'</select></label>'+button('Nova cena','prepNewScene','small','plus',session.id)+(target?button('Preparar mapa','prepMap','primary','table',target.id):'')+'</div>'+
+ button('Editar sessão','sessionEdit','small','',session.id)+'<label>Cena em preparação<select data-prep-scene '+(!scenes.length?'disabled':'')+'>'+(!scenes.some(c=>c.id===row.state.sceneId)?'<option value="">Escolher cena</option>':'')+scenes.map(c=>'<option value="'+esc(c.id)+'" '+(c.id===row.state.sceneId?'selected':'')+'>'+esc(c.name)+(c.id===lib.activeId?' · Ao vivo':'')+'</option>').join('')+'</select></label>'+button('Nova cena','prepNewScene','small','plus',session.id) +mapActions+'</div>'+
  (session.notes?'<p class="gm-card-text">'+esc(session.notes)+'</p>':'')+
  '<nav class="actions" aria-label="Materiais da sessão">'+Object.entries(prepTabs).map(([k,label])=>'<button type="button" class="btn small '+(tab===k?'primary':'ghost')+'" data-act="prepTab" data-id="'+k+'" aria-pressed="'+(tab===k)+'">'+label+'</button>').join('')+'</nav>'+
- '<div class="prep-context"><label>Buscar material<input type="search" data-prep-search value="'+esc(view.prepQuery||'')+'"></label><div class="actions">'+
+ '<div class="prep-context"><label>'+({plan:'Buscar no roteiro',note:'Buscar anotações',character:'Buscar personagens',item:'Buscar itens'}[tab])+'<input type="search" data-prep-search value="'+esc(view.prepQuery||'')+'"></label><div class="actions">'+
  (tab==='note'?button('Nova anotação','journalEdit','small','plus')+button('Importar Obsidian','prepImport','small'):tab==='character'?button('Criar NPC','prepNpc','primary','plus')+button('Nova ficha','character','small')+button('Modelos de ficha','sheetTemplates','small'):tab==='item'?button('Criar item para a sessão','prepItem','primary','plus'):'')+'</div></div>'+
  (tab==='note'?'<div class="vault-toolbar"><strong>'+esc(view.folder||'Todas as notas')+'</strong><label>Ordenar<select data-vault-sort><option value="title">Título</option><option value="recent" '+(view.vaultSort==='recent'?'selected':'')+'>Edição recente</option></select></label><div class="actions">'+button('Cartões','vaultMode',view.vaultMode!=='canvas'?'small primary':'small','','grid')+button('Canvas','vaultMode',view.vaultMode==='canvas'?'small primary':'small','','canvas')+'</div></div><div class="vault-workspace">'+folderExplorer(row.state.journal||[],view,ui)+'<div class="vault-results" data-prep-list>'+prepList(row,ui,view)+'</div></div>'+(view.vaultReader||''):'<div class="prep-materials" data-prep-list>'+prepList(row,ui,view)+'</div>')+'</section>';
 }
